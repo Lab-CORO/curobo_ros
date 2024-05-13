@@ -23,10 +23,10 @@ class TestFk(Node):
 
     def callback(self, future):
         response = future.result()
-        self.get_logger().info('Result %s' % response.ee_poses[0].position)
-        self.get_logger().info('Result %s' % response.ee_poses[0].orientation)
+        self.get_logger().info('Result %s' % response.poses[0].position)
+        self.get_logger().info('Result %s' % response.poses[0].orientation)
         # assert the existanc eof a result
-        assert response.ee_poses[0].position
+        assert response.poses[0].position
 
 def main(args=None):
     rclpy.init(args=args)

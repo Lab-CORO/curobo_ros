@@ -60,32 +60,25 @@ class FK(Node):
         print(q)
         result = self.kin_model.get_state(q)
 
-        for index, position, orientation in enumerate(zip(result.ee_position.cpu().numpy(), result.ee_quaternion.cpu().numpy())):
+        for index, (position, orientation) in enumerate(zip(result.ee_position.cpu().numpy(), result.ee_quaternion.cpu().numpy())):
             pose = Pose()
-            pose.position.x = position[0]
-            pose.position.y = position[1]
-            pose.position.z = position[2]
-            pose.orientation.x = orientation[0]
-            pose.orientation.y = orientation[1]
-            pose.orientation.z = orientation[2]
-            pose.orientation.w = orientation[3]
+            print(position)
+            print(orientation)
+            pose.position.x = float(position[0])
+            pose.position.y = float(position[1])
+            pose.position.z = float(position[2])
+            pose.orientation.x = float(orientation[0])
+            pose.orientation.y = float(orientation[1])
+            pose.orientation.z = float(orientation[2])
+            pose.orientation.w = float(orientation[3])
 
-
-            # joint state valide to Bool list
-            res = std_msgs.msg.Bool()
-            res.data = bool(result.success.cpu().numpy()[index][0])
-            # print(res)
-
-            response.joint_states_valid.append(res)
-            response.joint_states.append(joint)
-
-        # response.joint_state = out
+            response.poses.append(pose)
         return response
 
     def fk_init(self):
         q = torch.rand((10, self.kin_model.get_dof()), **(self.tensor_args.as_torch_dict()))
         out = self.kin_model.get_state(q)
-        print(out.ee_position)
+        print(out)
 
 
 
