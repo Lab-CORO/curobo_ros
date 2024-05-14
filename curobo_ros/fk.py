@@ -76,6 +76,7 @@ class FK(Node):
         return response
 
     def fk_init(self):
+        # init the kin model, the firt time it takes a while
         q = torch.rand((10, self.kin_model.get_dof()), **(self.tensor_args.as_torch_dict()))
         out = self.kin_model.get_state(q)
         print(out)
