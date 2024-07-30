@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 # msg ik
-from data_generation.srv import Fk
+from capacinet_msg.srv import Fk
 from geometry_msgs.msg import Pose
 
 # cuRobo

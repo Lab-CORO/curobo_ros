@@ -4,7 +4,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose
-from data_generation.srv import Fk
+from capacinet_msg.srv import Fk
 
 
 class TestFk(Node):
