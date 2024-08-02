@@ -24,7 +24,9 @@ setup(
             'listener = curobo_ros.subscriber_member_function:main',
             'curobo_ik = curobo_ros.ik:main',
             'curobo_fk = curobo_ros.fk:main',
-            'test_fk = curobo_ros.test_fk:main'
+            'test_fk = curobo_ros.test_fk:main',
+            'curobo_test = curobo_ros.curobo_test:main',
+            'marker_publisher = curobo_ros.marker_publisher:publish_markers'
         ],
     },
 )
