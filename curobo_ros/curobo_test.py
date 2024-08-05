@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-
+import os
 import rclpy
 from rclpy.node import Node
 from visualization_msgs.msg import Marker
@@ -90,7 +90,9 @@ class CuRoboTestFk(Node):
 
         tensor_args = TensorDeviceType()
 
-        self.robot_cfg = load_yaml(join_path(get_robot_configs_path(), "ur10e.yml"))[
+        config_file_path = os.path.abspath(os.path.join(f"/home/ros2_ws/src/curobo_ros/m1013/m1013.yml"))
+
+        self.robot_cfg = load_yaml(config_file_path)[
             "robot_cfg"]
 
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
@@ -114,7 +116,7 @@ class CuRoboTestFk(Node):
             self.robot_cfg,
             world_cfg,
             tensor_args,
-            trajopt_tsteps=32,
+            trajopt_tsteps=128,
             collision_checker_type=CollisionCheckerType.BLOX,
             use_cuda_graph=True,
             num_trajopt_seeds=12,
@@ -172,19 +174,20 @@ class CuRoboTestFk(Node):
 
         retract_pose = Pose(state.ee_pos_seq.squeeze(), quaternion=state.ee_quat_seq.squeeze())
         start_state = JointState.from_position(retract_cfg.view(1, -1))
-        goal_pose = Pose.from_list([1.5, 0.0, 0.4, 1.0, 0.0, 0.0, 0.0])
+        goal_pose = Pose.from_list([0.5, 0.5, 0.5, 1.0, 0.0, 0.0, 0.0])
 
         start_state.position[0, 0] += 0.25
 
         result = motion_gen.plan_single(
             start_state,
-            retract_pose,
+            goal_pose,
             MotionGenPlanConfig(
                 max_attempts=1,
                 timeout=5,
                 time_dilation_factor=0.5,
             ),
         )
+
         new_result = result.clone()
         new_result.retime_trajectory(0.5, create_interpolation_buffer=True)
 

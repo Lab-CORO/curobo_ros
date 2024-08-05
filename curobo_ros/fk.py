@@ -1,3 +1,4 @@
+import os
 import rclpy
 import std_msgs.msg
 from sensor_msgs.msg import JointState
@@ -24,7 +25,7 @@ class FK(Node):
         # sub with the name string of the robot
         # self.subscription = self.create_subscription( String, '/curobo/robot_name', self.robot_name_callback, 10)
         # self.subscription
-        self.robot_name = "ur10e"
+        self.robot_name = "m1013"
 
         # service for list of poses to calculate the inverse kinematics
         self.srv_ik = self.create_service(Fk, '/curobo/fk_poses', self.fk_callback)
@@ -32,7 +33,9 @@ class FK(Node):
         # curobo args
         self.tensor_args = TensorDeviceType()
 
-        config_file = load_yaml(join_path(get_robot_configs_path(), "ur10e.yml"))
+        config_file_path = os.path.abspath(os.path.join(f"/home/ros2_ws/src/curobo_ros/m1013/m1013.yml"))
+        config_file = load_yaml(config_file_path)
+        print(get_robot_configs_path)
         urdf_file = config_file["robot_cfg"]["kinematics"][
             "urdf_path"
         ]  # Send global path starting with "/"
@@ -51,19 +54,19 @@ class FK(Node):
             self.get_logger().error('Max batch size is 1000')
             return response
         qs = []
-        print(request.joint_states)
+        # print(request.joint_states)
         for joint in request.joint_states:
             qs.append(list(joint.position))
-        print(qs)
+        # print(qs)
         #     create tensor
         q = torch.tensor(qs, **(self.tensor_args.as_torch_dict()))
-        print(q)
+        # print(q)
         result = self.kin_model.get_state(q)
 
         for index, (position, orientation) in enumerate(zip(result.ee_position.cpu().numpy(), result.ee_quaternion.cpu().numpy())):
             pose = Pose()
-            print(position)
-            print(orientation)
+            # print(position)
+            # print(orientation)
             pose.position.x = float(position[0])
             pose.position.y = float(position[1])
             pose.position.z = float(position[2])
@@ -92,4 +95,3 @@ def main(args=None):
 
     fk.destroy_node()
     rclpy.shutdown()
-
