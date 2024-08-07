@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 
 import os
+import torch
+import numpy as np
+import cv2
+from cv_bridge import CvBridge, CvBridgeError
+
 import rclpy
 from rclpy.node import Node
+from .wait_for_message import wait_for_message
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import JointState as SensorJointState
 from moveit_msgs.msg import DisplayTrajectory, RobotState, RobotTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from std_msgs.msg import Header, Float64MultiArray
-import torch
+from sensor_msgs.msg import Image, CameraInfo
+
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import Cuboid, WorldConfig
 from curobo.types.base import TensorDeviceType
@@ -20,63 +27,103 @@ from curobo.util_file import get_robot_configs_path, get_world_configs_path, joi
 from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
 from nvblox_torch.datasets.realsense_dataset import RealsenseDataloader
-
 from .marker_publisher import MarkerPublisher
-
 from geometry_msgs.msg import Pose as PoseGeo
 from capacinet_msg.srv import Fk
 
 
-class CuRoboTestFk(Node):
+class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         super().__init__('curobo_test')
+        self.default_config = None
+        self.j_names = None
+        self.robot_cfg = None
+        self.intrinsics = None
+        self.depth_sub = None
+        self.image_sub = None
+        self.cv_image = None
+        self.depth_image = None
+        self.depth = 0
+        self.camera_info_received = False
+
+        self.bridge = CvBridge()
+        self.image_sub = self.create_subscription(Image, "/camera/camera/color/image_rect_raw", self.callback_image, 10)
+        self.depth_sub = self.create_subscription(Image, "/camera/camera/color/image_rect_raw", self.callback_depth, 10)
+
+        success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/color/camera_info')
+        if success:
+            self.callback_camera_info(camera_info_sub)
+            # self.get_logger().info(f'Result received {self.camera_info_received}')
+
+        self.get_logger().info(f"Camera intrinsics : \n{self.intrinsics}")
+
         self.client = self.create_client(Fk, '/curobo/fk_poses')
+
         while not self.client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service is currently unavailable, waiting...')
+
         self.req = Fk.Request()
-
-
         self.req.joint_states = []
-        
+
         positions = self.trajectory_generator()
-        
+
         for i, element in enumerate(positions):
-            
             self.req.joint_states.append(SensorJointState())
             self.req.joint_states[i].position = element
             self.req.joint_states[i].name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
 
-
-            self.get_logger().info("#################################")
-            self.get_logger().info("The initial position is {}".format(positions[0]))
-            self.get_logger().info("#################################")
-
-            print(len(positions))
-            self.get_logger().info("#################################")
-            self.get_logger().info("The final position is {}".format(positions[len(positions)-1]))
-            self.get_logger().info("#################################")
-
-    
         self.future = self.client.call_async(self.req)
         self.future.add_done_callback(self.callback)
-
-
         self.marker_publisher = MarkerPublisher()
 
+
+    def callback(self, future):
+        try:
+            response = future.result()
+            self.get_logger().info(f'Result received with {len(response.poses)} poses')
+
+            assert len(response.poses) > 0   # make sure we have an answer from the service
+            self.marker_publisher.publish_markers(response.poses)  # publish the markers to visualize them
+        except Exception as e:
+            self.get_logger().error(f'Service call failed: {e}')
+
+
+    def callback_camera_info(self, msg):
+        if not self.camera_info_received:
+            self.intrinsics = np.reshape(msg.k, (3, 3))
+            # self.get_logger().info(f"Camera intrinsics are: \n{self.intrinsics}")
+            self.camera_info_received = True
+
+
+    def callback_image(self, data):
+        try:
+            self.cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        except CvBridgeError as e:
+            self.get_logger().error(f" An error has occurred : {e}")
+
+
+    def callback_depth(self, msg):
+        self.get_logger().error(f"Depth image is @@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@   {msg.data}")
+        try:
+            depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
+            self.get_logger().info(f"Depth image is @@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@#@{depth_img}")
+            self.depth_image = torch.from_numpy(depth_img).float()
+        except CvBridgeError as e:
+            self.get_logger().erro(f" An error has occurred : {e}")
+
+
     def trajectory_generator(self):
-        # Standard Library
-        # PLOT = True
         radius = 0.05
         act_distance = 0.4
         voxel_size = 0.05
         render_voxel_size = 0.02
-        clipping_distance = 0.7
+        clipping_distance = 1.0  # meter
         tensor_args = TensorDeviceType()
 
         collision_checker_type = CollisionCheckerType.BLOX
 
         world_cfg = WorldConfig.from_dict(
-            
+
             {
                 "blox": {
                     "world": {
@@ -91,21 +138,11 @@ class CuRoboTestFk(Node):
         tensor_args = TensorDeviceType()
 
         config_file_path = os.path.abspath(os.path.join(f"/home/ros2_ws/src/curobo_ros/m1013/m1013.yml"))
-
-        self.robot_cfg = load_yaml(config_file_path)[
-            "robot_cfg"]
-
+        self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
-
-        # print(j_names)
         self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
 
-        print(type(self.default_config))
-        # print(default_config)
-
-        world_cfg_table = WorldConfig.from_dict(
-            load_yaml(join_path(get_world_configs_path(), "collision_wall.yml"))
-        )
+        world_cfg_table = WorldConfig.from_dict(load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
         world_cfg_table.cuboid[0].pose[2] -= 0.01
         world_cfg.add_obstacle(world_cfg_table.cuboid[0])
@@ -139,18 +176,31 @@ class CuRoboTestFk(Node):
         motion_gen.warmup()
 
         world_model = motion_gen.world_collision
-        # realsense_data = RealsenseDataloader(clipping_distance_m=clipping_distance)
-        # data = realsense_data.get_data()
 
-        # camera_pose = Pose.from_list([0, 0, 0, 0.707, 0.707, 0, 0])
+        ##################################################################################
+        ##################################################################################
+        ##################################################################################
+        ##################################################################################
 
-        # data_camera = CameraObservation(  # rgb_image = data["rgba_nvblox"],
-        #     depth_image=data["depth"], intrinsics=data["intrinsics"], pose=camera_pose
-        # )
+        camera_pose = Pose.from_list([0, 0, 0.5, 1.0, 0, 0, 0])
 
-        # data_camera = data_camera.to(device=tensor_args.device)
-        # world_model.add_camera_frame(data_camera, "world")
-        # world_model.process_camera_frames("world", False)
+        if self.depth_image is None:
+            self.get_logger().error('No depth image received, trajectory generation aborted')
+
+        data_camera = CameraObservation(depth_image=self.depth_image, intrinsics=self.intrinsics, pose=camera_pose)
+
+        print(f" Intrinsics are : {data_camera.intrinsics}")
+        print(f" Depth image is : {data_camera.depth_image}")
+
+        data_camera = data_camera.to(device=tensor_args.device)
+        world_model.add_camera_frame(data_camera, "world")
+        world_model.process_camera_frames("world", False)
+
+        ##################################################################################
+        ##################################################################################
+        ##################################################################################
+        ##################################################################################
+
         torch.cuda.synchronize()
         world_model.update_blox_hashes()
 
@@ -198,33 +248,9 @@ class CuRoboTestFk(Node):
         return position
 
 
-
-    def callback(self, future):
-        try:
-            response = future.result()
-            self.get_logger().info(f'Result received with {len(response.poses)} poses')
-            for i, pose in enumerate(response.poses):
-
-                # self.get_logger().info(f'Pose {i}: position={pose.position}, orientation={pose.orientation}')
-
-                if i == 0:
-                    self.get_logger().info("#################################")
-                    self.get_logger().info("The initial position is {}".format(pose.position))
-                    self.get_logger().info("#################################")
-                if i == len(response.poses) - 1:
-                    self.get_logger().info("#################################")
-                    self.get_logger().info("The final position is {}".format(pose.position))
-                    self.get_logger().info("#################################")
-
-
-            assert len(response.poses) > 0
-            self.marker_publisher.publish_markers(response.poses)
-        except Exception as e:
-            self.get_logger().error(f'Service call failed: {e}')
-
 def main(args=None):
     rclpy.init(args=args)
-    curobo_test = CuRoboTestFk()
+    curobo_test = CuRoboTrajectoryMaker()
     rclpy.spin(curobo_test)
     curobo_test.destroy_node()
     rclpy.shutdown()
