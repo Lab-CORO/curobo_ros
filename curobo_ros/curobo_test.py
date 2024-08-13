@@ -43,26 +43,47 @@ class CuRoboTrajectoryMaker(Node):
         self.cv_image = None
         self.depth_image = None
         self.depth = 0
-        self.camera_info_received = None
-        self.camera_depth_received = None
+
+        #checker
+        self.camera_info_received = False
+        self.depth_image_received = False
 
         self.bridge = CvBridge()
 
-        self.get_logger().info('Subscription to /camera/camera/depth/image_rect_raw created')
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
 
-        success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/color/camera_info')
+        # self.subscription = self.create_subscription(
+        #     Image,
+        #     '/camera/camera/depth/image_rect_raw',
+        #     self.callback_depth,
+        #     qos_profile
+        # )
+        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/color/camera_info')
 
-        if success:
+        if self.success:
             self.callback_camera_info(camera_info_sub)
 
-        success2, camera_depth_sub = wait_for_message(Image, self, '/camera/camera/depth/image_rect_raw')
-
-        if success2:
+        self.success1, camera_depth_sub = wait_for_message(Image, self, '/camera/camera/depth/image_rect_raw')
+        if self.success1:
             self.callback_depth(camera_depth_sub)
 
-        self.get_logger().info(f"Checking data for trajectory generation. Camera info received: {self.camera_info_received}, Depth image available: {self.depth_image is not None}")
+        self.get_logger().info('Subscription to /camera/camera/depth/image_rect_raw created')
 
-        if self.camera_info_received and self.depth_image is not None:
+
+
+        self.client = self.create_client(Fk, '/curobo/fk_poses')
+
+        while not self.client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service is currently unavailable, waiting...')
+
+        self.req = Fk.Request()
+        self.req.joint_states = []
+
+        if self.camera_info_received == True and self.depth_image_received == True:
             self.get_logger().info('Camera info and depth image received, generating trajectory...')
             positions = self.trajectory_generator()
 
@@ -74,13 +95,8 @@ class CuRoboTrajectoryMaker(Node):
             self.future = self.client.call_async(self.req)
             self.future.add_done_callback(self.callback)
 
-            self.client = self.create_client(Fk, '/curobo/fk_poses')
+            self.marker_publisher = MarkerPublisher()
 
-            while not self.client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().info('service is currently unavailable, waiting...')
-
-            self.req = Fk.Request()
-            self.req.joint_states = []
 
     def callback(self, future):
         try:
@@ -92,41 +108,64 @@ class CuRoboTrajectoryMaker(Node):
         except Exception as e:
             self.get_logger().error(f'Service call failed: {e}')
 
+
     def callback_camera_info(self, msg):
         if not self.camera_info_received:
-            self.intrinsics = torch.tensor(msg.k).view(3, 3).float()  # Convertir en torch.Tensor
+            # self.intrinsics = np.reshape(msg.k, (3, 3))
+            # self.get_logger().info(f"Camera intrinsics are: \n{self.intrinsics}")
+            self.intrinsics = torch.tensor(msg.k).view(3, 3).float()
             self.camera_info_received = True
-            self.get_logger().info(f"Camera intrinsics received: {self.intrinsics}")
+
 
     def callback_depth(self, msg):
-        self.get_logger().info("Depth image received")
         try:
             depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
             self.get_logger().info(f"Depth image casted in CV2 format looks like: {depth_img.shape}")
-            self.depth_image = torch.from_numpy(depth_img.astype(np.float32)).float()  # Convertir en float32
+            depth_img_float = depth_img.astype(np.float32)
+            self.depth_image = torch.from_numpy(depth_img_float).float()
             self.get_logger().info(f"Depth image converted to tensor: {self.depth_image.shape}")
-            self.camera_depth_received = True
+            self.depth_image_received = True
+            # self.check_and_generate_trajectory()
         except CvBridgeError as e:
             self.get_logger().error(f"An error has occurred: {e}")
 
+    # def check_and_generate_trajectory(self):
+    #     if self.camera_info_received == True and self.depth_image_received == True:
+    #         self.get_logger().info('Camera info and depth image received, generating trajectory...')
+    #         positions = self.trajectory_generator()
+    #
+    #         for i, element in enumerate(positions):
+    #             self.req.joint_states.append(SensorJointState())
+    #             self.req.joint_states[i].position = element
+    #             self.req.joint_states[i].name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+    #
+    #         self.future = self.client.call_async(self.req)
+    #         self.future.add_done_callback(self.callback)
+
 
     def trajectory_generator(self):
+
         radius = 0.05
+        clipping_distance = 0.5
         act_distance = 0.4
-        voxel_size = 0.05  # Réduisez cette valeur si nécessaire pour économiser de la mémoire
+
+
+
+        voxel_size = 0.05
         render_voxel_size = 0.02
-        clipping_distance = 1.0  # meter
+
         tensor_args = TensorDeviceType()
 
         collision_checker_type = CollisionCheckerType.BLOX
 
         world_cfg = WorldConfig.from_dict(
+
             {
                 "blox": {
                     "world": {
                         "pose": [0, 0, 0, 1, 0, 0, 0],
                         "integrator_type": "occupancy",
-                        "voxel_size": 0.02,  # Réduisez cette valeur si nécessaire pour économiser de la mémoire
+                        "voxel_size": 0.02,
                     },
                 },
             }
@@ -150,7 +189,7 @@ class CuRoboTrajectoryMaker(Node):
             self.robot_cfg,
             world_cfg,
             tensor_args,
-            trajopt_tsteps=128,
+            trajopt_tsteps=32,
             collision_checker_type=CollisionCheckerType.BLOX,
             use_cuda_graph=True,
             num_trajopt_seeds=12,
@@ -179,31 +218,20 @@ class CuRoboTrajectoryMaker(Node):
         ##################################################################################
         ##################################################################################
 
-        camera_pose = Pose.from_list([0, 0, 0.5, 1.0, 0, 0, 0])
+        camera_pose = Pose.from_list([0.5, 1.0, 0.5, 0.0, 0.0, -0.706, 0.707])
 
-        # Avant de charger de nouvelles données sur le GPU
-        torch.cuda.empty_cache()
+        # self.depth_sub = self.create_subscription(Image, "/camera/camera/color/image_rect_raw", self.callback_depth, 10)
 
         self.get_logger().warning(f'depth image is {self.depth_image}')
 
         data_camera = CameraObservation(depth_image=self.depth_image, intrinsics=self.intrinsics, pose=camera_pose)
 
+
         self.get_logger().warning(f" Intrinsics are : {data_camera.intrinsics}")
         self.get_logger().warning(f" Depth image is : {data_camera.depth_image}")
 
-        # Avant de transférer des données sur le GPU
-        torch.cuda.empty_cache()
-
         data_camera = data_camera.to(device=tensor_args.device)
-
-        # Synchroniser avant d'ajouter le cadre de la caméra
-        torch.cuda.synchronize()
-
         world_model.add_camera_frame(data_camera, "world")
-
-        # Synchroniser avant de traiter les cadres de la caméra
-        torch.cuda.synchronize()
-
         world_model.process_camera_frames("world", False)
 
         ##################################################################################
@@ -211,9 +239,7 @@ class CuRoboTrajectoryMaker(Node):
         ##################################################################################
         ##################################################################################
 
-        # Synchroniser avant de mettre à jour les hachages blox
         torch.cuda.synchronize()
-
         world_model.update_blox_hashes()
 
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[0, 0, 0, 1, 0, 0, 0])
@@ -224,6 +250,10 @@ class CuRoboTrajectoryMaker(Node):
             voxels = voxels[voxels[:, 0] > 0.0]
 
             voxels = voxels.cpu().numpy()
+
+        # motion_gen.warmup(enable_graph=True, warmup_js_trajopt=js, parallel_finetune=True)
+        # robot_cfg = load_yaml(join_path(get_robot_configs_path(), robot_file))["robot_cfg"]
+        # robot_cfg = RobotConfig.from_dict(robot_cfg, tensor_args)
 
         retract_cfg = motion_gen.get_retract_config()
         state = motion_gen.rollout_fn.compute_kinematics(
@@ -253,7 +283,7 @@ class CuRoboTrajectoryMaker(Node):
 
         position = traj.position.cpu().tolist()
 
-        self.get_logger().warning(position)
+        self.get_logger().warning(f'Positions are {position}')
 
         return position
 
@@ -262,7 +292,6 @@ def main(args=None):
     rclpy.init(args=args)
     curobo_test = CuRoboTrajectoryMaker()
     rclpy.spin(curobo_test)
-    curobo_test.destroy_node()
     rclpy.shutdown()
 
 
