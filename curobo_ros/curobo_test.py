@@ -10,7 +10,7 @@ import rclpy
 from rclpy.node import Node
 from .wait_for_message import wait_for_message
 from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PoseStamped
 from sensor_msgs.msg import JointState as SensorJointState
 from moveit_msgs.msg import DisplayTrajectory, RobotState, RobotTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -149,8 +149,6 @@ class CuRoboTrajectoryMaker(Node):
         clipping_distance = 0.5
         act_distance = 0.4
 
-
-
         voxel_size = 0.05
         render_voxel_size = 0.02
 
@@ -218,7 +216,7 @@ class CuRoboTrajectoryMaker(Node):
         ##################################################################################
         ##################################################################################
 
-        camera_pose = Pose.from_list([0.5, 1.0, 0.5, 0.0, 0.0, -0.706, 0.707])
+        camera_pose = Pose.from_list([0.5, 1.0, 0.5, -0.44, 0.0, 0.88, -0.106])
 
         # self.depth_sub = self.create_subscription(Image, "/camera/camera/color/image_rect_raw", self.callback_depth, 10)
 
@@ -233,6 +231,7 @@ class CuRoboTrajectoryMaker(Node):
         data_camera = data_camera.to(device=tensor_args.device)
         world_model.add_camera_frame(data_camera, "world")
         world_model.process_camera_frames("world", False)
+## a faire des qu un message est pub sur le topic du goal pose
 
         ##################################################################################
         ##################################################################################
@@ -262,7 +261,18 @@ class CuRoboTrajectoryMaker(Node):
 
         retract_pose = Pose(state.ee_pos_seq.squeeze(), quaternion=state.ee_quat_seq.squeeze())
         start_state = JointState.from_position(retract_cfg.view(1, -1))
-        goal_pose = Pose.from_list([0.5, 0.5, 0.5, 1.0, 0.0, 0.0, 0.0])
+
+        self.get_logger().warn(f"Waiting for a pose to be published")
+        pose_msg = wait_for_message(PoseStamped, self, "/marker_pose")
+
+        pose_msg = pose_msg[1]
+        goal_pose = Pose.from_list([
+            pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z,
+            pose_msg.pose.orientation.x, pose_msg.pose.orientation.y,
+            pose_msg.pose.orientation.z, pose_msg.pose.orientation.w
+        ])
+
+        self.get_logger().warn(f"Goal pose is {goal_pose}")
 
         start_state.position[0, 0] += 0.25
 
