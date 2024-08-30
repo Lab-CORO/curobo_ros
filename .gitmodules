@@ -1,0 +1,3 @@
+[submodule "curobo_doosan"]
+	path = curobo_doosan
+	url = https://github.com/Lab-CORO/curobo_doosan.git
