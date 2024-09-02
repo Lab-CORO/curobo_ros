@@ -22,9 +22,11 @@ setup(
         'console_scripts': [
             'talker = curobo_ros.publisher_member_function:main',
             'listener = curobo_ros.subscriber_member_function:main',
-            'curobo_ik = curobo_ros.ik:main',
-            'curobo_fk = curobo_ros.fk:main',
-            'test_fk = curobo_ros.test_fk:main'
+            'curobo_ik = curobo_ros.core.ik:main',
+            'curobo_fk = curobo_ros.core.fk:main',
+            'curobo_gen_traj = curobo_ros.core.generate_trajectory:main',
+            'curobo_int_mark = curobo_ros.interfaces.interactive_marker:main',
+            # 'test_fk = curobo_ros.test_fk:main'
         ],
     },
 )
