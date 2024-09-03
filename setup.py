@@ -13,7 +13,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'),                                      glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
-        (os.path.join('share', package_name, 'curobo_doosan/src/m1013'),                           glob(os.path.join('curobo_doosan/src/m1013', '*.urdf'))),
+        (os.path.join('share', package_name, 'curobo_doosan/src/m1013'),                           glob(os.path.join('curobo_doosan/src/m1013', '*.*'))),
         (os.path.join('share', package_name, 'curobo_doosan/src/m1013/meshes', 'm1013_white'),     glob(os.path.join('curobo_doosan/src/m1013/meshes/m1013_white', '*.dae*'))),
         (os.path.join('share', package_name, 'curobo_doosan/src/m1013/meshes', 'm1013_collision'), glob(os.path.join('curobo_doosan/src/m1013/meshes/m1013_collision', '*.dae*'))),
         (os.path.join('share', package_name, 'rviz'),                                        glob('rviz/*.rviz')),
@@ -32,7 +32,7 @@ setup(
             'curobo_ik = curobo_ros.core.ik:main',
             'curobo_fk = curobo_ros.core.fk:main',
             'curobo_gen_traj = curobo_ros.core.generate_trajectory:main',
-            'curobo_int_mark = curobo_ros.interfaces.interactive_marker:main',
+            'curobo_int_mark = curobo_ros.interfaces.simple_arrow:main',
             # 'test_fk = curobo_ros.test_fk:main'
         ],
     },

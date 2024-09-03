@@ -30,7 +30,7 @@ bash start_docker.sh x86
 
 ## Utilisation des fonctionalites du Docker
 
-### Instructions pour lancer les scripts de curobo
+<!-- ### Instructions pour lancer les scripts de curobo
 
 Pour exécuter les scripts de curobo, utilisez la commande suivante :
 
@@ -38,8 +38,11 @@ Pour exécuter les scripts de curobo, utilisez la commande suivante :
 python /chemin/vers/le/script
 ```
 
-Remplacez `/chemin/vers/le/script` par le chemin réel du script que vous souhaitez exécuter.
-
+Remplacez `/chemin/vers/le/script` par le chemin réel du script que vous souhaitez exécuter. -->
+### Ouvrir plusieurs terminals dans le docker
+```bash
+docker exec -it x86docker bash
+```
 ### Utilisation de curobo pour générer une trajectoire avec incorporation de la caméra
 
 Pour utiliser curobo et générer une trajectoire intégrant la caméra, veuillez suivre les étapes suivantes :
@@ -49,7 +52,7 @@ Pour utiliser curobo et générer une trajectoire intégrant la caméra, veuille
 3. Exécutez la commande suivante :
 
 ```bash
-ros2 run trajectory_publisher trajectory_pub_node
+ros2 run curobo_ros curobo_gen_traj
 ```
 
 ### Lancement du Doosan M1013 dans Rviz2
@@ -57,7 +60,7 @@ ros2 run trajectory_publisher trajectory_pub_node
 Pour utiliser Rviz2 afin de visualiser le robot ou toute autre chose, veuillez exécuter la commande suivante :
 
 ```bash
-ros2 launch trajectory_publisher launch_rviz2.launch.py
+ros2 launch curobo_ros launch_rviz2.launch.py
 ```
 Ce fichier de lancement est configurable a votre souhait.
 
@@ -65,7 +68,7 @@ Ce fichier de lancement est configurable a votre souhait.
 Pour utiliser la caméra afin de générer une trajectoire, veuillez exécuter la commande suivante :
 
 ```bash
-ros2 launch realsense2_camera rs_launch.py
+ros2 launch realsense2_camera rs_launch.py clip_distance:=0.8
 ```
 De nombreux arguments peuvent être utilisés (comme le clip_distance), vous pouvez vous référer à ce [repo](https://github.com/IntelRealSense/realsense-ros) GitHub.
 ### Ajout du TF de la camera
@@ -74,7 +77,7 @@ Pour ajouter le TF de la caméra afin de visualiser le DepthCloud et le robot en
 ros2 run tf2_ros static_transform_publisher x y z tx ty tz departure_link arrival_link
 ```
 ```bash
-ros2 run tf2_ros static_transform_publisher 0.5 1.0 0.5 2.8250572 -0.9121486 2.9853193 base_0 camera_link
+ros2 run tf2_ros static_transform_publisher  0.5 0 0.5 0 0 0  base_0 camera_link
 ```
 
 Remplacer ces champs par ce qui vous convient.
