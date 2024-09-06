@@ -4,6 +4,8 @@ from sensor_msgs.msg import JointState
 from rclpy.node import Node
 from geometry_msgs.msg import PoseArray
 import numpy as np
+import os
+from ament_index_python.packages import get_package_share_directory
 
 # Third Party
 import torch
@@ -31,8 +33,9 @@ class FK(Node):
 
         # curobo args
         self.tensor_args = TensorDeviceType()
+        config_file_path = os.path.join(get_package_share_directory("curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
 
-        config_file = load_yaml(join_path(get_robot_configs_path(), "ur10e.yml"))
+        config_file = load_yaml(join_path(get_robot_configs_path(), config_file_path))
         urdf_file = config_file["robot_cfg"]["kinematics"][
             "urdf_path"
         ]  # Send global path starting with "/"
@@ -49,6 +52,9 @@ class FK(Node):
         # check max batch size 1000
         if len(request.joint_states) > 1000:
             self.get_logger().error('Max batch size is 1000')
+            return response
+        if len(request.joint_states) <= 0:
+            self.get_logger().error('No positions to compute')
             return response
         qs = []
         print(request.joint_states)

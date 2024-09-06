@@ -1,11 +1,15 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, LogInfo
 from launch_ros.actions import Node
-from launch_ros.actions import PushRosNamespace
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from ament_index_python.packages import get_package_share_directory
+import os
 
 def generate_launch_description():
+    # Déclaration du répertoire de lancement de curobo_ros
+    curobo_ros_launch_dir = os.path.join(get_package_share_directory('curobo_ros'), 'launch')
+    
     return LaunchDescription([
         # Define the static transform publisher node
         Node(
@@ -16,15 +20,18 @@ def generate_launch_description():
             arguments=['0.5', '0', '0.5', '0', '0', '0', 'base_0', 'camera_link']
         ),
 
-        # Include the RViz2 launch file
+        # Include the RViz2 launch file from curobo_ros
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(['package://curobo_ros/launch/launch_rviz2.launch.py']),
-            launch_arguments={}.items()
+            PythonLaunchDescriptionSource(
+                os.path.join(curobo_ros_launch_dir, 'launch_rviz2.launch.py')
+            )
         ),
 
         # Include the RealSense camera launch file
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(['package://realsense2_camera/launch/rs_launch.py']),
+            PythonLaunchDescriptionSource(
+                os.path.join(get_package_share_directory('realsense2_camera'), 'launch', 'rs_launch.py')
+            ),
             launch_arguments={'clip_distance': '0.8'}.items()
         ),
 

@@ -104,13 +104,15 @@ class CuRoboTrajectoryMaker(Node):
 
         self.motion_gen = MotionGen(motion_gen_config)
 
-        print("warming up..")
+        self.get_logger().info("warming up..")
 
         self.motion_gen.warmup()
 
+        self.get_logger().info("Ready to generate trajectories")
+
         self.world_model = self.motion_gen.world_collision
 
-        self.marker_sub = self.create_subscription(PoseStamped, 'marker_pose', self.callback_marker, 10)
+        self.marker_sub = self.create_subscription(PoseStamped, 'marker_pose', self.callback_marker, 1)
 
 
     def callback_marker(self, msg):
@@ -126,6 +128,8 @@ class CuRoboTrajectoryMaker(Node):
         self.success1, camera_depth_sub = wait_for_message(Image, self, '/camera/camera/depth/image_rect_raw')
         if self.success1:
             self.callback_depth(camera_depth_sub)
+        else:
+            self.get_logger().error("Warning: No depth map received !!")
 
         #### CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
@@ -213,7 +217,7 @@ class CuRoboTrajectoryMaker(Node):
         self.world_model.update_blox_hashes()
 
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[0, 0, 0, 1, 0, 0, 0])
-        voxel_size = 0.05
+        voxel_size = 0.1
 
         voxels = self.world_model.get_voxels_in_bounding_box(bounding, voxel_size)
 
@@ -222,6 +226,10 @@ class CuRoboTrajectoryMaker(Node):
             voxels = voxels[voxels[:, 0] > 0.0]
 
             voxels = voxels.cpu().numpy()
+        
+        # Debug voxel map
+        #ici on prend la liste des voxels et on creer des cubes de la dimension de voxel size
+
 
         retract_cfg = self.motion_gen.get_retract_config()
         state = self.motion_gen.rollout_fn.compute_kinematics(
