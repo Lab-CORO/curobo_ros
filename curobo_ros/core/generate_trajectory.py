@@ -46,7 +46,8 @@ class CuRoboTrajectoryMaker(Node):
         self.depth_image = None
         self.marker_data = None
         self.depth = 0
-
+        self.voxel_size = 0.1
+        self.marker_publisher = MarkerPublisher()
         #checker
         self.camera_info_received = False
         self.depth_image_received = False
@@ -62,7 +63,7 @@ class CuRoboTrajectoryMaker(Node):
                     "world": {
                         "pose": [0, 0, 0, 1, 0, 0, 0],
                         "integrator_type": "occupancy",
-                        "voxel_size": 0.02,
+                        "voxel_size":  self.voxel_size,
                     },
                 },
             }
@@ -121,7 +122,7 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_received = True  # Met le booléen à True lorsque le message est reçu
 
         #### CAMERA INFO ####
-        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/color/camera_info')
+        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/depth/camera_info')
         if self.success:
             self.callback_camera_info(camera_info_sub)
         #### DEPTH MAP ####
@@ -152,7 +153,6 @@ class CuRoboTrajectoryMaker(Node):
             self.future = self.client.call_async(self.req)
             self.future.add_done_callback(self.callback)
 
-            self.marker_publisher = MarkerPublisher()
 
     def callback(self, future):
         try:
@@ -160,7 +160,7 @@ class CuRoboTrajectoryMaker(Node):
             self.get_logger().info(f'Result received with {len(response.poses)} poses')
 
             assert len(response.poses) > 0   # make sure we have an answer from the service
-            self.marker_publisher.publish_markers(response.poses)  # publish the markers to visualize them
+            self.marker_publisher.publish_markers_trajectory(response.poses)  # publish the markers to visualize them
         except Exception as e:
             self.get_logger().error(f'Service call failed: {e}')
 
@@ -217,7 +217,7 @@ class CuRoboTrajectoryMaker(Node):
         self.world_model.update_blox_hashes()
 
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[0, 0, 0, 1, 0, 0, 0])
-        voxel_size = 0.1
+        voxel_size =  self.voxel_size
 
         voxels = self.world_model.get_voxels_in_bounding_box(bounding, voxel_size)
 
@@ -229,7 +229,7 @@ class CuRoboTrajectoryMaker(Node):
         
         # Debug voxel map
         #ici on prend la liste des voxels et on creer des cubes de la dimension de voxel size
-
+        self.marker_publisher.publish_markers_voxel(voxels, self.voxel_size)
 
         retract_cfg = self.motion_gen.get_retract_config()
         state = self.motion_gen.rollout_fn.compute_kinematics(

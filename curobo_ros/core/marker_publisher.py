@@ -6,9 +6,10 @@ from geometry_msgs.msg import Point
 class MarkerPublisher(Node):
     def __init__(self):
         super().__init__('marker_publisher')
-        self.marker_pub = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
+        self.marker_traj_pub = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
+        self.marker_voxel_pub = self.create_publisher(MarkerArray, 'visualization_marker_voxel', 10)
     
-    def publish_markers(self, poses):
+    def publish_markers_trajectory(self, poses):
         marker_array = MarkerArray()
         
         for i, pose in enumerate(poses):
@@ -70,7 +71,36 @@ class MarkerPublisher(Node):
                 marker_array.markers.append(text_marker)
 
         self.get_logger().info(f'Publishing marker array with {len(marker_array.markers)} markers')
-        self.marker_pub.publish(marker_array)
+        self.marker_traj_pub.publish(marker_array)
+    
+    def publish_markers_voxel(self, poses, voxel_size):
+        marker_array = MarkerArray()
+        for i, pose in enumerate(poses):
+                voxel_marker = Marker()
+                voxel_marker.header.frame_id = "base_0"
+                voxel_marker.header.stamp = self.get_clock().now().to_msg()
+                voxel_marker.ns = "voxel"
+                voxel_marker.id = i
+                voxel_marker.type = Marker.CUBE
+                voxel_marker.action = Marker.ADD
+                voxel_marker.scale.x = voxel_size
+                voxel_marker.scale.y = voxel_size
+                voxel_marker.scale.z = voxel_size
+                voxel_marker.color.a = 1.0  # Transparence
+                voxel_marker.color.r = 1.0  # Couleur rouge
+                voxel_marker.color.g = 0.0  # Couleur verte
+                voxel_marker.color.b = 0.0  # Couleur bleue
+                voxel_marker.pose.position.x = pose[0]
+                voxel_marker.pose.position.y = pose[1]
+                voxel_marker.pose.position.z = pose[2]
+                voxel_marker.pose.orientation.x = pose[3]
+                voxel_marker.pose.orientation.y = pose[4]
+                voxel_marker.pose.orientation.z = pose[5]
+                voxel_marker.pose.orientation.w = pose[6]
+                
+
+                marker_array.markers.append(text_marker)
+        self.marker_voxel_pub.publish(marker_array)
 
 def main(args=None):
     rclpy.init(args=args)
