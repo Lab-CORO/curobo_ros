@@ -24,7 +24,7 @@ bash build_docker.sh x86
 ### Étape 2 : Démarrer le conteneur Docker
 Pour démarrer le conteneur Docker avec la configuration x86, exécutez la commande suivante :
 ```bash
-bash start_docker.sh x86
+bash start_docker_x86.sh.sh x86
 ```
 
 
