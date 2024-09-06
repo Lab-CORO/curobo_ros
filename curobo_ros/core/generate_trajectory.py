@@ -216,13 +216,13 @@ class CuRoboTrajectoryMaker(Node):
         torch.cuda.synchronize()
         self.world_model.update_blox_hashes()
 
-        bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[0, 0, 0, 1, 0, 0, 0])
-        voxel_size =  self.voxel_size
+        bounding = Cuboid("t", dims=[10, 10, 10.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        
 
-        voxels = self.world_model.get_voxels_in_bounding_box(bounding, voxel_size)
+        voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
 
         if voxels.shape[0] > 0:
-            voxels = voxels[voxels[:, 2] > voxel_size]
+            voxels = voxels[voxels[:, 2] > self.voxel_size]
             voxels = voxels[voxels[:, 0] > 0.0]
 
             voxels = voxels.cpu().numpy()
