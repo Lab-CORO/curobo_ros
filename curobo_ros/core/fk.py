@@ -47,6 +47,7 @@ class FK(Node):
         self.kin_model = CudaRobotModel(robot_cfg.kinematics)
 
         self.fk_init()
+        self.get_logger().info("FK service up !")
 
     def fk_callback(self, request, response):
         # check max batch size 1000
@@ -57,19 +58,14 @@ class FK(Node):
             self.get_logger().error('No positions to compute')
             return response
         qs = []
-        print(request.joint_states)
         for joint in request.joint_states:
             qs.append(list(joint.position))
-        print(qs)
         #     create tensor
         q = torch.tensor(qs, **(self.tensor_args.as_torch_dict()))
-        print(q)
         result = self.kin_model.get_state(q)
 
         for index, (position, orientation) in enumerate(zip(result.ee_position.cpu().numpy(), result.ee_quaternion.cpu().numpy())):
             pose = Pose()
-            print(position)
-            print(orientation)
             pose.position.x = float(position[0])
             pose.position.y = float(position[1])
             pose.position.z = float(position[2])
@@ -85,7 +81,7 @@ class FK(Node):
         # init the kin model, the firt time it takes a while
         q = torch.rand((10, self.kin_model.get_dof()), **(self.tensor_args.as_torch_dict()))
         out = self.kin_model.get_state(q)
-        print(out)
+       
 
 
 
