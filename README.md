@@ -108,7 +108,7 @@ sudo systemctl start gdm
 Lors de l'utilisation de la camera, il se peut que vous rencontriez l'erreur `AttributeError: module 'cv2.dnn' has no attribute 'DictValue' `
 Pour resoudre cela, vous pouvez commenter la ligne 171 du fichier suivant :
 ```bash
-code /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+nano /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 ```
 ### Résolution du problème de symbole
 
