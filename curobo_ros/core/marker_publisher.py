@@ -72,8 +72,11 @@ class MarkerPublisher(Node):
 
         self.get_logger().info(f'Publishing marker array with {len(marker_array.markers)} markers')
         self.marker_traj_pub.publish(marker_array)
-    
+    """
+    poses: [x,y,z voxel_size]
+    """
     def publish_markers_voxel(self, poses, voxel_size):
+        print(poses)
         marker_array = MarkerArray()
         for i, pose in enumerate(poses):
                 voxel_marker = Marker()
@@ -83,23 +86,26 @@ class MarkerPublisher(Node):
                 voxel_marker.id = i
                 voxel_marker.type = Marker.CUBE
                 voxel_marker.action = Marker.ADD
-                voxel_marker.scale.x = voxel_size
-                voxel_marker.scale.y = voxel_size
-                voxel_marker.scale.z = voxel_size
+                print(type(pose))
+                print(pose)
+                voxel_marker.scale.x = float(pose[3])
+                voxel_marker.scale.y = float(pose[3])
+                voxel_marker.scale.z = float(pose[3])
                 voxel_marker.color.a = 1.0  # Transparence
                 voxel_marker.color.r = 1.0  # Couleur rouge
                 voxel_marker.color.g = 0.0  # Couleur verte
                 voxel_marker.color.b = 0.0  # Couleur bleue
-                voxel_marker.pose.position.x = pose[0]
-                voxel_marker.pose.position.y = pose[1]
-                voxel_marker.pose.position.z = pose[2]
-                voxel_marker.pose.orientation.x = pose[3]
-                voxel_marker.pose.orientation.y = pose[4]
-                voxel_marker.pose.orientation.z = pose[5]
-                voxel_marker.pose.orientation.w = pose[6]
+                
+                voxel_marker.pose.position.x = float(pose[0])
+                voxel_marker.pose.position.y = float(pose[1])
+                voxel_marker.pose.position.z = float(pose[2])
+                voxel_marker.pose.orientation.x = 0.0
+                voxel_marker.pose.orientation.y = 0.0
+                voxel_marker.pose.orientation.z = 0.0
+                voxel_marker.pose.orientation.w = 1.0
                 
 
-                marker_array.markers.append(text_marker)
+                marker_array.markers.append(voxel_marker)
         self.marker_voxel_pub.publish(marker_array)
 
 def main(args=None):
