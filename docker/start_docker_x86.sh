@@ -18,7 +18,7 @@ docker run --name x86docker --rm -it \
     --privileged \
     -e NVIDIA_DISABLE_REQUIRE=1 \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
-    --device=/dev/bus/usb/008/002:/dev/bus/usb/008/002 \
+    --device=/dev/:/dev/ \
     --hostname ros1-docker \
     --add-host ros1-docker:127.0.0.1 \
     --gpus all \
