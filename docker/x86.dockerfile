@@ -221,3 +221,15 @@ RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
     . install/local_setup.bash
 
 WORKDIR /home/ros2_ws
+
+# Fix missing "ucm_set_global_opts"
+RUN sudo apt-get update && sudo apt-get install --reinstall -y \
+    hwloc-nox \
+    libmpich-dev \
+    libmpich12 \
+    mpich \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
+
+RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
