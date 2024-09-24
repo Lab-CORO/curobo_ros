@@ -76,7 +76,7 @@ class MarkerPublisher(Node):
     poses: [x,y,z voxel_size]
     """
     def publish_markers_voxel(self, poses, voxel_size):
-        print(poses)
+        
         marker_array = MarkerArray()
         for i, pose in enumerate(poses):
                 voxel_marker = Marker()
@@ -86,8 +86,8 @@ class MarkerPublisher(Node):
                 voxel_marker.id = i
                 voxel_marker.type = Marker.CUBE
                 voxel_marker.action = Marker.ADD
-                print(type(pose))
-                print(pose)
+                # print(type(pose))
+                # print(pose)
                 voxel_marker.scale.x = float(pose[3])
                 voxel_marker.scale.y = float(pose[3])
                 voxel_marker.scale.z = float(pose[3])

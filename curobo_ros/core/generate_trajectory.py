@@ -46,7 +46,7 @@ class CuRoboTrajectoryMaker(Node):
         self.depth_image = None
         self.marker_data = None
         self.depth = 0
-        self.voxel_size = 0.05
+        self.voxel_size = 0.02
         self.marker_publisher = MarkerPublisher()
         #checker
         self.camera_info_received = False
@@ -76,11 +76,11 @@ class CuRoboTrajectoryMaker(Node):
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
         self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
 
-        # world_cfg_table = WorldConfig.from_dict(load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
+        world_cfg_table = WorldConfig.from_dict(load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
-        # world_cfg_table.cuboid[0].pose[2] -= 0.01
-        # self.world_cfg.add_obstacle(world_cfg_table.cuboid[0])
-        # self.world_cfg.add_obstacle(world_cfg_table.cuboid[1])
+        world_cfg_table.cuboid[0].pose[2] -= 0.01
+        self.world_cfg.add_obstacle(world_cfg_table.cuboid[0])
+        self.world_cfg.add_obstacle(world_cfg_table.cuboid[1])
 
         # robot_file = "franka.yml"
         motion_gen_config = MotionGenConfig.load_from_robot_config(
@@ -102,6 +102,7 @@ class CuRoboTrajectoryMaker(Node):
             finetune_trajopt_iters=300,
             minimize_jerk=True,
         )
+        self.tensor_args = TensorDeviceType()
 
         self.motion_gen = MotionGen(motion_gen_config)
 
@@ -117,7 +118,7 @@ class CuRoboTrajectoryMaker(Node):
 
 
     def callback_marker(self, msg):
-        self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
+        # self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
         self.marker_data = msg
         self.marker_received = True  # Met le booléen à True lorsque le message est reçu
 
@@ -157,7 +158,7 @@ class CuRoboTrajectoryMaker(Node):
     def callback(self, future):
         try:
             response = future.result()
-            self.get_logger().info(f'Result received with {len(response.poses)} poses')
+            # self.get_logger().info(f'Result received with {len(response.poses)} poses')
 
             assert len(response.poses) > 0   # make sure we have an answer from the service
             self.marker_publisher.publish_markers_trajectory(response.poses)  # publish the markers to visualize them
@@ -170,20 +171,20 @@ class CuRoboTrajectoryMaker(Node):
             # self.intrinsics = np.reshape(msg.k, (3, 3))
             # self.get_logger().info(f"Camera intrinsics are: \n{self.intrinsics}")
             self.intrinsics = torch.tensor(msg.k).view(3, 3).float()
-            print(self.intrinsics)
+            # print(self.intrinsics)
             self.camera_info_received = True
 
 
     def callback_depth(self, msg):
         try:
             depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
-            self.get_logger().info(f"Depth image casted in CV2 format looks like: {depth_img.shape}")
+            # self.get_logger().info(f"Depth image casted in CV2 format looks like: {depth_img.shape}")
              # 0.8m = 255 and 0 = 0m
             depth_img_float = (depth_img.astype(np.float32))
-            print("depth image")
-            print(depth_img_float)
+            # print("depth image")
+            # print(depth_img_float)
             self.depth_image = torch.from_numpy(depth_img_float).float()
-            self.get_logger().info(f"Depth image converted to tensor: {self.depth_image.shape}")
+            # self.get_logger().info(f"Depth image converted to tensor: {self.depth_image.shape}")
             self.depth_image_received = True
             # self.check_and_generate_trajectory()
         except CvBridgeError as e:
@@ -199,13 +200,13 @@ class CuRoboTrajectoryMaker(Node):
         # -0.4999998, 0.4996018, 0.4999998, 0.5003982
         camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
-        self.get_logger().warning(f'depth image is {self.depth_image}')
+        # self.get_logger().warning(f'depth image is {self.depth_image}')
 
         data_camera = CameraObservation(depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=camera_pose)
 
 
-        self.get_logger().warning(f" Intrinsics are : {data_camera.intrinsics}")
-        self.get_logger().warning(f" Depth image is : {data_camera.depth_image}")
+        # self.get_logger().warning(f" Intrinsics are : {data_camera.intrinsics}")
+        # self.get_logger().warning(f" Depth image is : {data_camera.depth_image}")
 
         data_camera = data_camera.to(device=self.tensor_args.device)
         self.world_model.add_camera_frame(data_camera, "world")
@@ -220,11 +221,11 @@ class CuRoboTrajectoryMaker(Node):
         torch.cuda.synchronize()
         self.world_model.update_blox_hashes()
 
-        bounding = Cuboid("t", dims=[10, 10, 10.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[1, 0, 0.5, 1, 0, 0, 0])
         
 
         voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
-        print(voxels)
+        # print(voxels)
         if voxels.shape[0] > 0:
             # voxels = voxels[voxels[:, 2] > self.voxel_size]
             # voxels = voxels[voxels[:, 0] > 0.0]
@@ -252,7 +253,7 @@ class CuRoboTrajectoryMaker(Node):
             pose_msg.pose.orientation.z, pose_msg.pose.orientation.w
         ])
 
-        self.get_logger().warn(f"Goal pose is {goal_pose}")
+        # self.get_logger().warn(f"Goal pose is {goal_pose}")
 
         start_state.position[0, 0] += 0.25
         try:
@@ -273,7 +274,7 @@ class CuRoboTrajectoryMaker(Node):
 
             position = traj.position.cpu().tolist()
 
-            self.get_logger().warning(f'Positions are {position}')
+            # self.get_logger().warning(f'Positions are {position}')
         except:
             position = []
         return position
