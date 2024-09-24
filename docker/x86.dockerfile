@@ -3,6 +3,7 @@ FROM nvcr.io/nvidia/pytorch:23.08-py3 AS torch_cuda_base
 LABEL maintainer "Lucas Carpentier, Guillaume Dupoiron"
 
 RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections
+RUN echo "coucou"
 ARG ROS_DISTRO=humble
 
 # add GL:
@@ -126,14 +127,10 @@ RUN cd /pkgs && git clone https://github.com/Lab-CORO/nvblox_torch.git && \
 # Cloner le dépôt OpenCV et les modules supplémentaires
 WORKDIR /pkgs
 
-RUN git clone https://github.com/Lab-CORO/curobo_doosan.git 
+# RUN git clone https://github.com/Lab-CORO/curobo_doosan.git 
 
 RUN git clone https://github.com/opencv/opencv.git /pkgs/opencv
 
-WORKDIR /home/ros2_ws/src
-
-RUN git clone https://github.com/Lab-CORO/CapacitiNet_msg.git src/CapacitiNet_msg && git clone https://github.com/Lab-CORO/curobo_ros.git && \
-    git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
 
 WORKDIR /pkgs/opencv
 RUN mkdir -p build
@@ -156,7 +153,7 @@ RUN echo "alias code='code --user-data-dir=./vscode --no-sandbox'" >> /root/.bas
 RUN wget 'http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb' -O /tmp/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb && \
     dpkg -i /tmp/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb
     
-COPY script_python/. /pkgs/curobo/examples/isaac_sim
+# COPY script_python/. /pkgs/curobo/examples/isaac_sim
 
 RUN sudo mkdir -p /etc/apt/keyrings && curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
 
@@ -213,7 +210,15 @@ RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ros_packages/. /home/ros2_ws/src
+    # Modify following the user
+RUN git config --global user.email "guillaume.dupoiron@gmail.com"
+RUN git config --global user.name "will-44"
+
+WORKDIR /home/ros2_ws/src
+ARG CACHE_BUST
+RUN git clone https://github.com/Lab-CORO/CapacitiNet_msg.git && git clone --recurse-submodules https://github.com/Lab-CORO/curobo_ros.git && \
+    git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
+
 
 # Construire les packages un par un pour résoudre les dépendances
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select capacinet_msg"
