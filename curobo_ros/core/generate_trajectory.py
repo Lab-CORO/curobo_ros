@@ -122,7 +122,7 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_received = True  # Met le booléen à True lorsque le message est reçu
 
         #### CAMERA INFO ####
-        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/color/camera_info')
+        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/depth/camera_info')
         if self.success:
             self.callback_camera_info(camera_info_sub)
         #### DEPTH MAP ####
@@ -179,7 +179,7 @@ class CuRoboTrajectoryMaker(Node):
             depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
             self.get_logger().info(f"Depth image casted in CV2 format looks like: {depth_img.shape}")
              # 0.8m = 255 and 0 = 0m
-            depth_img_float = (depth_img.astype(np.float32)*0.8)/255
+            depth_img_float = (depth_img.astype(np.float32))
             print("depth image")
             print(depth_img_float)
             self.depth_image = torch.from_numpy(depth_img_float).float()
@@ -197,11 +197,11 @@ class CuRoboTrajectoryMaker(Node):
         ##################################################################################
         ##################################################################################
         # -0.4999998, 0.4996018, 0.4999998, 0.5003982
-        camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, 0.5, 0.5, 0.5])
+        camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
         self.get_logger().warning(f'depth image is {self.depth_image}')
 
-        data_camera = CameraObservation(depth_image=self.depth_image, intrinsics=self.intrinsics, pose=camera_pose)
+        data_camera = CameraObservation(depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=camera_pose)
 
 
         self.get_logger().warning(f" Intrinsics are : {data_camera.intrinsics}")
