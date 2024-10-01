@@ -37,7 +37,7 @@ from ament_index_python.packages import get_package_share_directory
 
 class CuRoboTrajectoryMaker(Node):
     def __init__(self):
-        super().__init__('curobo_test')
+        super().__init__('curobo_gen_traj')
         self.default_config = None
         self.j_names = None
         self.robot_cfg = None
@@ -49,12 +49,12 @@ class CuRoboTrajectoryMaker(Node):
         self.voxel_size = 0.02
         self.marker_publisher = MarkerPublisher()
         #checker
-        self.camera_info_received = False
         self.depth_image_received = False
         self.marker_received = False
 
         self.bridge = CvBridge()
 
+ 
 
         self.world_cfg = WorldConfig.from_dict(
 
@@ -116,16 +116,23 @@ class CuRoboTrajectoryMaker(Node):
 
         self.marker_sub = self.create_subscription(PoseStamped, 'marker_pose', self.callback_marker, 1)
 
+        #### CAMERA INFO ####
+        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/depth/camera_info')
+        if self.success:
+            self.intrinsics = torch.tensor(camera_info_sub.k).view(3, 3).float()
+        else:
+            self.get_logger().error("Warning: camera info recieved !!")
+        
+        self.camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
+            
+
 
     def callback_marker(self, msg):
         # self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
         self.marker_data = msg
         self.marker_received = True  # Met le booléen à True lorsque le message est reçu
 
-        #### CAMERA INFO ####
-        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/depth/camera_info')
-        if self.success:
-            self.callback_camera_info(camera_info_sub)
+
         #### DEPTH MAP ####
         self.success1, camera_depth_sub = wait_for_message(Image, self, '/camera/camera/depth/image_rect_raw')
         if self.success1:
@@ -142,7 +149,7 @@ class CuRoboTrajectoryMaker(Node):
         self.req = Fk.Request()
         self.req.joint_states = []
 
-        if self.camera_info_received == True and self.depth_image_received == True:
+        if self.depth_image_received == True:
             self.get_logger().info('Camera info and depth image received, generating trajectory...')
             positions = self.trajectory_generator()
 
@@ -166,13 +173,7 @@ class CuRoboTrajectoryMaker(Node):
             self.get_logger().error(f'Service call failed: {e}')
 
 
-    def callback_camera_info(self, msg):
-        if not self.camera_info_received:
-            # self.intrinsics = np.reshape(msg.k, (3, 3))
-            # self.get_logger().info(f"Camera intrinsics are: \n{self.intrinsics}")
-            self.intrinsics = torch.tensor(msg.k).view(3, 3).float()
-            # print(self.intrinsics)
-            self.camera_info_received = True
+ 
 
 
     def callback_depth(self, msg):
@@ -190,91 +191,67 @@ class CuRoboTrajectoryMaker(Node):
         except CvBridgeError as e:
             self.get_logger().error(f"An error has occurred: {e}")
 
-
-    def trajectory_generator(self):
-
-        ##################################################################################
-        ##################################################################################
-        ##################################################################################
-        ##################################################################################
-        # -0.4999998, 0.4996018, 0.4999998, 0.5003982
-        camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
-
-        # self.get_logger().warning(f'depth image is {self.depth_image}')
-
-        data_camera = CameraObservation(depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=camera_pose)
-
-
-        # self.get_logger().warning(f" Intrinsics are : {data_camera.intrinsics}")
-        # self.get_logger().warning(f" Depth image is : {data_camera.depth_image}")
-
+    def update_camera(self):
+        data_camera = CameraObservation(depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=self.camera_pose)
         data_camera = data_camera.to(device=self.tensor_args.device)
         self.world_model.add_camera_frame(data_camera, "world")
         self.world_model.process_camera_frames("world", False)
-        ## a faire des qu un message est pub sur le topic du goal pose
-
-        ##################################################################################
-        ##################################################################################
-        ##################################################################################
-        ##################################################################################
-
         torch.cuda.synchronize()
         self.world_model.update_blox_hashes()
 
-        bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[1, 0, 0.5, 1, 0, 0, 0])
-        
-
-        voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
-        # print(voxels)
-        if voxels.shape[0] > 0:
-            # voxels = voxels[voxels[:, 2] > self.voxel_size]
-            # voxels = voxels[voxels[:, 0] > 0.0]
-
-            voxels = voxels.cpu().numpy()
-        
-        # Debug voxel map
-        #ici on prend la liste des voxels et on creer des cubes de la dimension de voxel size
-        self.marker_publisher.publish_markers_voxel(voxels, self.voxel_size)
-
+    def get_actual_pose(self):
+        #### get actual pose
         retract_cfg = self.motion_gen.get_retract_config()
         state = self.motion_gen.rollout_fn.compute_kinematics(
             JointState.from_position(retract_cfg.view(1, -1))
         )
-
         retract_pose = Pose(state.ee_pos_seq.squeeze(), quaternion=state.ee_quat_seq.squeeze())
-        start_state = JointState.from_position(retract_cfg.view(1, -1))
-
+        self.start_state = JointState.from_position(retract_cfg.view(1, -1))
         self.get_logger().warn(f"Waiting for a pose to be published")
-        pose_msg = self.marker_data
 
-        goal_pose = Pose.from_list([
+    def update_goal_pose(self):
+        pose_msg = self.marker_data
+        self.goal_pose = Pose.from_list([
             pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z,
             pose_msg.pose.orientation.x, pose_msg.pose.orientation.y,
             pose_msg.pose.orientation.z, pose_msg.pose.orientation.w
         ])
 
-        # self.get_logger().warn(f"Goal pose is {goal_pose}")
 
-        start_state.position[0, 0] += 0.25
+    def trajectory_generator(self):
+
+        self.update_camera()
+
+        #### Voxel debug
+        bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[1, 0, 0.5, 1, 0, 0, 0])
+        voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
+        # print(voxels)
+        if voxels.shape[0] > 0:
+            voxels = voxels.cpu().numpy()
+        self.marker_publisher.publish_markers_voxel(voxels, self.voxel_size)
+        
+        #end debug
+        self.get_actual_pose()
+        
+
+        #### get goal pose and genereate traj
+        self.update_goal_pose()
+        # self.start_state.position[0, 0] += 0.25  ## why ??
         try:
             result = self.motion_gen.plan_single(
-                start_state,
-                goal_pose,
+                self.start_state,
+                self.goal_pose,
                 MotionGenPlanConfig(
                     max_attempts=1,
                     timeout=5,
                     time_dilation_factor=0.5,
                 ),
             )
-
             new_result = result.clone()
             new_result.retime_trajectory(0.5, create_interpolation_buffer=True)
-
             traj = result.get_interpolated_plan()
-
             position = traj.position.cpu().tolist()
-
-            # self.get_logger().warning(f'Positions are {position}')
+            self.get_logger().warning(f'Positions are {position}')
         except:
             position = []
         return position
