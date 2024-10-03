@@ -43,6 +43,7 @@ class CuRoboTrajectoryMaker(Node):
         self.camera_info_received = False
         self.depth_image_received = False
         self.marker_received = False
+        self.camera_available = True
 
         self.bridge = CvBridge()
 
@@ -112,18 +113,19 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_data = msg
         self.marker_received = True  # Met le booléen à True lorsque le message est reçu
 
-        #### CAMERA INFO ####
-        self.success, camera_info_sub = wait_for_message(
-            CameraInfo, self, '/camera/camera/depth/camera_info')
-        if self.success:
-            self.callback_camera_info(camera_info_sub)
-        #### DEPTH MAP ####
-        self.success1, camera_depth_sub = wait_for_message(
-            Image, self, '/camera/camera/depth/image_rect_raw')
-        if self.success1:
-            self.callback_depth(camera_depth_sub)
-        else:
-            self.get_logger().error("Warning: No depth map received !!")
+        if self.camera_available:
+            #### CAMERA INFO ####
+            self.success, camera_info_sub = wait_for_message(
+                CameraInfo, self, '/camera/camera/depth/camera_info')
+            if self.success:
+                self.callback_camera_info(camera_info_sub)
+            #### DEPTH MAP ####
+            self.success1, camera_depth_sub = wait_for_message(
+                Image, self, '/camera/camera/depth/image_rect_raw')
+            if self.success1:
+                self.callback_depth(camera_depth_sub)
+            else:
+                self.get_logger().error("Warning: No depth map received !!")
 
         # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
@@ -134,7 +136,7 @@ class CuRoboTrajectoryMaker(Node):
         self.req = Fk.Request()
         self.req.joint_states = []
 
-        if self.camera_info_received == True and self.depth_image_received == True:
+        if (self.camera_info_received == True and self.depth_image_received == True) or not self.camera_available:
             self.get_logger().info('Camera info and depth image received, generating trajectory...')
             positions = self.trajectory_generator()
 
@@ -192,22 +194,23 @@ class CuRoboTrajectoryMaker(Node):
         ##################################################################################
         ##################################################################################
         # -0.4999998, 0.4996018, 0.4999998, 0.5003982
-        camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
+        if self.camera_available:
+            camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
-        self.get_logger().warning(f'depth image is {self.depth_image}')
+            self.get_logger().warning(f'depth image is {self.depth_image}')
 
-        data_camera = CameraObservation(
-            depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=camera_pose)
+            data_camera = CameraObservation(
+                depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=camera_pose)
 
-        self.get_logger().warning(
-            f" Intrinsics are : {data_camera.intrinsics}")
-        self.get_logger().warning(
-            f" Depth image is : {data_camera.depth_image}")
+            self.get_logger().warning(
+                f" Intrinsics are : {data_camera.intrinsics}")
+            self.get_logger().warning(
+                f" Depth image is : {data_camera.depth_image}")
 
-        data_camera = data_camera.to(device=self.tensor_args.device)
-        self.world_model.add_camera_frame(data_camera, "world")
-        self.world_model.process_camera_frames("world", False)
-        # a faire des qu un message est pub sur le topic du goal pose
+            data_camera = data_camera.to(device=self.tensor_args.device)
+            self.world_model.add_camera_frame(data_camera, "world")
+            self.world_model.process_camera_frames("world", False)
+            # a faire des qu un message est pub sur le topic du goal pose
 
         ##################################################################################
         ##################################################################################
