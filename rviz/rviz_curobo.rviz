@@ -28,6 +28,9 @@ Panels:
     Name: Time
     SyncMode: 0
     SyncSource: DepthCloud
+  - Class: trajectory_preview/TrajectoryPreviewPanel
+    Name: Trajectory Preview
+    Value: true
 Visualization Manager:
   Class: ""
   Displays:
@@ -90,18 +93,15 @@ Visualization Manager:
           base_0:
             camera_link:
               camera_color_frame:
-                camera_color_optical_frame:
-                  {}
+                camera_color_optical_frame: {}
               camera_depth_frame:
-                camera_depth_optical_frame:
-                  {}
+                camera_depth_optical_frame: {}
             link1:
               link2:
                 link3:
                   link4:
                     link5:
-                      link6:
-                        {}
+                      link6: {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -181,8 +181,7 @@ Visualization Manager:
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
-      Namespaces:
-        {}
+      Namespaces: {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -232,8 +231,7 @@ Visualization Manager:
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
-      Namespaces:
-        {}
+      Namespaces: {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
