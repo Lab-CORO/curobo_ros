@@ -3,6 +3,9 @@ from launch.actions import LogInfo
 from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import Command, PathJoinSubstitution
+from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
+from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -11,6 +14,14 @@ def generate_launch_description():
     # Déclaration du répertoire de lancement de curobo_ros
     curobo_ros_launch_dir = os.path.join(
         get_package_share_directory('curobo_ros'), 'launch')
+
+    trajectory_preview_launch_dir = os.path.join(
+        get_package_share_directory('trajectory_preview'), 'launch')
+
+    urdf_file_name = 'm1013.urdf'
+
+    urdf = Command(['cat ', PathJoinSubstitution(
+        [FindPackageShare('curobo_ros'), 'curobo_doosan/src/m1013/', urdf_file_name])])
 
     return LaunchDescription([
         # Define the static transform publisher node
@@ -61,6 +72,18 @@ def generate_launch_description():
             executable='curobo_int_mark',
             name='curobo_int_mark',
             output='screen'
+        ),
+
+        # Include the trajectory_preview launch file
+        IncludeLaunchDescription(
+            XMLLaunchDescriptionSource(
+                os.path.join(trajectory_preview_launch_dir,
+                             'robot_model_preview_pipeline.launch.xml')
+            ),
+            launch_arguments={
+                'robot_description': urdf,
+                'root_frame': 'base_0',
+            }.items(),
         ),
 
         # Log an informational message

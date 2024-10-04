@@ -216,6 +216,12 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
     rosdep update # "sudo rosdep update --include-eol-distros" && \
     rosdep install -i --from-path src --rosdistro "$ROS_DISTRO" --skip-keys=librealsense2 -y
 
+# Setup for trajectory_preview
+RUN git clone https://github.com/swri-robotics/trajectory_preview.git
+WORKDIR /home/ros2_ws
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    colcon build"
+
 RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
     cd /home/ros2_ws && \
     . install/local_setup.bash
@@ -223,7 +229,7 @@ RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
 WORKDIR /home/ros2_ws
 
 # Fix missing "ucm_set_global_opts"
-RUN sudo apt-get update && sudo apt-get install --reinstall -y \
+RUN apt-get update && apt-get install --reinstall -y \
     hwloc-nox \
     libmpich-dev \
     libmpich12 \
