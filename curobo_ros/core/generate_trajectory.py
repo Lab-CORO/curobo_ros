@@ -160,22 +160,11 @@ class CuRoboTrajectoryMaker(Node):
             self.marker_data.pose.orientation.z, self.marker_data.pose.orientation.w
         ])
 
-        #### DEPTH MAP ####
-        # self.success1, camera_depth_sub = wait_for_message(Image, self, '/camera/camera/depth/image_rect_raw')
-        # if self.success1:
-        #     self.callback_depth(camera_depth_sub)
-        # else:
-        #     self.get_logger().error("Warning: No depth map received !!")
-
-        
-
 
 
     def callback(self, future):
         try:
             response = future.result()
-            # self.get_logger().info(f'Result received with {len(response.poses)} poses')
-
             assert len(response.poses) > 0   # make sure we have an answer from the service
             self.marker_publisher.publish_markers_trajectory(response.poses)  # publish the markers to visualize them
         except Exception as e:
@@ -183,6 +172,7 @@ class CuRoboTrajectoryMaker(Node):
 
 
     def update_camera(self):
+        self.world_model.decay_layer("world")
         data_camera = CameraObservation(depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=self.camera_pose)
         data_camera = data_camera.to(device=self.tensor_args.device)
         self.world_model.add_camera_frame(data_camera, "world")
