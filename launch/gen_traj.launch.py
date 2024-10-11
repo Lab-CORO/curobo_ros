@@ -23,6 +23,9 @@ def generate_launch_description():
     urdf = Command(['cat ', PathJoinSubstitution(
         [FindPackageShare('curobo_ros'), 'curobo_doosan/src/m1013/', urdf_file_name])])
 
+    trajectory_controller_config = os.path.join(
+        get_package_share_directory('curobo_ros'), 'config', 'joint_trajectory_params.yaml')
+
     return LaunchDescription([
         # Define the static transform publisher node
         Node(
@@ -85,6 +88,39 @@ def generate_launch_description():
                 'root_frame': 'base_0',
             }.items(),
         ),
+
+        Node(
+            package='controller_manager',
+            executable='ros2_control_node',
+            output='screen',
+            parameters=[trajectory_controller_config],
+            remappings=[
+                ("/controller_manager/robot_description", "/robot_description")],
+        ),
+
+        Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "joint_trajectory_controller",
+                "--controller-manager", "/controller_manager",
+                "--controller-manager-timeout", "100"
+            ],
+            remappings=[
+                ("/joint_trajectory_controller/robot_description", "/robot_description")
+            ],
+        ),
+
+        Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "joint_state_broadcaster",
+                "--controller-manager", "/controller_manager",
+                "--controller-manager-timeout", "100"
+            ]
+        ),
+
 
         # Log an informational message
         LogInfo(

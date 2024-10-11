@@ -199,6 +199,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-desktop \
     ros-humble-pcl-ros \
     ros-humble-rviz2 \
+    ros-humble-ros2-control \
+    ros-humble-joint-trajectory-controller \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/ros2_ws/src
