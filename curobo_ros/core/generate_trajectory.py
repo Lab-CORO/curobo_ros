@@ -8,6 +8,7 @@ from cv_bridge import CvBridge, CvBridgeError
 import rclpy
 from rclpy.node import Node
 from .wait_for_message import wait_for_message
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState as SensorJointState
 from sensor_msgs.msg import Image, CameraInfo
@@ -41,7 +42,7 @@ class CuRoboTrajectoryMaker(Node):
         self.voxel_size = 0.05
         self.marker_publisher = MarkerPublisher()
         self.trajectory_publisher = self.create_publisher(
-            JointTrajectory, 'joint_trajectory', 10)
+            JointTrajectory, 'trajectory', 10)
         # checker
         self.camera_info_received = False
         self.depth_image_received = False
@@ -190,13 +191,13 @@ class CuRoboTrajectoryMaker(Node):
         except CvBridgeError as e:
             self.get_logger().error(f"An error has occurred: {e}")
 
-    def callback_joint_trajectory(self, traj: JointState):
+    def callback_joint_trajectory(self, traj: JointState, time_step: float):
         """
         Convert CuRobo JointState to ROS2 JointTrajectory message with multiple points.
 
         Args:
             joint_state (JointState): CuRobo JointState object that may contain multiple time steps.
-            time_step_sec (float): Time between each trajectory point in seconds.
+            time_step (float): Time between each trajectory point in seconds.
 
         Returns:
             JointTrajectory: A ROS2 JointTrajectory message.
@@ -223,9 +224,9 @@ class CuRoboTrajectoryMaker(Node):
             # Set efforts to an empty list (can be customized later)
             joint_trajectory_point.effort = []
 
-            # # Set the time_from_start for this point (incremented by time_step_sec for each point)
-            # joint_trajectory_point.time_from_start = Duration(sec=int(time_step_sec * i),
-            #                                                   nanosec=int((time_step_sec * i % 1) * 1e9))
+            # Set the time_from_start for this point (incremented by time_step for each point)
+            joint_trajectory_point.time_from_start = Duration(sec=int(time_step * i),
+                                                              nanosec=int((time_step * i % 1) * 1e9))
 
             # Add the point to the trajectory message
             joint_trajectory_msg.points.append(joint_trajectory_point)
@@ -317,7 +318,7 @@ class CuRoboTrajectoryMaker(Node):
 
             traj = result.get_interpolated_plan()
 
-            self.callback_joint_trajectory(traj)
+            self.callback_joint_trajectory(traj, result.interpolation_dt)
 
             position = traj.position.cpu().tolist()
 
