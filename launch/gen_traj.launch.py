@@ -15,9 +15,6 @@ def generate_launch_description():
     curobo_ros_launch_dir = os.path.join(
         get_package_share_directory('curobo_ros'), 'launch')
 
-    trajectory_preview_launch_dir = os.path.join(
-        get_package_share_directory('trajectory_preview'), 'launch')
-
     urdf_file_name = 'm1013.urdf'
 
     urdf = Command(['cat ', PathJoinSubstitution(
@@ -77,7 +74,7 @@ def generate_launch_description():
         # Include the trajectory_preview launch file
         IncludeLaunchDescription(
             XMLLaunchDescriptionSource(
-                os.path.join(trajectory_preview_launch_dir,
+                os.path.join(curobo_ros_launch_dir,
                              'robot_model_preview_pipeline.launch.xml')
             ),
             launch_arguments={
