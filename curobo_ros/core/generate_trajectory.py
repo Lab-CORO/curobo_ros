@@ -31,6 +31,14 @@ from ament_index_python.packages import get_package_share_directory
 class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         super().__init__('curobo_gen_traj')
+
+        self.declare_parameter('max_attempts', 1)
+        self.declare_parameter('timeout', 5.0)
+        self.declare_parameter('time_dilation_factor', 0.5)
+
+        initial_voxel_size = 0.02
+        self.declare_parameter('voxel_size', initial_voxel_size)
+
         self.default_config = None
         self.j_names = None
         self.robot_cfg = None
@@ -39,10 +47,11 @@ class CuRoboTrajectoryMaker(Node):
         self.depth_image = None
         self.marker_data = None
         self.depth = 0
-        self.voxel_size = 0.02
+
         self.marker_publisher = MarkerPublisher()
         self.trajectory_publisher = self.create_publisher(
             JointTrajectory, 'trajectory', 10)
+
         # checker
         self.depth_image_received = False
         self.marker_received = False
@@ -57,7 +66,7 @@ class CuRoboTrajectoryMaker(Node):
                     "world": {
                         "pose": [0, 0, 0, 1, 0, 0, 0],
                         "integrator_type": "occupancy",
-                        "voxel_size":  self.voxel_size,
+                        "voxel_size":  initial_voxel_size,
                     },
                 },
             }
@@ -230,12 +239,16 @@ class CuRoboTrajectoryMaker(Node):
     def debug_voxel(self):
         # Voxel debug
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[1, 0, 0.5, 1, 0, 0, 0])
+
+        voxel_size = self.get_parameter(
+            'voxel_size').get_parameter_value().double_value
+
         voxels = self.world_model.get_voxels_in_bounding_box(
-            bounding, self.voxel_size)
+            bounding, voxel_size)
         # print(len(voxels))
         if voxels.shape[0] > 0:
             voxels = voxels.cpu().numpy()
-        self.marker_publisher.publish_markers_voxel(voxels, self.voxel_size)
+        self.marker_publisher.publish_markers_voxel(voxels, voxel_size)
 
     def trajectory_generator(self):
         if not self.marker_received:
@@ -252,17 +265,25 @@ class CuRoboTrajectoryMaker(Node):
 
         # get goal pose and generate traj
         try:
+            max_attempts = self.get_parameter(
+                'max_attempts').get_parameter_value().integer_value
+            timeout = self.get_parameter(
+                'timeout').get_parameter_value().double_value
+            time_dilation_factor = self.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
+
             result = self.motion_gen.plan_single(
                 self.start_state,
                 self.goal_pose,
                 MotionGenPlanConfig(
-                    max_attempts=1,
-                    timeout=5,
-                    time_dilation_factor=0.5,
+                    max_attempts=max_attempts,
+                    timeout=timeout,
+                    time_dilation_factor=time_dilation_factor,
                 ),
             )
             new_result = result.clone()
-            new_result.retime_trajectory(0.5, create_interpolation_buffer=True)
+            new_result.retime_trajectory(
+                time_dilation_factor, create_interpolation_buffer=True)
             traj = result.get_interpolated_plan()
             self.callback_joint_trajectory(traj, result.interpolation_dt)
             positions = traj.position.cpu().tolist()
