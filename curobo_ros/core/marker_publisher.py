@@ -9,6 +9,15 @@ class MarkerPublisher(Node):
         self.marker_traj_pub = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
         self.marker_voxel_pub = self.create_publisher(MarkerArray, 'visualization_marker_voxel', 10)
     
+    def delete_marker(self, pub, ns):
+        marker_array_msg = MarkerArray()
+        marker = Marker()
+        marker.id = 0
+        marker.ns = ns
+        marker.action = Marker.DELETEALL
+        marker_array_msg.markers.append(marker)
+        pub.publish(marker_array_msg)
+
     def publish_markers_trajectory(self, poses):
         marker_array = MarkerArray()
         
@@ -76,7 +85,7 @@ class MarkerPublisher(Node):
     poses: [x,y,z voxel_size]
     """
     def publish_markers_voxel(self, poses, voxel_size):
-        print(poses)
+        self.delete_marker(self.marker_voxel_pub, "voxel")
         marker_array = MarkerArray()
         for i, pose in enumerate(poses):
                 voxel_marker = Marker()
@@ -86,8 +95,8 @@ class MarkerPublisher(Node):
                 voxel_marker.id = i
                 voxel_marker.type = Marker.CUBE
                 voxel_marker.action = Marker.ADD
-                print(type(pose))
-                print(pose)
+                # print(type(pose))
+                # print(pose)
                 voxel_marker.scale.x = float(pose[3])
                 voxel_marker.scale.y = float(pose[3])
                 voxel_marker.scale.z = float(pose[3])
