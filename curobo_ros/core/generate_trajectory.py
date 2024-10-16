@@ -208,11 +208,8 @@ class CuRoboTrajectoryMaker(Node):
         # Set joint names
         joint_trajectory_msg.joint_names = traj.joint_names
 
-        # Determine the number of points (assuming position list defines this)
-        num_points = len(traj.position)
-
-        # Create a list of JointTrajectoryPoints
-        for i in range(num_points):
+        # Create a list of JointTrajectoryPoints for every position in the JointState
+        for i in range(len(traj.position)):
             joint_trajectory_point = JointTrajectoryPoint()
 
             # Extract the i-th positions, velocities, and accelerations
