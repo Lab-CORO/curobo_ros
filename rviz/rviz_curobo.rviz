@@ -321,7 +321,7 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: RobotModel
+      Name: PreviewRobotModel
       TF Prefix: /preview
       Update Interval: 0
       Value: true
