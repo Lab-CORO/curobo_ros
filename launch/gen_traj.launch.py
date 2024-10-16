@@ -79,7 +79,7 @@ def generate_launch_description():
             ),
             launch_arguments={
                 'robot_description': urdf,
-                'root_frame': 'base_0',
+                'root_frame': 'world',
             }.items(),
         ),
 
