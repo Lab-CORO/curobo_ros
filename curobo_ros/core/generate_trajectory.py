@@ -36,9 +36,6 @@ class CuRoboTrajectoryMaker(Node):
         self.declare_parameter('timeout', 5.0)
         self.declare_parameter('time_dilation_factor', 0.5)
 
-        initial_voxel_size = 0.02
-        self.declare_parameter('voxel_size', initial_voxel_size)
-
         self.default_config = None
         self.j_names = None
         self.robot_cfg = None
@@ -47,6 +44,7 @@ class CuRoboTrajectoryMaker(Node):
         self.depth_image = None
         self.marker_data = None
         self.depth = 0
+        self.voxel_size = 0.02
 
         self.marker_publisher = MarkerPublisher()
         self.trajectory_publisher = self.create_publisher(
@@ -66,7 +64,7 @@ class CuRoboTrajectoryMaker(Node):
                     "world": {
                         "pose": [0, 0, 0, 1, 0, 0, 0],
                         "integrator_type": "occupancy",
-                        "voxel_size":  initial_voxel_size,
+                        "voxel_size":  self.voxel_size,
                     },
                 },
             }
@@ -240,15 +238,12 @@ class CuRoboTrajectoryMaker(Node):
         # Voxel debug
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[1, 0, 0.5, 1, 0, 0, 0])
 
-        voxel_size = self.get_parameter(
-            'voxel_size').get_parameter_value().double_value
-
         voxels = self.world_model.get_voxels_in_bounding_box(
-            bounding, voxel_size)
+            bounding, self.voxel_size)
         # print(len(voxels))
         if voxels.shape[0] > 0:
             voxels = voxels.cpu().numpy()
-        self.marker_publisher.publish_markers_voxel(voxels, voxel_size)
+        self.marker_publisher.publish_markers_voxel(voxels, self.voxel_size)
 
     def trajectory_generator(self):
         if not self.marker_received:
