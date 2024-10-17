@@ -1,0 +1,20 @@
+<?xml version="1.0."?>
+<!-- This launch file comes from the trajectory_preview repository (https://github.com/swri-robotics/trajectory_preview)
+     The "preview_joint_states_topic" arg was changed to its correct topic in order to make the pipeline function -->
+<launch>
+  <arg name="robot_description" description="Robot description string" />
+  <arg name="root_frame" description="Root frame of the nominal TF tree, at which to connect the preview TF tree" />
+  <arg name="preview_joint_states_topic" default="/trajectory/joint_states"/>
+
+  <node pkg="joint_state_publisher" exec="joint_state_publisher" namespace="preview">
+    <param name="source_list" value="[$(var preview_joint_states_topic)]"/>
+  </node>
+
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" namespace="preview">
+    <param name="robot_description" value="$(var robot_description)"/>
+    <param name="frame_prefix" value="preview/"/>
+  </node>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" args="0 0 0 0 0 0 $(var root_frame) preview/$(var root_frame)" namespace="preview"/>
+
+</launch>

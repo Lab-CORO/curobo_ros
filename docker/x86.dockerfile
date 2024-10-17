@@ -140,12 +140,6 @@ RUN python -m pip install "robometrics[evaluator] @ git+https://github.com/fishb
 
 RUN export LD_LIBRARY_PATH="/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH"
 
-ADD https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64 /tmp/code_latest_amd64.deb
-RUN sudo dpkg -i /tmp/code_latest_amd64.deb
-
-#alias for code:
-
-RUN echo "alias code='code --user-data-dir=./vscode --no-sandbox'" >> /root/.bashrc
 ADD http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb /tmp/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb
 RUN dpkg -i /tmp/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb
 
@@ -216,6 +210,12 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
     rosdep update # "sudo rosdep update --include-eol-distros" && \
     rosdep install -i --from-path src --rosdistro "$ROS_DISTRO" --skip-keys=librealsense2 -y
 
+# Setup for trajectory_preview
+RUN git clone https://github.com/swri-robotics/trajectory_preview.git
+WORKDIR /home/ros2_ws
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    colcon build"
+
 RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
     cd /home/ros2_ws && \
     . install/local_setup.bash
@@ -223,7 +223,7 @@ RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
 WORKDIR /home/ros2_ws
 
 # Fix missing "ucm_set_global_opts"
-RUN sudo apt-get update && sudo apt-get install --reinstall -y \
+RUN apt-get update && apt-get install --reinstall -y \
     hwloc-nox \
     libmpich-dev \
     libmpich12 \

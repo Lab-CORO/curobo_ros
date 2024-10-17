@@ -7,7 +7,6 @@ Panels:
         - /Global Options1
         - /Status1
         - /DepthCloud1/Auto Size1
-        - /MarkerArray2
       Splitter Ratio: 0.5
     Tree Height: 545
   - Class: rviz_common/Selection
@@ -28,6 +27,8 @@ Panels:
     Name: Time
     SyncMode: 0
     SyncSource: DepthCloud
+  - Class: trajectory_preview/TrajectoryPreviewPanel
+    Name: Trajectory Preview
 Visualization Manager:
   Class: ""
   Displays:
@@ -78,6 +79,22 @@ Visualization Manager:
           Value: true
         link6:
           Value: true
+        preview/base_0:
+          Value: true
+        preview/link1:
+          Value: true
+        preview/link2:
+          Value: true
+        preview/link3:
+          Value: true
+        preview/link4:
+          Value: true
+        preview/link5:
+          Value: true
+        preview/link6:
+          Value: true
+        preview/world:
+          Value: true
         world:
           Value: true
       Marker Scale: 1
@@ -90,18 +107,22 @@ Visualization Manager:
           base_0:
             camera_link:
               camera_color_frame:
-                camera_color_optical_frame:
-                  {}
+                camera_color_optical_frame: {}
               camera_depth_frame:
-                camera_depth_optical_frame:
-                  {}
+                camera_depth_optical_frame: {}
             link1:
               link2:
                 link3:
                   link4:
                     link5:
-                      link6:
-                        {}
+                      link6: {}
+            preview/base_0:
+              preview/link1:
+                preview/link2:
+                  preview/link3:
+                    preview/link4:
+                      preview/link5:
+                        preview/link6: {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -182,7 +203,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        trajectory: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -232,8 +253,7 @@ Visualization Manager:
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
-      Namespaces:
-        {}
+      Namespaces: {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -241,6 +261,71 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /visualization_marker_voxel
       Value: true
+    - Alpha: 0.5
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /preview/robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        base_0:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link2:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link3:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link4:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link5:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        link6:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: PreviewRobotModel
+      TF Prefix: /preview
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -319,6 +404,8 @@ Window Geometry:
   Time:
     collapsed: false
   Tool Properties:
+    collapsed: false
+  Trajectory Preview:
     collapsed: false
   Views:
     collapsed: true

@@ -68,7 +68,7 @@ ros2 run curobo_ros curobo_gen_traj
 Pour utiliser Rviz2 afin de visualiser le robot ou toute autre chose, veuillez exécuter la commande suivante :
 
 ```bash
-ros2 launch curobo_ros launch_rviz2.launch.py
+ros2 launch curobo_ros gen_traj.launch.py
 ```
 
 Ce fichier de lancement est configurable a votre souhait.
