@@ -53,7 +53,6 @@ class CuRoboTrajectoryMaker(Node):
         # checker
         self.depth_image_received = False
         self.marker_received = False
-        self.camera_available = True
 
         self.bridge = CvBridge()
 
@@ -112,31 +111,30 @@ class CuRoboTrajectoryMaker(Node):
 
         self.motion_gen.warmup()
 
-        self.get_logger().info("Ready to generate trajectories")
-
         self.world_model = self.motion_gen.world_collision
 
         self.marker_sub = self.create_subscription(
             PoseStamped, 'marker_pose', self.callback_marker, 1)
 
-        if self.camera_available:
-            #### CAMERA INFO ####
-            self.success, camera_info_sub = wait_for_message(
-                CameraInfo, self, '/camera/camera/depth/camera_info')
-            if self.success:
-                self.intrinsics = torch.tensor(
-                    camera_info_sub.k).view(3, 3).float()
-            else:
-                self.get_logger().error("Warning: camera info recieved !!")
+        #### CAMERA INFO ####
+        self.success, camera_info_sub = wait_for_message(
+            CameraInfo, self, '/camera/camera/depth/camera_info', 10)
+        if self.success:
+            self.intrinsics = torch.tensor(
+                camera_info_sub.k).view(3, 3).float()
+        else:
+            self.get_logger().error("Warning: no camera info received")
 
-            self.camera_pose = Pose.from_list(
-                [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
+        self.camera_pose = Pose.from_list(
+            [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
-            self.sub_depth = self.create_subscription(
-                Image, '/camera/camera/depth/image_rect_raw', self.callback_depth, 1)
+        self.sub_depth = self.create_subscription(
+            Image, '/camera/camera/depth/image_rect_raw', self.callback_depth, 1)
 
         # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
+
+        self.get_logger().info("Ready to generate trajectories")
 
         # create time for traj gen
         timer_period = 0.1  # seconds
