@@ -140,12 +140,6 @@ RUN python -m pip install "robometrics[evaluator] @ git+https://github.com/fishb
 
 RUN export LD_LIBRARY_PATH="/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH"
 
-ADD https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64 /tmp/code_latest_amd64.deb
-RUN sudo dpkg -i /tmp/code_latest_amd64.deb
-
-#alias for code:
-
-RUN echo "alias code='code --user-data-dir=./vscode --no-sandbox'" >> /root/.bashrc
 ADD http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb /tmp/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb
 RUN dpkg -i /tmp/libusb-1.0-0_1.0.25-1ubuntu2_amd64.deb
 
