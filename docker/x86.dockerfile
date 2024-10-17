@@ -233,3 +233,5 @@ RUN apt-get update && apt-get install --reinstall -y \
 # Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
 
 RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+
+ENTRYPOINT [ "/home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh" ]
