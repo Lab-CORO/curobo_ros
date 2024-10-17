@@ -31,8 +31,15 @@ bash build_docker.sh x86
 Pour démarrer le conteneur Docker avec la configuration x86, exécutez la commande suivante :
 
 ```bash
-bash start_docker_x86.sh x86
+bash start_docker_x86.sh
 ```
+
+Pour lancer le conteneur sur une branche autre que `main`, ajoutez le nom de la branche désirée à la commande précédente:
+
+```bash
+bash start_docker_x86.sh <branche>
+```
+
 
 ## Utilisation des fonctionalites du Docker
 
@@ -106,13 +113,7 @@ Lors de l'utilisation de ce projet Docker, il est possible que vous rencontriez 
 Pour redémarrer le serveur graphique GDM, exécutez la commande suivante :
 
 ```bash
-sudo systemctl stop gdm
-```
-
-puis
-
-```bash
-sudo systemctl start gdm
+sudo systemctl restart gdm
 ```
 
 ### Problème avec le package OpenCV
