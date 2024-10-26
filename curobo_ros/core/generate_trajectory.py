@@ -118,7 +118,7 @@ class CuRoboTrajectoryMaker(Node):
 
         #### CAMERA INFO ####
         self.success, camera_info_sub = wait_for_message(
-            CameraInfo, self, '/camera/camera/depth/camera_info', 10)
+            CameraInfo, self, '/camera/camera/depth/camera_info', 1)
         if self.success:
             self.intrinsics = torch.tensor(
                 camera_info_sub.k).view(3, 3).float()
