@@ -32,9 +32,14 @@ class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         super().__init__('curobo_gen_traj')
 
+        # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
         self.declare_parameter('timeout', 5.0)
         self.declare_parameter('time_dilation_factor', 0.5)
+
+        # World configuration parameters
+        self.declare_parameter('voxel_size', 0.02)
+        self.declare_parameter('collision_activation_distance', 0.025)
 
         self.default_config = None
         self.j_names = None
@@ -63,7 +68,7 @@ class CuRoboTrajectoryMaker(Node):
                     "world": {
                         "pose": [0, 0, 0, 1, 0, 0, 0],
                         "integrator_type": "occupancy",
-                        "voxel_size":  self.voxel_size,
+                        "voxel_size":  self.get_parameter('voxel_size').get_parameter_value().double_value,
                     },
                 },
             }
@@ -94,7 +99,8 @@ class CuRoboTrajectoryMaker(Node):
             num_trajopt_seeds=12,
             num_graph_seeds=12,
             interpolation_dt=0.03,
-            collision_activation_distance=0.025,
+            collision_activation_distance=self.get_parameter(
+                'collision_activation_distance').get_parameter_value().double_value,
             acceleration_scale=1.0,
             self_collision_check=True,
             maximum_trajectory_dt=0.25,
