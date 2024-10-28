@@ -3,33 +3,26 @@
 import os
 import torch
 import numpy as np
-import cv2
 from cv_bridge import CvBridge, CvBridgeError
 
 import rclpy
 from rclpy.node import Node
 from .wait_for_message import wait_for_message
-from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point, PoseStamped
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState as SensorJointState
-from moveit_msgs.msg import DisplayTrajectory, RobotState, RobotTrajectory
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from std_msgs.msg import Header, Float64MultiArray
 from sensor_msgs.msg import Image, CameraInfo
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import Cuboid, WorldConfig
 from curobo.types.base import TensorDeviceType
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
-from curobo.types.robot import JointState, RobotConfig
-from curobo.util_file import get_robot_configs_path, get_world_configs_path, join_path, load_yaml
-from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
+from curobo.types.robot import JointState
+from curobo.util_file import load_yaml, join_path, get_world_configs_path
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
-from nvblox_torch.datasets.realsense_dataset import RealsenseDataloader
 from .marker_publisher import MarkerPublisher
-from geometry_msgs.msg import Pose as PoseGeo
 from capacinet_msg.srv import Fk
 
 from ament_index_python.packages import get_package_share_directory
@@ -38,6 +31,11 @@ from ament_index_python.packages import get_package_share_directory
 class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         super().__init__('curobo_gen_traj')
+
+        self.declare_parameter('max_attempts', 1)
+        self.declare_parameter('timeout', 5.0)
+        self.declare_parameter('time_dilation_factor', 0.5)
+
         self.default_config = None
         self.j_names = None
         self.robot_cfg = None
@@ -47,16 +45,16 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_data = None
         self.depth = 0
         self.voxel_size = 0.02
+
         self.marker_publisher = MarkerPublisher()
-        #checker
+        self.trajectory_publisher = self.create_publisher(
+            JointTrajectory, 'trajectory', 10)
+
+        # checker
         self.depth_image_received = False
         self.marker_received = False
 
-        # self.goal_pose = None
-
         self.bridge = CvBridge()
-
- 
 
         self.world_cfg = WorldConfig.from_dict(
 
@@ -73,18 +71,19 @@ class CuRoboTrajectoryMaker(Node):
 
         self.tensor_args = TensorDeviceType()
 
-        config_file_path = os.path.join(get_package_share_directory("curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
+        config_file_path = os.path.join(get_package_share_directory(
+            "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
         self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
         self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
 
-        world_cfg_table = WorldConfig.from_dict(load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
+        world_cfg_table = WorldConfig.from_dict(
+            load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
         world_cfg_table.cuboid[0].pose[2] -= 0.01
         self.world_cfg.add_obstacle(world_cfg_table.cuboid[0])
         self.world_cfg.add_obstacle(world_cfg_table.cuboid[1])
 
-        # robot_file = "franka.yml"
         motion_gen_config = MotionGenConfig.load_from_robot_config(
             self.robot_cfg,
             self.world_cfg,
@@ -112,30 +111,34 @@ class CuRoboTrajectoryMaker(Node):
 
         self.motion_gen.warmup()
 
-        self.get_logger().info("Ready to generate trajectories")
-
         self.world_model = self.motion_gen.world_collision
 
-        self.marker_sub = self.create_subscription(PoseStamped, 'marker_pose', self.callback_marker, 1)
+        self.marker_sub = self.create_subscription(
+            PoseStamped, 'marker_pose', self.callback_marker, 1)
 
         #### CAMERA INFO ####
-        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/depth/camera_info')
+        self.success, camera_info_sub = wait_for_message(
+            CameraInfo, self, '/camera/camera/depth/camera_info', 1)
         if self.success:
-            self.intrinsics = torch.tensor(camera_info_sub.k).view(3, 3).float()
+            self.intrinsics = torch.tensor(
+                camera_info_sub.k).view(3, 3).float()
         else:
-            self.get_logger().error("Warning: camera info recieved !!")
-        
-        self.camera_pose = Pose.from_list([0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
+            self.get_logger().error("Warning: no camera info received")
 
-        self.sub_depth = self.create_subscription(Image, '/camera/camera/depth/image_rect_raw', self.callback_depth, 1)
+        self.camera_pose = Pose.from_list(
+            [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
-        #### CUROBO FK
+        self.sub_depth = self.create_subscription(
+            Image, '/camera/camera/depth/image_rect_raw', self.callback_depth, 1)
+
+        # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
 
-        #create time for traj gen
-        timer_period =0.1 # seconds
-        self.timer = self.create_timer(timer_period, self.trajectory_generator)
+        self.get_logger().info("Ready to generate trajectories")
 
+        # create time for traj gen
+        timer_period = 0.1  # seconds
+        self.timer = self.create_timer(timer_period, self.trajectory_generator)
 
     def callback_depth(self, msg):
         try:
@@ -147,8 +150,45 @@ class CuRoboTrajectoryMaker(Node):
 
         except CvBridgeError as e:
             self.get_logger().error(f"An error has occurred: {e}")
-        
 
+    def callback_joint_trajectory(self, traj: JointState, time_step: float):
+        """
+        Convert CuRobo JointState to ROS2 JointTrajectory message with multiple points.
+
+        Args:
+            joint_state (JointState): CuRobo JointState object that may contain multiple time steps.
+            time_step (float): Time between each trajectory point in seconds.
+
+        Returns:
+            JointTrajectory: A ROS2 JointTrajectory message.
+        """
+        # Initialize JointTrajectory message
+        joint_trajectory_msg = JointTrajectory()
+
+        # Set joint names
+        joint_trajectory_msg.joint_names = traj.joint_names
+
+        # Create a list of JointTrajectoryPoints for every position in the JointState
+        for i in range(len(traj.position)):
+            joint_trajectory_point = JointTrajectoryPoint()
+
+            # Extract the i-th positions, velocities, and accelerations
+            joint_trajectory_point.positions = traj.position[i].tolist()
+            joint_trajectory_point.velocities = traj.velocity[i].tolist()
+            joint_trajectory_point.accelerations = traj.acceleration[i].tolist(
+            )
+
+            # Set efforts to an empty list (can be customized later)
+            joint_trajectory_point.effort = []
+
+            # Set the time_from_start for this point (incremented by time_step for each point)
+            joint_trajectory_point.time_from_start = Duration(sec=int(time_step * i),
+                                                              nanosec=int((time_step * i % 1) * 1e9))
+
+            # Add the point to the trajectory message
+            joint_trajectory_msg.points.append(joint_trajectory_point)
+
+        self.trajectory_publisher.publish(joint_trajectory_msg)
 
     def callback_marker(self, msg):
         # self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
@@ -160,20 +200,20 @@ class CuRoboTrajectoryMaker(Node):
             self.marker_data.pose.orientation.z, self.marker_data.pose.orientation.w
         ])
 
-
-
     def callback(self, future):
         try:
             response = future.result()
-            assert len(response.poses) > 0   # make sure we have an answer from the service
-            self.marker_publisher.publish_markers_trajectory(response.poses)  # publish the markers to visualize them
+            # make sure we have an answer from the service
+            assert len(response.poses) > 0
+            self.marker_publisher.publish_markers_trajectory(
+                response.poses)  # publish the markers to visualize them
         except Exception as e:
             self.get_logger().error(f'Service call failed: {e}')
 
-
     def update_camera(self):
         self.world_model.decay_layer("world")
-        data_camera = CameraObservation(depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=self.camera_pose)
+        data_camera = CameraObservation(
+            depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=self.camera_pose)
         data_camera = data_camera.to(device=self.tensor_args.device)
         self.world_model.add_camera_frame(data_camera, "world")
         self.world_model.process_camera_frames("world", False)
@@ -182,28 +222,26 @@ class CuRoboTrajectoryMaker(Node):
         self.debug_voxel()
 
     def get_actual_pose(self):
-        #### get actual pose
+        # get actual pose
         retract_cfg = self.motion_gen.get_retract_config()
         state = self.motion_gen.rollout_fn.compute_kinematics(
             JointState.from_position(retract_cfg.view(1, -1))
         )
-        retract_pose = Pose(state.ee_pos_seq.squeeze(), quaternion=state.ee_quat_seq.squeeze())
+        retract_pose = Pose(state.ee_pos_seq.squeeze(),
+                            quaternion=state.ee_quat_seq.squeeze())
         self.start_state = JointState.from_position(retract_cfg.view(1, -1))
-        self.get_logger().warn(f"Waiting for a pose to be published")
-
-    def update_goal_pose(self):
-        pose_msg = self.marker_data
-        
+        self.get_logger().warn("Waiting for a pose to be published")
 
     def debug_voxel(self):
-        #### Voxel debug
+        # Voxel debug
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[1, 0, 0.5, 1, 0, 0, 0])
-        voxels = self.world_model.get_voxels_in_bounding_box(bounding, self.voxel_size)
+
+        voxels = self.world_model.get_voxels_in_bounding_box(
+            bounding, self.voxel_size)
         # print(len(voxels))
         if voxels.shape[0] > 0:
             voxels = voxels.cpu().numpy()
         self.marker_publisher.publish_markers_voxel(voxels, self.voxel_size)
-        
 
     def trajectory_generator(self):
         if not self.marker_received:
@@ -215,38 +253,49 @@ class CuRoboTrajectoryMaker(Node):
         self.req.joint_states = []
 
         # self.update_camera()
-        #end debug
+        # end debug
         self.get_actual_pose()
-        
-        #### get goal pose and genereate traj
-        
-        # self.start_state.position[0, 0] += 0.25  ## why ??
+
+        # get goal pose and generate traj
         try:
+            max_attempts = self.get_parameter(
+                'max_attempts').get_parameter_value().integer_value
+            timeout = self.get_parameter(
+                'timeout').get_parameter_value().double_value
+            time_dilation_factor = self.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
+
             result = self.motion_gen.plan_single(
                 self.start_state,
                 self.goal_pose,
                 MotionGenPlanConfig(
-                    max_attempts=1,
-                    timeout=5,
-                    time_dilation_factor=0.5,
+                    max_attempts=max_attempts,
+                    timeout=timeout,
+                    time_dilation_factor=time_dilation_factor,
                 ),
             )
             new_result = result.clone()
-            new_result.retime_trajectory(0.5, create_interpolation_buffer=True)
+            new_result.retime_trajectory(
+                time_dilation_factor, create_interpolation_buffer=True)
             traj = result.get_interpolated_plan()
+            self.callback_joint_trajectory(traj, result.interpolation_dt)
             positions = traj.position.cpu().tolist()
-        # self.get_logger().warning(f'Positions are {position}')
-        except:
+
+        except Exception as e:
+            self.get_logger().error(
+                f"An error occurred during trajectory generation: {e}")
             positions = []
-        
+
         for i, element in enumerate(positions):
             self.req.joint_states.append(SensorJointState())
             self.req.joint_states[i].position = element
-            self.req.joint_states[i].name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+            self.req.joint_states[i].name = [
+                'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
 
         self.future = self.client.call_async(self.req)
         self.future.add_done_callback(self.callback)
         self.marker_received = False
+
 
 def main(args=None):
     rclpy.init(args=args)

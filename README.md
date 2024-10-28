@@ -68,7 +68,7 @@ ros2 run curobo_ros curobo_gen_traj
 Pour utiliser Rviz2 afin de visualiser le robot ou toute autre chose, veuillez exécuter la commande suivante :
 
 ```bash
-ros2 launch curobo_ros launch_rviz2.launch.py
+ros2 launch curobo_ros gen_traj.launch.py
 ```
 
 Ce fichier de lancement est configurable a votre souhait.
@@ -133,3 +133,24 @@ sudo apt-get update && sudo apt-get install --reinstall -y \
   libmpich-dev \
   hwloc-nox libmpich12 mpich
 ```
+
+### Problèmes exclusifs à Windows
+
+#### Incapacité de lancer les conteneurs
+
+Dépendamment de la configuration du matériel, Docker pourrait ne pas fonctionner du tout dû à une absence de mémoire virtuelle. Pour régler cela, il suffit d'activer l'option de `virtualisation` du CPU dans votre BIOS. Le nom exacte de l'option et la méthode pour effectuer le changement variera d'un ordinateur à l'autre.
+
+#### Incapacité de lancer de fenêtres à partir du Docker sur Windows
+
+Le projet nécessite un `Xserver` pour lancer des fenêtres à partir du Docker sur l'ordinateur local. Une solution sous Windows est l'utilisation de [XLaunch](https://x.cygwin.com/docs/xlaunch/) disponible [ici](https://sourceforge.net/projects/vcxsrv/).
+
+Préalablement au lancement initial du script `start_docker_x86.sh`, il faut:
+
+- Lancer XLaunch. Choissisez les options par défaut, sauf pour la case `Disable access control` qu'il faut cocher.
+- Dans le terminal que vous utiliserez pour lancer le script, effectuez:
+
+  ```bash
+  export DISPLAY=<adresse_IP>:0
+  ```
+
+  Votre adresse IP locale peut être trouvé grâce à la commande `ipconfig`
