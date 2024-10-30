@@ -31,7 +31,8 @@ from ament_index_python.packages import get_package_share_directory
 
 class CuRoboTrajectoryMaker(Node):
     def __init__(self):
-        super().__init__('curobo_gen_traj')
+        node_name = 'curobo_gen_traj'
+        super().__init__(node_name)
 
         # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
@@ -56,7 +57,7 @@ class CuRoboTrajectoryMaker(Node):
             JointTrajectory, 'trajectory', 10)
 
         self.motion_gen_srv = self.create_service(
-            Trigger, 'update_motion_gen_config', self.set_motion_gen_config)
+            Trigger, node_name + '/update_motion_gen_config', self.set_motion_gen_config)
 
         # checker
         self.depth_image_received = False
@@ -170,6 +171,12 @@ class CuRoboTrajectoryMaker(Node):
         self.world_model = self.motion_gen.world_collision
 
         self.get_logger().info("Motion generation config set")
+
+        if response is not None:
+            response.success = True
+            response.message = "Motion generation config set"
+
+        return response
 
     def callback_depth(self, msg):
         try:
