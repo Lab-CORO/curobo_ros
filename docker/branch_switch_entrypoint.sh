@@ -21,5 +21,10 @@ fi
 echo "source /opt/ros/humble/setup.bash" >>/root/.bashrc
 echo "source /opt/ros/humble/share/ros2cli/environment/ros2-argcomplete.bash" >>/root/.bashrc
 
+# Fix missing "ucm_set_global_opts"
+apt-get update && apt-get install --reinstall -y \
+    libmpich-dev \
+    hwloc-nox libmpich12 mpich
+
 # Start an interactive bash shell with ROS and workspace sourced, including bash completion
 exec bash --rcfile /root/.bashrc
