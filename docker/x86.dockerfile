@@ -212,6 +212,9 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
 
 # Setup for trajectory_preview
 RUN git clone https://github.com/swri-robotics/trajectory_preview.git
+
+# Setup for curobo_rviz
+RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
 WORKDIR /home/ros2_ws
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build"
