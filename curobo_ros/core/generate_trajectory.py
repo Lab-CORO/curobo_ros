@@ -8,12 +8,16 @@ from cv_bridge import CvBridge, CvBridgeError
 import rclpy
 from rclpy.node import Node
 from .wait_for_message import wait_for_message
+
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState as SensorJointState
 from sensor_msgs.msg import Image, CameraInfo
-from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+from capacinet_msg.srv import Fk
+from std_srvs.srv import Trigger
+from curobo_ros_msg.srv import AddObject
 
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import Cuboid, WorldConfig
@@ -24,7 +28,6 @@ from curobo.types.robot import JointState
 from curobo.util_file import load_yaml, join_path, get_world_configs_path
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
 from .marker_publisher import MarkerPublisher
-from capacinet_msg.srv import Fk
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -58,6 +61,9 @@ class CuRoboTrajectoryMaker(Node):
 
         self.motion_gen_srv = self.create_service(
             Trigger, node_name + '/update_motion_gen_config', self.set_motion_gen_config)
+
+        self.add_object_srv = self.create_service(
+            AddObject, node_name + '/add_object', self.callback_add_object)
 
         # checker
         self.depth_image_received = False
@@ -336,6 +342,11 @@ class CuRoboTrajectoryMaker(Node):
         self.future = self.client.call_async(self.req)
         self.future.add_done_callback(self.callback)
         self.marker_received = False
+
+    def callback_add_object(self, request, response):
+        self.get_logger().info(f"Adding object {request}")
+        response.success = True
+        return response
 
 
 def main(args=None):

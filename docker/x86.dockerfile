@@ -198,11 +198,12 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /home/ros2_ws/src
 ARG CACHE_BUST
 RUN git clone https://github.com/Lab-CORO/CapacitiNet_msg.git && \
+    git clone https://github.com/Lab-CORO/curobo_ros_msg.git && \
     git clone --recurse-submodules https://github.com/Lab-CORO/curobo_ros.git && \
     git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
 
 # Construire les packages un par un pour résoudre les dépendances
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select capacinet_msg"
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select capacinet_msg curobo_ros_msg"
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build"
 RUN echo "source /home/ros2_ws/install/setup.bash" >> ~/.bashrc
 
