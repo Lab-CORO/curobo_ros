@@ -30,7 +30,7 @@ from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGen
 from nvblox_torch.datasets.realsense_dataset import RealsenseDataloader
 from ..curobo_ros.interfaces.marker_publisher import MarkerPublisher
 from geometry_msgs.msg import Pose as PoseGeo
-from capacinet_msg.srv import Fk
+from curobo_msgs.srv import Fk
 
 
 class CuRoboTrajectoryMaker(Node):
@@ -45,13 +45,12 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_data = None
         self.depth = 0
 
-        #checker
+        # checker
         self.camera_info_received = False
         self.depth_image_received = False
         self.marker_received = False
 
         self.bridge = CvBridge()
-
 
         self.world_cfg = WorldConfig.from_dict(
 
@@ -68,12 +67,14 @@ class CuRoboTrajectoryMaker(Node):
 
         self.tensor_args = TensorDeviceType()
 
-        config_file_path = os.path.abspath(os.path.join(f"/home/ros2_ws/src/curobo_ros/m1013/m1013.yml"))
+        config_file_path = os.path.abspath(os.path.join(
+            f"/home/ros2_ws/src/curobo_ros/m1013/m1013.yml"))
         self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
         self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
         self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
 
-        world_cfg_table = WorldConfig.from_dict(load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
+        world_cfg_table = WorldConfig.from_dict(
+            load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
         world_cfg_table.cuboid[0].pose[2] -= 0.01
         self.world_cfg.add_obstacle(world_cfg_table.cuboid[0])
@@ -108,8 +109,8 @@ class CuRoboTrajectoryMaker(Node):
 
         self.world_model = self.motion_gen.world_collision
 
-        self.marker_sub = self.create_subscription(PoseStamped, 'marker_pose', self.callback_marker, 10)
-
+        self.marker_sub = self.create_subscription(
+            PoseStamped, 'marker_pose', self.callback_marker, 10)
 
     def callback_marker(self, msg):
         self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
@@ -117,15 +118,17 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_received = True  # Met le booléen à True lorsque le message est reçu
 
         #### CAMERA INFO ####
-        self.success, camera_info_sub = wait_for_message(CameraInfo, self, '/camera/camera/color/camera_info')
+        self.success, camera_info_sub = wait_for_message(
+            CameraInfo, self, '/camera/camera/color/camera_info')
         if self.success:
             self.callback_camera_info(camera_info_sub)
         #### DEPTH MAP ####
-        self.success1, camera_depth_sub = wait_for_message(Image, self, '/camera/camera/depth/image_rect_raw')
+        self.success1, camera_depth_sub = wait_for_message(
+            Image, self, '/camera/camera/depth/image_rect_raw')
         if self.success1:
             self.callback_depth(camera_depth_sub)
 
-        #### CUROBO FK
+        # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
 
         while not self.client.wait_for_service(timeout_sec=1.0):
@@ -141,7 +144,8 @@ class CuRoboTrajectoryMaker(Node):
             for i, element in enumerate(positions):
                 self.req.joint_states.append(SensorJointState())
                 self.req.joint_states[i].position = element
-                self.req.joint_states[i].name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+                self.req.joint_states[i].name = [
+                    'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
 
             self.future = self.client.call_async(self.req)
             self.future.add_done_callback(self.callback)
@@ -151,13 +155,15 @@ class CuRoboTrajectoryMaker(Node):
     def callback(self, future):
         try:
             response = future.result()
-            self.get_logger().info(f'Result received with {len(response.poses)} poses')
+            self.get_logger().info(
+                f'Result received with {len(response.poses)} poses')
 
-            assert len(response.poses) > 0   # make sure we have an answer from the service
-            self.marker_publisher.publish_markers(response.poses)  # publish the markers to visualize them
+            # make sure we have an answer from the service
+            assert len(response.poses) > 0
+            # publish the markers to visualize them
+            self.marker_publisher.publish_markers(response.poses)
         except Exception as e:
             self.get_logger().error(f'Service call failed: {e}')
-
 
     def callback_camera_info(self, msg):
         if not self.camera_info_received:
@@ -166,19 +172,19 @@ class CuRoboTrajectoryMaker(Node):
             self.intrinsics = torch.tensor(msg.k).view(3, 3).float()
             self.camera_info_received = True
 
-
     def callback_depth(self, msg):
         try:
             depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
-            self.get_logger().info(f"Depth image casted in CV2 format looks like: {depth_img.shape}")
+            self.get_logger().info(
+                f"Depth image casted in CV2 format looks like: {depth_img.shape}")
             depth_img_float = depth_img.astype(np.float32)
             self.depth_image = torch.from_numpy(depth_img_float).float()
-            self.get_logger().info(f"Depth image converted to tensor: {self.depth_image.shape}")
+            self.get_logger().info(
+                f"Depth image converted to tensor: {self.depth_image.shape}")
             self.depth_image_received = True
             # self.check_and_generate_trajectory()
         except CvBridgeError as e:
             self.get_logger().error(f"An error has occurred: {e}")
-
 
     def trajectory_generator(self):
 
@@ -187,20 +193,23 @@ class CuRoboTrajectoryMaker(Node):
         ##################################################################################
         ##################################################################################
 
-        camera_pose = Pose.from_list([0.5, 1.0, 0.5, -0.422551, 0.878444, 0.138406, 0.175016])
+        camera_pose = Pose.from_list(
+            [0.5, 1.0, 0.5, -0.422551, 0.878444, 0.138406, 0.175016])
 
         self.get_logger().warning(f'depth image is {self.depth_image}')
 
-        data_camera = CameraObservation(depth_image=self.depth_image, intrinsics=self.intrinsics, pose=camera_pose)
+        data_camera = CameraObservation(
+            depth_image=self.depth_image, intrinsics=self.intrinsics, pose=camera_pose)
 
-
-        self.get_logger().warning(f" Intrinsics are : {data_camera.intrinsics}")
-        self.get_logger().warning(f" Depth image is : {data_camera.depth_image}")
+        self.get_logger().warning(
+            f" Intrinsics are : {data_camera.intrinsics}")
+        self.get_logger().warning(
+            f" Depth image is : {data_camera.depth_image}")
 
         data_camera = data_camera.to(device=self.tensor_args.device)
         self.world_model.add_camera_frame(data_camera, "world")
         self.world_model.process_camera_frames("world", False)
-        ## a faire des qu un message est pub sur le topic du goal pose
+        # a faire des qu un message est pub sur le topic du goal pose
 
         ##################################################################################
         ##################################################################################
@@ -213,7 +222,8 @@ class CuRoboTrajectoryMaker(Node):
         bounding = Cuboid("t", dims=[1, 1, 1.0], pose=[0, 0, 0, 1, 0, 0, 0])
         voxel_size = 0.05
 
-        voxels = self.world_model.get_voxels_in_bounding_box(bounding, voxel_size)
+        voxels = self.world_model.get_voxels_in_bounding_box(
+            bounding, voxel_size)
 
         if voxels.shape[0] > 0:
             voxels = voxels[voxels[:, 2] > voxel_size]
@@ -226,7 +236,8 @@ class CuRoboTrajectoryMaker(Node):
             JointState.from_position(retract_cfg.view(1, -1))
         )
 
-        retract_pose = Pose(state.ee_pos_seq.squeeze(), quaternion=state.ee_quat_seq.squeeze())
+        retract_pose = Pose(state.ee_pos_seq.squeeze(),
+                            quaternion=state.ee_quat_seq.squeeze())
         start_state = JointState.from_position(retract_cfg.view(1, -1))
 
         self.get_logger().warn(f"Waiting for a pose to be published")

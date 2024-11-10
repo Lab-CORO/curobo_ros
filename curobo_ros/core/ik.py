@@ -20,14 +20,14 @@ from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.geom.types import WorldConfig
 from curobo.geom.sdf.world import CollisionCheckerType
 # msg ik
-from capacinet_msg.srv import Ik
+from curobo_msgs.srv import Ik
 # from data_generation.srv import Collisions
 
 
 # This class use curobo to generate the inverse kinematics of the robot
 
 class IK(Node):
-    
+
     def __init__(self):
         super().__init__('IK')
         # sub with the name string of the robot
@@ -36,7 +36,8 @@ class IK(Node):
         self.robot_name = "ur10e"
 
         # service for list of poses to calculate the inverse kinematics
-        self.srv_ik = self.create_service(Ik, '/curobo/ik_poses', self.ik_callback)
+        self.srv_ik = self.create_service(
+            Ik, '/curobo/ik_poses', self.ik_callback)
         # self.srv_collision = self.create_service(, '/curobo/collision', self.add_collisions)
         # curobo args
         self.tensor_args = TensorDeviceType()
@@ -46,12 +47,14 @@ class IK(Node):
         # base_link = config_file["robot_cfg"]["kinematics"]["base_link"]
         # ee_link = config_file["robot_cfg"]["kinematics"]["ee_link"]
 
-        self.robot_cfg = RobotConfig.from_dict(load_yaml(join_path(get_robot_configs_path(), config_file))["robot_cfg"])
+        self.robot_cfg = RobotConfig.from_dict(
+            load_yaml(join_path(get_robot_configs_path(), config_file))["robot_cfg"])
 
         # collision
         world_file = "collision_cage.yml"
 
-        self.world_cfg = WorldConfig.from_dict(load_yaml(join_path(get_world_configs_path(), world_file)))
+        self.world_cfg = WorldConfig.from_dict(
+            load_yaml(join_path(get_world_configs_path(), world_file)))
 
         # self.world_cfg = WorldConfig(cuboid=world_cfg_table.cuboid, mesh=world_cfg1.mesh)
 
@@ -98,8 +101,10 @@ class IK(Node):
         positions = []
         orientations = []
         for pose in poses:
-            positions.append([pose.position.x, pose.position.y, pose.position.z])
-            orientations.append([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
+            positions.append(
+                [pose.position.x, pose.position.y, pose.position.z])
+            orientations.append(
+                [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
 
         # Convert lists to tensors
         position_tensor = torch.tensor(positions)
@@ -130,7 +135,7 @@ class IK(Node):
 
         # response.joint_angles = result.joint_angles.cpu().numpy().tolist()
         return response
-        
+
     def ik_init(self):
         q_sample = self.ik_solver.sample_configs(self.size_init)
         print(q_sample)
@@ -149,7 +154,6 @@ class IK(Node):
         # print the nb of solutions
         # print(join_results)
         print("Init done")
-
 
     def add_collisions(self):
         return True

@@ -15,9 +15,8 @@ from sensor_msgs.msg import JointState as SensorJointState
 from sensor_msgs.msg import Image, CameraInfo
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from capacinet_msg.srv import Fk
 from std_srvs.srv import Trigger
-from curobo_ros_msg.srv import AddObject
+from curobo_msgs.srv import AddObject, Fk
 
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import Cuboid, WorldConfig
