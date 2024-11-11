@@ -45,14 +45,10 @@ class CuRoboTrajectoryMaker(Node):
         self.declare_parameter('voxel_size', 0.02)
         self.declare_parameter('collision_activation_distance', 0.025)
 
-        self.default_config = None
-        self.j_names = None
         self.robot_cfg = None
         self.intrinsics = None
-        self.cv_image = None
         self.depth_image = None
         self.marker_data = None
-        self.depth = 0
 
         self.marker_publisher = MarkerPublisher()
         self.trajectory_publisher = self.create_publisher(
@@ -65,7 +61,6 @@ class CuRoboTrajectoryMaker(Node):
             AddObject, node_name + '/add_object', self.callback_add_object)
 
         # checker
-        self.depth_image_received = False
         self.marker_received = False
 
         self.bridge = CvBridge()
@@ -136,8 +131,6 @@ class CuRoboTrajectoryMaker(Node):
         config_file_path = os.path.join(get_package_share_directory(
             "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
         self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
-        self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
-        self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
 
         self.world_cfg_table = WorldConfig.from_dict(
             load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
