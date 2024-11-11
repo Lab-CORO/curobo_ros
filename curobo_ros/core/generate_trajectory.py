@@ -4,6 +4,7 @@ import os
 import torch
 import numpy as np
 from cv_bridge import CvBridge, CvBridgeError
+from functools import partial
 
 import rclpy
 from rclpy.node import Node
@@ -17,6 +18,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import AddObject, Fk
+from .config_wrapper import ConfigWrapper
 
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import Cuboid, WorldConfig
@@ -41,11 +43,11 @@ class CuRoboTrajectoryMaker(Node):
         self.declare_parameter('timeout', 5.0)
         self.declare_parameter('time_dilation_factor', 0.5)
 
+        self.config_wrapper = ConfigWrapper()
         # World configuration parameters
         self.declare_parameter('voxel_size', 0.02)
         self.declare_parameter('collision_activation_distance', 0.025)
 
-        self.robot_cfg = None
         self.intrinsics = None
         self.depth_image = None
         self.marker_data = None
@@ -55,38 +57,19 @@ class CuRoboTrajectoryMaker(Node):
             JointTrajectory, 'trajectory', 10)
 
         self.motion_gen_srv = self.create_service(
-            Trigger, node_name + '/update_motion_gen_config', self.set_motion_gen_config)
+            Trigger, node_name + '/update_motion_gen_config', partial(self.config_wrapper.set_motion_gen_config, self))
 
         self.add_object_srv = self.create_service(
-            AddObject, node_name + '/add_object', self.callback_add_object)
+            AddObject, node_name + '/add_object', partial(self.config_wrapper.callback_add_object, self))
 
         # checker
         self.marker_received = False
 
         self.bridge = CvBridge()
 
-        # World config parameters
-        self.world_pose = [0, 0, 0, 1, 0, 0, 0]
-        self.world_integrator_type = "occupancy"
-
         self.tensor_args = TensorDeviceType()
 
-        # Motion generation parameters
-        self.trajopt_tsteps = 32
-        self.collision_checker_type = CollisionCheckerType.BLOX
-        self.use_cuda_graph = True
-        self.num_trajopt_seeds = 12
-        self.num_graph_seeds = 12
-        self.interpolation_dt = 0.03
-        self.acceleration_scale = 1.0
-        self.self_collision_check = True
-        self.maximum_trajectory_dt = 0.25
-        self.finetune_dt_scale = 1.05
-        self.fixed_iters_trajopt = True
-        self.finetune_trajopt_iters = 300
-        self.minimize_jerk = True
-
-        self.set_motion_gen_config(None, None)
+        self.config_wrapper.set_motion_gen_config(self, None, None)
 
         self.marker_sub = self.create_subscription(
             PoseStamped, 'marker_pose', self.callback_marker, 1)
@@ -114,67 +97,6 @@ class CuRoboTrajectoryMaker(Node):
         # create time for traj gen
         timer_period = 0.1  # seconds
         self.timer = self.create_timer(timer_period, self.trajectory_generator)
-
-    def set_motion_gen_config(self, request, response):
-        self.world_cfg = WorldConfig.from_dict(
-            {
-                "blox": {
-                    "world": {
-                        "pose": self.world_pose,
-                        "integrator_type": self.world_integrator_type,
-                        "voxel_size":  self.get_parameter('voxel_size').get_parameter_value().double_value,
-                    },
-                },
-            }
-        )
-
-        config_file_path = os.path.join(get_package_share_directory(
-            "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
-        self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
-
-        self.world_cfg_table = WorldConfig.from_dict(
-            load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
-
-        self.world_cfg_table.cuboid[0].pose[2] -= 0.01
-        self.world_cfg.add_obstacle(self.world_cfg_table.cuboid[0])
-        self.world_cfg.add_obstacle(self.world_cfg_table.cuboid[1])
-
-        self.motion_gen_config = MotionGenConfig.load_from_robot_config(
-            self.robot_cfg,
-            self.world_cfg,
-            self.tensor_args,
-            trajopt_tsteps=self.trajopt_tsteps,
-            collision_checker_type=self.collision_checker_type,
-            use_cuda_graph=self.use_cuda_graph,
-            num_trajopt_seeds=self.num_trajopt_seeds,
-            num_graph_seeds=self.num_graph_seeds,
-            interpolation_dt=self.interpolation_dt,
-            collision_activation_distance=self.get_parameter(
-                'collision_activation_distance').get_parameter_value().double_value,
-            acceleration_scale=self.acceleration_scale,
-            self_collision_check=self.self_collision_check,
-            maximum_trajectory_dt=self.maximum_trajectory_dt,
-            finetune_dt_scale=self.finetune_dt_scale,
-            fixed_iters_trajopt=self.fixed_iters_trajopt,
-            finetune_trajopt_iters=self.finetune_trajopt_iters,
-            minimize_jerk=self.minimize_jerk,
-        )
-
-        self.motion_gen = MotionGen(self.motion_gen_config)
-
-        self.get_logger().info("warming up..")
-
-        self.motion_gen.warmup()
-
-        self.world_model = self.motion_gen.world_collision
-
-        self.get_logger().info("Motion generation config set")
-
-        if response is not None:
-            response.success = True
-            response.message = "Motion generation config set"
-
-        return response
 
     def callback_depth(self, msg):
         try:
@@ -334,11 +256,6 @@ class CuRoboTrajectoryMaker(Node):
         self.future = self.client.call_async(self.req)
         self.future.add_done_callback(self.callback)
         self.marker_received = False
-
-    def callback_add_object(self, request, response):
-        self.get_logger().info(f"Adding object {request}")
-        response.success = True
-        return response
 
 
 def main(args=None):
