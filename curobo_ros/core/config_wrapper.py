@@ -1,15 +1,11 @@
 import os
 
-# TODO: Remove unused imports
 from curobo_msgs.srv import AddObject
+
 from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import Cuboid, WorldConfig
-from curobo.types.base import TensorDeviceType
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
-from curobo.types.robot import JointState
+from curobo.geom.types import WorldConfig
 from curobo.util_file import load_yaml, join_path, get_world_configs_path
-from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
+from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
 from ament_index_python.packages import get_package_share_directory
 

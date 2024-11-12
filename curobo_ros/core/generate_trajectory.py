@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import os
 import torch
 import numpy as np
 from cv_bridge import CvBridge, CvBridgeError
@@ -20,17 +19,15 @@ from std_srvs.srv import Trigger
 from curobo_msgs.srv import AddObject, Fk
 from .config_wrapper import ConfigWrapper
 
-from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import Cuboid, WorldConfig
+from curobo.geom.types import Cuboid
 from curobo.types.base import TensorDeviceType
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
 from curobo.types.robot import JointState
-from curobo.util_file import load_yaml, join_path, get_world_configs_path
-from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 from .marker_publisher import MarkerPublisher
 
-from ament_index_python.packages import get_package_share_directory
+DEPTH_CAMERA_NAMESPACE = '/camera/camera/depth'
 
 
 class CuRoboTrajectoryMaker(Node):
@@ -38,45 +35,48 @@ class CuRoboTrajectoryMaker(Node):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
 
+        self.config_wrapper = ConfigWrapper()
+
         # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
         self.declare_parameter('timeout', 5.0)
         self.declare_parameter('time_dilation_factor', 0.5)
 
-        self.config_wrapper = ConfigWrapper()
         # World configuration parameters
         self.declare_parameter('voxel_size', 0.02)
         self.declare_parameter('collision_activation_distance', 0.025)
 
-        self.intrinsics = None
-        self.depth_image = None
-        self.marker_data = None
-
+        # Publishers and subscribers
         self.marker_publisher = MarkerPublisher()
         self.trajectory_publisher = self.create_publisher(
             JointTrajectory, 'trajectory', 10)
 
+        self.marker_sub = self.create_subscription(
+            PoseStamped, 'marker_pose', self.callback_marker, 1)
+
+        # Services
         self.motion_gen_srv = self.create_service(
             Trigger, node_name + '/update_motion_gen_config', partial(self.config_wrapper.set_motion_gen_config, self))
 
         self.add_object_srv = self.create_service(
             AddObject, node_name + '/add_object', partial(self.config_wrapper.callback_add_object, self))
 
-        # checker
+        # Markers
+        self.marker_data = None
         self.marker_received = False
 
+        # Image processing
+        self.depth_image = None
         self.bridge = CvBridge()
-
         self.tensor_args = TensorDeviceType()
 
         self.config_wrapper.set_motion_gen_config(self, None, None)
 
-        self.marker_sub = self.create_subscription(
-            PoseStamped, 'marker_pose', self.callback_marker, 1)
-
-        #### CAMERA INFO ####
+        # Camera info
         self.success, camera_info_sub = wait_for_message(
-            CameraInfo, self, '/camera/camera/depth/camera_info', 1)
+            CameraInfo, self, DEPTH_CAMERA_NAMESPACE + '/camera_info', 1)
+
+        self.intrinsics = None
         if self.success:
             self.intrinsics = torch.tensor(
                 camera_info_sub.k).view(3, 3).float()
@@ -87,7 +87,7 @@ class CuRoboTrajectoryMaker(Node):
             [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
         self.sub_depth = self.create_subscription(
-            Image, '/camera/camera/depth/image_rect_raw', self.callback_depth, 1)
+            Image, DEPTH_CAMERA_NAMESPACE + 'image_rect_raw', self.callback_depth, 1)
 
         # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
@@ -182,12 +182,8 @@ class CuRoboTrajectoryMaker(Node):
     def get_actual_pose(self):
         # get actual pose
         retract_cfg = self.motion_gen.get_retract_config()
-        state = self.motion_gen.rollout_fn.compute_kinematics(
-            JointState.from_position(retract_cfg.view(1, -1))
-        )
-        retract_pose = Pose(state.ee_pos_seq.squeeze(),
-                            quaternion=state.ee_quat_seq.squeeze())
         self.start_state = JointState.from_position(retract_cfg.view(1, -1))
+
         self.get_logger().warn("Waiting for a pose to be published")
 
     def debug_voxel(self):
