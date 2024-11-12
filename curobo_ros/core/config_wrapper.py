@@ -3,7 +3,7 @@ import os
 from curobo_msgs.srv import AddObject
 
 from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig
+from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere
 from curobo.util_file import load_yaml, join_path, get_world_configs_path
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
@@ -105,6 +105,33 @@ class ConfigWrapper:
         return response
 
     def callback_add_object(self, node, request, response):
-        print(f"Adding object from {node.get_name()}")
+        node.get_logger().info(
+            f"Adding object {request.type} from {node.get_name()}")
+
         response.success = True
+        obstacle = None
+
+        extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
+                          request.pose.orientation.w, request.pose.orientation.x, request.pose.orientation.y, request.pose.orientation.z]
+        extracted_dimensions = [request.dimensions.x,
+                                request.dimensions.y, request.dimensions.z]
+        extracted_color = [request.color.r, request.color.g,
+                           request.color.b, request.color.a]
+
+        match request.type:
+            case "cuboid":
+                obstacle = Cuboid(
+                    name=request.name,
+                    pose=extracted_pose,
+                    dims=extracted_dimensions,
+                    color=extracted_color,
+                )
+
+            case _:  # default
+                response.success = False
+
+        if response.success:
+            self.world_cfg.add_obstacle(obstacle)
+            response.message = 'Object ' + request.name + ' added successfully'
+
         return response
