@@ -18,6 +18,7 @@ class ConfigWrapper:
     '''
 
     def __init__(self):
+        # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
         self.collision_checker_type = CollisionCheckerType.BLOX
@@ -50,6 +51,16 @@ class ConfigWrapper:
             load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
     def set_motion_gen_config(self, node, request, response):
+        '''
+        This function sets the motion generation configuration for the trajectory generation node.
+        It is called by the service callback created in the node.
+        It takes the node as an argument to access its parameters and set its motion generation configuration.
+        The MotionGenConfig class is set through a warmup function that uses the updated value.
+
+        The function is also used at the node's initialization to set the motion generation configuration.
+        In that case, the response argument is not used.
+        '''
+        # Set the world configuration
         self.world_cfg = WorldConfig.from_dict(
             {
                 "blox": {
@@ -62,11 +73,7 @@ class ConfigWrapper:
             }
         )
 
-        # TODO: Use the service to add objects instead
-        self.world_cfg_table.cuboid[0].pose[2] -= 0.01
-        self.world_cfg.add_obstacle(self.world_cfg_table.cuboid[0])
-        self.world_cfg.add_obstacle(self.world_cfg_table.cuboid[1])
-
+        # Set the motion generation configuration with the values stored in this wrapper and the node
         motion_gen_config = MotionGenConfig.load_from_robot_config(
             self.robot_cfg,
             self.world_cfg,
@@ -88,6 +95,7 @@ class ConfigWrapper:
             minimize_jerk=self.minimize_jerk,
         )
 
+        # Set the motion generation configuration in the node and warmup the motion generation
         node.motion_gen = MotionGen(motion_gen_config)
 
         node.get_logger().info("warming up..")
@@ -98,19 +106,27 @@ class ConfigWrapper:
 
         node.get_logger().info("Motion generation config set")
 
+        # Set the response message when this function is called through the service
         if response is not None:
             response.success = True
             response.message = "Motion generation config set"
 
         return response
 
-    def callback_add_object(self, node, request, response):
+    def callback_add_object(self, node, request: AddObject, response):
+        '''
+        This function is called by the service callback created in the node.
+        It adds an object to the world configuration.
+        The object is created based on the type, pose, dimensiosn and color and requested.
+        The object is then added to the world configuration.
+        '''
         node.get_logger().info(
             f"Adding object {request.type} from {node.get_name()}")
 
         response.success = True
         obstacle = None
 
+        # TODO adapt to other shapes
         extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
                           request.pose.orientation.w, request.pose.orientation.x, request.pose.orientation.y, request.pose.orientation.z]
         extracted_dimensions = [request.dimensions.x,
@@ -118,6 +134,7 @@ class ConfigWrapper:
         extracted_color = [request.color.r, request.color.g,
                            request.color.b, request.color.a]
 
+        # TODO add more shapes
         match request.type:
             case "cuboid":
                 obstacle = Cuboid(
@@ -129,6 +146,7 @@ class ConfigWrapper:
 
             case _:  # default
                 response.success = False
+                response.message = 'Object type "' + request.type + '" not recognized'
 
         if response.success:
             self.world_cfg.add_obstacle(obstacle)
