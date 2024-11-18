@@ -121,7 +121,7 @@ class ConfigWrapper:
         The object is then added to the world configuration.
         '''
         node.get_logger().info(
-            f"Adding object {request.type} from {node.get_name()}")
+            f"Adding object {request.name} for {node.get_name()}")
 
         response.success = True
         obstacle = None
@@ -136,7 +136,7 @@ class ConfigWrapper:
 
         # TODO add more shapes
         match request.type:
-            case "cuboid":
+            case request.CUBOID:
                 obstacle = Cuboid(
                     name=request.name,
                     pose=extracted_pose,
