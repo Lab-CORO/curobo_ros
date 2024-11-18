@@ -1,38 +1,41 @@
 #!/usr/bin/env python3
 
-import os
 import torch
 import numpy as np
 from cv_bridge import CvBridge, CvBridgeError
+from functools import partial
 
 import rclpy
 from rclpy.node import Node
 from .wait_for_message import wait_for_message
+
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState as SensorJointState
 from sensor_msgs.msg import Image, CameraInfo
-from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import Cuboid, WorldConfig
+from std_srvs.srv import Trigger
+from curobo_msgs.srv import AddObject, Fk
+from .config_wrapper import ConfigWrapper
+
+from curobo.geom.types import Cuboid
 from curobo.types.base import TensorDeviceType
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
 from curobo.types.robot import JointState
-from curobo.util_file import load_yaml, join_path, get_world_configs_path
-from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 from .marker_publisher import MarkerPublisher
-from capacinet_msg.srv import Fk
 
-from ament_index_python.packages import get_package_share_directory
+DEPTH_CAMERA_NAMESPACE = '/camera/camera/depth'
 
 
 class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
+
+        self.config_wrapper = ConfigWrapper()
 
         # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
@@ -43,57 +46,37 @@ class CuRoboTrajectoryMaker(Node):
         self.declare_parameter('voxel_size', 0.02)
         self.declare_parameter('collision_activation_distance', 0.025)
 
-        self.default_config = None
-        self.j_names = None
-        self.robot_cfg = None
-        self.intrinsics = None
-        self.cv_image = None
-        self.depth_image = None
-        self.marker_data = None
-        self.depth = 0
-
+        # Publishers and subscribers
         self.marker_publisher = MarkerPublisher()
         self.trajectory_publisher = self.create_publisher(
             JointTrajectory, 'trajectory', 10)
 
-        self.motion_gen_srv = self.create_service(
-            Trigger, node_name + '/update_motion_gen_config', self.set_motion_gen_config)
-
-        # checker
-        self.depth_image_received = False
-        self.marker_received = False
-
-        self.bridge = CvBridge()
-
-        # World config parameters
-        self.world_pose = [0, 0, 0, 1, 0, 0, 0]
-        self.world_integrator_type = "occupancy"
-
-        self.tensor_args = TensorDeviceType()
-
-        # Motion generation parameters
-        self.trajopt_tsteps = 32
-        self.collision_checker_type = CollisionCheckerType.BLOX
-        self.use_cuda_graph = True
-        self.num_trajopt_seeds = 12
-        self.num_graph_seeds = 12
-        self.interpolation_dt = 0.03
-        self.acceleration_scale = 1.0
-        self.self_collision_check = True
-        self.maximum_trajectory_dt = 0.25
-        self.finetune_dt_scale = 1.05
-        self.fixed_iters_trajopt = True
-        self.finetune_trajopt_iters = 300
-        self.minimize_jerk = True
-
-        self.set_motion_gen_config(None, None)
-
         self.marker_sub = self.create_subscription(
             PoseStamped, 'marker_pose', self.callback_marker, 1)
 
-        #### CAMERA INFO ####
+        # Services
+        self.motion_gen_srv = self.create_service(
+            Trigger, node_name + '/update_motion_gen_config', partial(self.config_wrapper.set_motion_gen_config, self))
+
+        self.add_object_srv = self.create_service(
+            AddObject, node_name + '/add_object', partial(self.config_wrapper.callback_add_object, self))
+
+        # Markers
+        self.marker_data = None
+        self.marker_received = False
+
+        # Image processing
+        self.depth_image = None
+        self.bridge = CvBridge()
+        self.tensor_args = TensorDeviceType()
+
+        self.config_wrapper.set_motion_gen_config(self, None, None)
+
+        # Camera info
         self.success, camera_info_sub = wait_for_message(
-            CameraInfo, self, '/camera/camera/depth/camera_info', 1)
+            CameraInfo, self, DEPTH_CAMERA_NAMESPACE + '/camera_info', 1)
+
+        self.intrinsics = None
         if self.success:
             self.intrinsics = torch.tensor(
                 camera_info_sub.k).view(3, 3).float()
@@ -104,7 +87,7 @@ class CuRoboTrajectoryMaker(Node):
             [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
 
         self.sub_depth = self.create_subscription(
-            Image, '/camera/camera/depth/image_rect_raw', self.callback_depth, 1)
+            Image, DEPTH_CAMERA_NAMESPACE + 'image_rect_raw', self.callback_depth, 1)
 
         # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
@@ -114,69 +97,6 @@ class CuRoboTrajectoryMaker(Node):
         # create time for traj gen
         timer_period = 0.1  # seconds
         self.timer = self.create_timer(timer_period, self.trajectory_generator)
-
-    def set_motion_gen_config(self, request, response):
-        self.world_cfg = WorldConfig.from_dict(
-            {
-                "blox": {
-                    "world": {
-                        "pose": self.world_pose,
-                        "integrator_type": self.world_integrator_type,
-                        "voxel_size":  self.get_parameter('voxel_size').get_parameter_value().double_value,
-                    },
-                },
-            }
-        )
-
-        config_file_path = os.path.join(get_package_share_directory(
-            "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
-        self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
-        self.j_names = self.robot_cfg["kinematics"]["cspace"]["joint_names"]
-        self.default_config = self.robot_cfg["kinematics"]["cspace"]["retract_config"]
-
-        self.world_cfg_table = WorldConfig.from_dict(
-            load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
-
-        self.world_cfg_table.cuboid[0].pose[2] -= 0.01
-        self.world_cfg.add_obstacle(self.world_cfg_table.cuboid[0])
-        self.world_cfg.add_obstacle(self.world_cfg_table.cuboid[1])
-
-        self.motion_gen_config = MotionGenConfig.load_from_robot_config(
-            self.robot_cfg,
-            self.world_cfg,
-            self.tensor_args,
-            trajopt_tsteps=self.trajopt_tsteps,
-            collision_checker_type=self.collision_checker_type,
-            use_cuda_graph=self.use_cuda_graph,
-            num_trajopt_seeds=self.num_trajopt_seeds,
-            num_graph_seeds=self.num_graph_seeds,
-            interpolation_dt=self.interpolation_dt,
-            collision_activation_distance=self.get_parameter(
-                'collision_activation_distance').get_parameter_value().double_value,
-            acceleration_scale=self.acceleration_scale,
-            self_collision_check=self.self_collision_check,
-            maximum_trajectory_dt=self.maximum_trajectory_dt,
-            finetune_dt_scale=self.finetune_dt_scale,
-            fixed_iters_trajopt=self.fixed_iters_trajopt,
-            finetune_trajopt_iters=self.finetune_trajopt_iters,
-            minimize_jerk=self.minimize_jerk,
-        )
-
-        self.motion_gen = MotionGen(self.motion_gen_config)
-
-        self.get_logger().info("warming up..")
-
-        self.motion_gen.warmup()
-
-        self.world_model = self.motion_gen.world_collision
-
-        self.get_logger().info("Motion generation config set")
-
-        if response is not None:
-            response.success = True
-            response.message = "Motion generation config set"
-
-        return response
 
     def callback_depth(self, msg):
         try:
@@ -262,12 +182,8 @@ class CuRoboTrajectoryMaker(Node):
     def get_actual_pose(self):
         # get actual pose
         retract_cfg = self.motion_gen.get_retract_config()
-        state = self.motion_gen.rollout_fn.compute_kinematics(
-            JointState.from_position(retract_cfg.view(1, -1))
-        )
-        retract_pose = Pose(state.ee_pos_seq.squeeze(),
-                            quaternion=state.ee_quat_seq.squeeze())
         self.start_state = JointState.from_position(retract_cfg.view(1, -1))
+
         self.get_logger().warn("Waiting for a pose to be published")
 
     def debug_voxel(self):

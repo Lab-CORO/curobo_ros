@@ -11,7 +11,7 @@ from ament_index_python.packages import get_package_share_directory
 import torch
 
 # msg ik
-from capacinet_msg.srv import Fk
+from curobo_msgs.srv import Fk
 from geometry_msgs.msg import Pose
 
 # cuRobo
@@ -19,6 +19,7 @@ from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel, CudaRobotMo
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import RobotConfig
 from curobo.util_file import get_robot_configs_path, join_path, load_yaml
+
 
 class FK(Node):
     def __init__(self):
@@ -29,20 +30,24 @@ class FK(Node):
         self.robot_name = "ur10e"
 
         # service for list of poses to calculate the inverse kinematics
-        self.srv_ik = self.create_service(Fk, '/curobo/fk_poses', self.fk_callback)
+        self.srv_ik = self.create_service(
+            Fk, '/curobo/fk_poses', self.fk_callback)
 
         # curobo args
         self.tensor_args = TensorDeviceType()
-        config_file_path = os.path.join(get_package_share_directory("curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
+        config_file_path = os.path.join(get_package_share_directory(
+            "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
 
-        config_file = load_yaml(join_path(get_robot_configs_path(), config_file_path))
+        config_file = load_yaml(
+            join_path(get_robot_configs_path(), config_file_path))
         urdf_file = config_file["robot_cfg"]["kinematics"][
             "urdf_path"
         ]  # Send global path starting with "/"
         base_link = config_file["robot_cfg"]["kinematics"]["base_link"]
         ee_link = config_file["robot_cfg"]["kinematics"]["ee_link"]
         # Generate robot configuration from  urdf path, base frame, end effector frame
-        robot_cfg = RobotConfig.from_basic(urdf_file, base_link, ee_link, self.tensor_args)
+        robot_cfg = RobotConfig.from_basic(
+            urdf_file, base_link, ee_link, self.tensor_args)
 
         self.kin_model = CudaRobotModel(robot_cfg.kinematics)
 
@@ -79,10 +84,9 @@ class FK(Node):
 
     def fk_init(self):
         # init the kin model, the firt time it takes a while
-        q = torch.rand((10, self.kin_model.get_dof()), **(self.tensor_args.as_torch_dict()))
+        q = torch.rand((10, self.kin_model.get_dof()), **
+                       (self.tensor_args.as_torch_dict()))
         out = self.kin_model.get_state(q)
-       
-
 
 
 def main(args=None):
@@ -94,5 +98,3 @@ def main(args=None):
 
     fk.destroy_node()
     rclpy.shutdown()
-
-

@@ -8,7 +8,7 @@ Panels:
         - /Status1
         - /DepthCloud1/Auto Size1
       Splitter Ratio: 0.5
-    Tree Height: 545
+    Tree Height: 964
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -29,6 +29,8 @@ Panels:
     SyncSource: DepthCloud
   - Class: trajectory_preview/TrajectoryPreviewPanel
     Name: Trajectory Preview
+  - Class: curobo_rviz/RvizArgsPanel
+    Name: RvizArgsPanel
 Visualization Manager:
   Class: ""
   Displays:

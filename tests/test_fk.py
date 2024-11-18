@@ -1,11 +1,11 @@
-#create a test to send a joint_state msg to the fk service and get the ee position and orientation
+# create a test to send a joint_state msg to the fk service and get the ee position and orientation
 # ceci n'est pas un test a proprment parle
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose
-from capacinet_msg.srv import Fk
+from curobo_msgs.srv import Fk
 
 
 class TestFk(Node):
@@ -18,7 +18,8 @@ class TestFk(Node):
         self.req.joint_states = []
         self.req.joint_states.append(JointState())
         self.req.joint_states[0].position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.req.joint_states[0].name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        self.req.joint_states[0].name = [
+            'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
         self.future = self.client.call_async(self.req)
         self.future.add_done_callback(self.callback)
 
@@ -28,6 +29,7 @@ class TestFk(Node):
         self.get_logger().info('Result %s' % response.poses[0].orientation)
         # assert the existanc eof a result
         assert response.poses[0].position
+
 
 def main(args=None):
     rclpy.init(args=args)
