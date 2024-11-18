@@ -16,7 +16,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, Fk
+from curobo_msgs.srv import AddObject, Fk, RemoveObject
 from .config_wrapper import ConfigWrapper
 
 from curobo.geom.types import Cuboid
@@ -60,6 +60,9 @@ class CuRoboTrajectoryMaker(Node):
 
         self.add_object_srv = self.create_service(
             AddObject, node_name + '/add_object', partial(self.config_wrapper.callback_add_object, self))
+
+        self.add_object_srv = self.create_service(
+            RemoveObject, node_name + '/remove_object', self.config_wrapper.callback_remove_object)
 
         # Markers
         self.marker_data = None
@@ -201,7 +204,6 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_publisher.publish_markers_voxel(voxels, voxel_size)
 
     def trajectory_generator(self):
-        self.debug_voxel()
         if not self.marker_received:
             return
         while not self.client.wait_for_service(timeout_sec=1.0):
@@ -210,8 +212,6 @@ class CuRoboTrajectoryMaker(Node):
         self.req = Fk.Request()
         self.req.joint_states = []
 
-        # self.update_camera()
-        # end debug
         self.get_actual_pose()
 
         # get goal pose and generate traj

@@ -1,6 +1,6 @@
 import os
 
-from curobo_msgs.srv import AddObject
+from curobo_msgs.srv import AddObject, RemoveObject
 
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere
@@ -39,6 +39,18 @@ class ConfigWrapper:
         self.world_pose = [0, 0, 0, 1, 0, 0, 0]
         self.world_integrator_type = "occupancy"
 
+        # Set the world configuration
+        self.world_cfg = WorldConfig.from_dict(
+            {
+                "blox": {
+                    "world": {
+                        "pose": self.world_pose,
+                        "integrator_type": self.world_integrator_type
+                    },
+                },
+            }
+        )
+
         # Load robot configuration and other configuration files
         config_file_path = os.path.join(get_package_share_directory(
             "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
@@ -60,18 +72,9 @@ class ConfigWrapper:
         The function is also used at the node's initialization to set the motion generation configuration.
         In that case, the response argument is not used.
         '''
-        # Set the world configuration
-        self.world_cfg = WorldConfig.from_dict(
-            {
-                "blox": {
-                    "world": {
-                        "pose": self.world_pose,
-                        "integrator_type": self.world_integrator_type,
-                        "voxel_size":  node.get_parameter('voxel_size').get_parameter_value().double_value,
-                    },
-                },
-            }
-        )
+        # Update the world configuration
+        self.world_cfg.blox[0].voxel_size = node.get_parameter(
+            'voxel_size').get_parameter_value().double_value
 
         # Set the motion generation configuration with the values stored in this wrapper and the node
         motion_gen_config = MotionGenConfig.load_from_robot_config(
@@ -105,6 +108,9 @@ class ConfigWrapper:
 
         node.world_model = node.motion_gen.world_collision
 
+        # TODO Remove this when RViz has the ability to visualize the objects itself
+        node.debug_voxel()
+
         node.get_logger().info("Motion generation config set")
 
         # Set the response message when this function is called through the service
@@ -118,14 +124,27 @@ class ConfigWrapper:
         '''
         This function is called by the service callback created in the node.
         It adds an object to the world configuration.
-        The object is created based on the type, pose, dimensiosn and color and requested.
+        The object is created based on the type, pose, dimensions and color requested.
         The object is then added to the world configuration.
         '''
-        node.get_logger().info(
-            f"Adding object {request.name} for {node.get_name()}")
+        # Check for object name uniqueness
+        for world_object in self.world_cfg.objects:
+            if world_object.name == request.name:
+                response.success = False
+                response.message = 'Object with name "' + request.name + '" already exists'
+                return response
 
-        response.success = True
-        obstacle = None
+        # Check for object dimensions validity
+        if request.dimensions.x <= 0 or request.dimensions.y <= 0 or request.dimensions.z <= 0:
+            response.success = False
+            response.message = 'Object dimensions must be positive'
+            return response
+
+        # Check for object position validity
+        if request.pose.position.z - request.dimensions.z / 2 < 0:
+            response.success = False
+            response.message = 'Object must be above the ground'
+            return response
 
         # TODO adapt to other shapes
         extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
@@ -134,6 +153,12 @@ class ConfigWrapper:
                                 request.dimensions.y, request.dimensions.z]
         extracted_color = [request.color.r, request.color.g,
                            request.color.b, request.color.a]
+
+        node.get_logger().info(
+            f"Adding object {request.name} for {node.get_name()}")
+
+        response.success = True
+        obstacle = None
 
         # TODO add more shapes
         match request.type:
@@ -147,7 +172,8 @@ class ConfigWrapper:
 
             case _:  # default
                 response.success = False
-                response.message = 'Object type "' + str(request.type) + '" not recognized'
+                response.message = 'Object type "' + \
+                    str(request.type) + '" not recognized'
 
         if response.success:
             self.world_cfg.add_obstacle(obstacle)
@@ -157,4 +183,36 @@ class ConfigWrapper:
 
         return response
 
-    #TODO remove object from name
+    def callback_remove_object(self, request: RemoveObject, response):
+        '''
+        This function is called by the service callback created in the node.
+        It removes an object from the world configuration.
+        The object is removed based on the name requested.
+        '''
+        object_exists = False
+
+        # Check that the object exists
+        for world_object in self.world_cfg.objects:
+            if world_object.name == request.name:
+                object_exists = True
+                break
+
+        if not object_exists:
+            response.success = False
+            response.message = 'Object ' + request.name + ' does not exist'
+            return response
+
+        try:
+            # TODO Figure out why this is failing to remove it in the WorldCollision object
+            # but is properly removed from the WorldConfig obstacle list
+            self.world_cfg.remove_obstacle(request.name)
+
+        except Exception as e:
+            response.success = False
+            response.message = 'Object ' + request.name + \
+                ' failed to be removed: ' + str(e)
+            return response
+
+        response.success = True
+        response.message = 'Object ' + request.name + ' removed successfully'
+        return response
