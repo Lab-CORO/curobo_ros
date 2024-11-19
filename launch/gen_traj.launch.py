@@ -1,11 +1,12 @@
 from launch import LaunchDescription
 from launch.actions import LogInfo
 from launch_ros.actions import Node
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, PathJoinSubstitution
+from launch.substitutions import Command, PathJoinSubstitution, LaunchConfiguration
 from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
+from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -19,32 +20,27 @@ def generate_launch_description():
 
     urdf = Command(['cat ', PathJoinSubstitution(
         [FindPackageShare('curobo_ros'), 'curobo_doosan/src/m1013/', urdf_file_name])])
+   
+    declare_include_realsense_launch = DeclareLaunchArgument(
+        'include_realsense_launch',
+        default_value='false',
+        description='Inclure le fichier de lancement realsense.launch.py si défini à true'
+    )
+
+    include_realsense_launch = LaunchConfiguration('include_realsense_launch', default = 'false')
 
     return LaunchDescription([
-        # Define the static transform publisher node
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='static_transform_publisher',
-            output='screen',
-            arguments=['0.5', '0', '0.5', '0',
-                       '0', '0', 'base_0', 'camera_link']
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(curobo_ros_launch_dir, 'realsense.launch.py')),
+            condition=IfCondition(include_realsense_launch)
         ),
-
+       
         # Include the RViz2 launch file from curobo_ros
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(curobo_ros_launch_dir, 'launch_rviz2.launch.py')
             )
-        ),
-
-        # Include the RealSense camera launch file
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(get_package_share_directory(
-                    'realsense2_camera'), 'launch', 'rs_launch.py')
-            ),
-            launch_arguments={'clip_distance': '0.8'}.items()
         ),
 
         # Run curobo_fk node
