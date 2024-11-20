@@ -21,6 +21,7 @@ class ConfigWrapper:
         # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
+        self.collision_cache = {"obb": 10}
         self.collision_checker_type = CollisionCheckerType.BLOX
         self.use_cuda_graph = True
         self.num_trajopt_seeds = 12
@@ -82,7 +83,8 @@ class ConfigWrapper:
             self.world_cfg,
             node.tensor_args,
             trajopt_tsteps=self.trajopt_tsteps,
-            collision_cache={"obb": 10},
+            # TODO Test with different values
+            collision_cache=self.collision_cache,
             collision_checker_type=self.collision_checker_type,
             use_cuda_graph=self.use_cuda_graph,
             num_trajopt_seeds=self.num_trajopt_seeds,
@@ -120,6 +122,11 @@ class ConfigWrapper:
 
         return response
 
+    def update_world_config(self, node):
+        node.motion_gen.world_coll_checker.clear_cache()
+        node.motion_gen.update_world(self.world_cfg)
+        node.debug_voxel()
+
     def callback_add_object(self, node, request: AddObject, response):
         '''
         This function is called by the service callback created in the node.
@@ -146,11 +153,18 @@ class ConfigWrapper:
             response.message = 'Object must be above the ground'
             return response
 
-        # TODO adapt to other shapes
+        # Extract the values from the request
         extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
                           request.pose.orientation.w, request.pose.orientation.x, request.pose.orientation.y, request.pose.orientation.z]
+
+        # Extracted dimensions are interpreted differently based on the object type
+        # CUBOID: [x, y, z]
+        # CAPSULE: [radius, _, _]
+        # CYLINDER: [radius, height, _]
+        # SPHERE: [radius, _, _]
         extracted_dimensions = [request.dimensions.x,
                                 request.dimensions.y, request.dimensions.z]
+
         extracted_color = [request.color.r, request.color.g,
                            request.color.b, request.color.a]
 
@@ -160,7 +174,7 @@ class ConfigWrapper:
         response.success = True
         obstacle = None
 
-        # TODO add more shapes
+        # Create the object based on the type requested
         match request.type:
             case request.CUBOID:
                 obstacle = Cuboid(
@@ -170,6 +184,33 @@ class ConfigWrapper:
                     color=extracted_color,
                 )
 
+            case request.CAPSULE:
+                obstacle = Capsule(
+                    name=request.name,
+                    pose=extracted_pose,
+                    base=[0, 0, 0],
+                    tip=[0, 0, extracted_dimensions[1]],
+                    radius=extracted_dimensions[0],
+                    color=extracted_color,
+                ).get_cuboid()
+
+            case request.CYLINDER:
+                obstacle = Cylinder(
+                    name=request.name,
+                    pose=extracted_pose,
+                    radius=extracted_dimensions[0],
+                    height=extracted_dimensions[1],
+                    color=extracted_color,
+                ).get_cuboid()
+
+            case request.SPHERE:
+                obstacle = Sphere(
+                    name=request.name,
+                    pose=extracted_pose,
+                    radius=extracted_dimensions[0],
+                    color=extracted_color,
+                ).get_cuboid()
+
             case _:  # default
                 response.success = False
                 response.message = 'Object type "' + \
@@ -177,13 +218,12 @@ class ConfigWrapper:
 
         if response.success:
             self.world_cfg.add_obstacle(obstacle)
-            node.motion_gen.world_coll_checker.clear_cache()
-            node.motion_gen.update_world(self.world_cfg)
+            self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
 
         return response
 
-    def callback_remove_object(self, request: RemoveObject, response):
+    def callback_remove_object(self, node, request: RemoveObject, response):
         '''
         This function is called by the service callback created in the node.
         It removes an object from the world configuration.
@@ -213,6 +253,7 @@ class ConfigWrapper:
                 ' failed to be removed: ' + str(e)
             return response
 
+        self.update_world_config(node)
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
         return response

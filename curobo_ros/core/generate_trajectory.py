@@ -43,7 +43,7 @@ class CuRoboTrajectoryMaker(Node):
         self.declare_parameter('time_dilation_factor', 0.5)
 
         # World configuration parameters
-        self.declare_parameter('voxel_size', 0.08)
+        self.declare_parameter('voxel_size', 0.05)
         self.declare_parameter('collision_activation_distance', 0.025)
 
         # Publishers and subscribers
@@ -62,7 +62,7 @@ class CuRoboTrajectoryMaker(Node):
             AddObject, node_name + '/add_object', partial(self.config_wrapper.callback_add_object, self))
 
         self.add_object_srv = self.create_service(
-            RemoveObject, node_name + '/remove_object', self.config_wrapper.callback_remove_object)
+            RemoveObject, node_name + '/remove_object', partial(self.config_wrapper.callback_remove_object, self))
 
         # Markers
         self.marker_data = None
@@ -191,7 +191,8 @@ class CuRoboTrajectoryMaker(Node):
 
     def debug_voxel(self):
         # Voxel debug
-        bounding = Cuboid("t", dims=[2, 2, 2.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        bounding = Cuboid("t", dims=[2.0, 2.0, 2.0], pose=[
+                          0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0])
 
         voxel_size = self.get_parameter(
             'voxel_size').get_parameter_value().double_value
