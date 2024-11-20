@@ -85,7 +85,7 @@ class MarkerPublisher(Node):
     poses: [x,y,z voxel_size]
     """
     def publish_markers_voxel(self, poses, voxel_size):
-        self.delete_marker(self.marker_voxel_pub, "voxel")
+        # self.delete_marker(self.marker_voxel_pub, "voxel")
         marker_array = MarkerArray()
         for i, pose in enumerate(poses):
                 voxel_marker = Marker()

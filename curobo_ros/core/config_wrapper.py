@@ -79,6 +79,7 @@ class ConfigWrapper:
             self.world_cfg,
             node.tensor_args,
             trajopt_tsteps=self.trajopt_tsteps,
+            collision_cache={"obb": 10},
             collision_checker_type=self.collision_checker_type,
             use_cuda_graph=self.use_cuda_graph,
             num_trajopt_seeds=self.num_trajopt_seeds,
@@ -146,10 +147,14 @@ class ConfigWrapper:
 
             case _:  # default
                 response.success = False
-                response.message = 'Object type "' + request.type + '" not recognized'
+                response.message = 'Object type "' + str(request.type) + '" not recognized'
 
         if response.success:
             self.world_cfg.add_obstacle(obstacle)
+            node.motion_gen.world_coll_checker.clear_cache()
+            node.motion_gen.update_world(self.world_cfg)
             response.message = 'Object ' + request.name + ' added successfully'
 
         return response
+
+    #TODO remove object from name
