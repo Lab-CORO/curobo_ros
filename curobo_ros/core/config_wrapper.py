@@ -246,11 +246,8 @@ class ConfigWrapper:
             # but is properly removed from the WorldConfig obstacle list
             node.motion_gen.world_coll_checker.enable_obstacle(enable=False, name=request.name)
             self.world_cfg.remove_obstacle(request.name)
+            self.world_cfg.cuboid = list(filter(lambda obj: obj.name != request.name, self.world_cfg.cuboid))
             node.motion_gen.update_world(self.world_cfg)
-            node.motion_gen.world_coll_checker.clear_cache()
-            objects = [obj for obj in objects if obj.name != 'test']
-            objects = list(filter(lambda obj: obj.name != 'test', objects))
-            del self.world_cfg.cuboid[0]
 
         except Exception as e:
             response.success = False
