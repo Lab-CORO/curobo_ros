@@ -205,6 +205,7 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_publisher.publish_markers_voxel(voxels, voxel_size)
 
     def trajectory_generator(self):
+        self.debug_voxel()
         if not self.marker_received:
             return
         while not self.client.wait_for_service(timeout_sec=1.0):

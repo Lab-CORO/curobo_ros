@@ -220,7 +220,6 @@ class ConfigWrapper:
             self.world_cfg.add_obstacle(obstacle)
             self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
-
         return response
 
     def callback_remove_object(self, node, request: RemoveObject, response):
@@ -245,7 +244,13 @@ class ConfigWrapper:
         try:
             # TODO Figure out why this is failing to remove it in the WorldCollision object
             # but is properly removed from the WorldConfig obstacle list
+            node.motion_gen.world_coll_checker.enable_obstacle(enable=False, name=request.name)
             self.world_cfg.remove_obstacle(request.name)
+            node.motion_gen.update_world(self.world_cfg)
+            node.motion_gen.world_coll_checker.clear_cache()
+            objects = [obj for obj in objects if obj.name != 'test']
+            objects = list(filter(lambda obj: obj.name != 'test', objects))
+            del self.world_cfg.cuboid[0]
 
         except Exception as e:
             response.success = False
@@ -253,7 +258,6 @@ class ConfigWrapper:
                 ' failed to be removed: ' + str(e)
             return response
 
-        self.update_world_config(node)
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
         return response
