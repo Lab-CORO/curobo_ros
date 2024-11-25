@@ -258,3 +258,17 @@ class ConfigWrapper:
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
         return response
+
+    def callback_remove_all_objects(self, node, request, response):
+        '''
+        This function is called by the service callback created in the node.
+        It removes all objects from the world configuration.
+        '''
+
+        del self.world_cfg.objects[1:] # on ne veux pas supprimer blox pour la camera
+        self.world_cfg.cuboid = []  
+        node.motion_gen.update_world(self.world_cfg)
+
+        response.success = True
+        response.message = 'All objects removed successfully'
+        return response
