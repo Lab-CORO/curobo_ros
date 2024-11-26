@@ -104,6 +104,32 @@ ros2 run tf2_ros static_transform_publisher  0.5 0 0.5 0 0 0  base_0 camera_link
 
 Remplacer ces champs par ce qui vous convient.
 
+### Gestion manuelle d'objets virtuels
+
+Des services ont été ajoutés pour ajouter et retirer différents types d'objets à l'environnement.
+
+Présentement, il est possible d'ajouter ces types:
+
+- Cube (Cuboid selon l'appellation cuRobo)
+- Sphère
+- Capsule
+- Cylindre
+- Mesh à partir d'un fichier fournis par le paramètre optionnel `mesh_file_path` (en développement)
+
+Voici un exemple pour l'ajout et le retrait d'un cube de 25 cm:
+
+Ajout:
+
+```bash
+ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject "{type: 0, name: 'test_cuboid', pose: {position: {x: 0.70, y: 0.0, z: 1.0}, orientation: {x: 1.0, y: 0.0, z: 0.0, w: 1.0}}, dimensions: {x: 0.25, y: 0.25, z: 0.25}, color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}}"
+```
+
+Retrait:
+
+```bash
+ros2 service call /curobo_gen_traj/remove_object curobo_msgs/srv/RemoveObject "{name: 'test_cuboid'}"
+```
+
 ## Potentiels problèmes rencontrés
 
 ### Problème potentiel avec CUDA
