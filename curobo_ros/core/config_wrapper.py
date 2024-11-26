@@ -3,7 +3,7 @@ import os
 from curobo_msgs.srv import AddObject, RemoveObject
 
 from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere
+from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh
 from curobo.util_file import load_yaml, join_path, get_world_configs_path
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
@@ -212,6 +212,14 @@ class ConfigWrapper:
                     radius=extracted_dimensions[0],
                     color=extracted_color,
                 ).get_cuboid()
+
+            case request.MESH:
+                obstacle = Mesh(
+                    name=request.name,
+                    pose=extracted_pose,
+                    file_path=request.mesh_file_path,
+                    scale=extracted_dimensions
+                )
 
             case _:  # default
                 response.success = False
