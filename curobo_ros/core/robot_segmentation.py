@@ -85,15 +85,18 @@ class RobotSegmentation(Node):
             '/fused_pointcloud',        
             self.listener_callback,
             10)
+        #### Ne pas faire ca ! C'est pas grave un warning "variable inutilisée"
         self.subscription_fused_cloud  # éviter l'avertissement de variable inutilisée
 
         # Create subscriber to listen to the joint state of the robot
         self.subscription_joint_state = self.create_subscription(
             JointState,    # Type 
             '/joint_states',        
+            ### tu ne peux pas avoir deux sub sur le meme callback
             self.listener_callback,
             10)
-        self.subscription_joint_state  # éviter l'avertissement de variable inutilisée
+        #### Ne pas faire ca ! C'est pas grave un warning "variable inutilisée"
+        self.subscription_joint_state  # éviter l'avertissement de variable inutilisée 
 
         self.get_logger().info('Le noeud de segmentation du robot a été initialisé')
 
@@ -101,9 +104,11 @@ class RobotSegmentation(Node):
         self.get_logger().info('Nuage de points fusionné reçu')
 
         # Préparer l'observation de la caméra
+        ### Ici tu donne a cam_obs un objet "Subscription" et pas le point cloud. Ce que tu veux est dans le msg.data (cf:http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/PointCloud2.html)
         cam_obs = self.subscription_fused_cloud
 
         # Obtenir l'état actuel des articulations
+        ### Idem ! tu donne un obje "Subscription" et pas n jointState
         q_js = JointState(position=self.subscription_joint_state.position, joint_names= self.subscription_joint_state.names)
 
         # Effectuer la segmentation du robot
@@ -114,6 +119,7 @@ class RobotSegmentation(Node):
         self.get_logger().info('Nuage de points masqué publié')
 
         # Publier le nuage de points masqué
+        ### Tu ne peux pas pub deux message de type diffrente sur le meme topic
         self.publisher_.publish(depth_mask)
         self.get_logger().info('maskage du robot publié')
         
