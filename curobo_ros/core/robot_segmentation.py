@@ -1,210 +1,196 @@
+import torch
+from typing import Tuple
+
+from sensor_msgs.msg import JointState as SensorJointState, PointCloud2, PointField
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
-from sensor_msgs.msg import PointCloud2
-from sensor_msgs.msg import JointState
-from ament_index_python.packages import get_package_share_directory
 
-# Bibliothèques standard
-import time
-import os
-from typing import Dict, Optional, Tuple, Union
-
-# Bibliothèques tierces
-import imageio
-import numpy as np
-import torch
-from nvblox_torch.datasets.mesh_dataset import MeshDataset
-import cv2
-from cv_bridge import CvBridge
-
-# CuRobo
-from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
-from curobo.geom.types import PointCloud, WorldConfig
+# CuRobo imports
 from curobo.types.base import TensorDeviceType
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
-from curobo.types.robot import RobotConfig
 from curobo.types.state import JointState
-from curobo.util_file import get_robot_configs_path, get_world_configs_path, join_path, load_yaml
-from curobo.wrap.model.robot_segmenter import RobotSegmenter
-from curobo.types.base import TensorDeviceType
+from curobo.util_file import (
+    get_world_configs_path,
+    join_path,
+    load_yaml,
+)
 from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
+from curobo.geom.types import WorldConfig
+
+import numpy as np
 
 robot_file = "'curobo_doosan/src/m1013/m1013.yml'"
 
-# create a world from a dictionary of objects
-# cuboid: {} # dictionary of objects that are cuboids
-# mesh: {} # dictionary of objects that are meshes
+# Create world configuration
 world_config = WorldConfig.from_dict(
-            load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
+    load_yaml(join_path(get_world_configs_path(), "collision_wall.yml"))
+)
 
 tensor_args = TensorDeviceType()
-config = RobotWorldConfig.load_from_config(robot_file, world_config,
-                                          collision_activation_distance=0.0)
+config = RobotWorldConfig.load_from_config(
+    robot_file, world_config, collision_activation_distance=0.0
+)
 curobo_fn = RobotWorld(config)
 
+
 class RobotSegmentation(Node):
-    '''
-    Noeud de segmentation du robot qui a pour objectif de
-    s'abonner au nuage de points fusionné des deux caméras et de masquer l'image
-    du robot afin que nous puissions voir l'environnement de travail sans le robot.
-    '''
+    """
+    Robot segmentation node that subscribes to the fused 3D point cloud
+    and masks the robot's points so we can view the work environment without the robot.
+    """
+
     def __init__(
-            self,
-            robot_world = curobo_fn,
-            distance_threshold: float = 0.05,
-            use_cuda_graph: bool = True,
-            ops_dtype: torch.dtype = torch.float32,
-            depth_to_meter: float = 0.001):
-        # take from https://github.com/NVlabs/curobo/blob/main/src/curobo/wrap/model/robot_segmenter.py for segmentation
+        self,
+        robot_world=curobo_fn,
+        distance_threshold: float = 0.05,
+        ops_dtype: torch.dtype = torch.float32,
+    ):
+        super().__init__("robot_segmentation")
+
         self._robot_world = robot_world
-        self._projection_rays = None
-        self.ready = False
-        self._out_points_buffer = None
-        self._out_gp = None
-        self._out_gq = None
-        self._out_gpt = None
-        self._cu_graph = None
-        self._use_cuda_graph = use_cuda_graph
-        self.tensor_args = robot_world.tensor_args
         self.distance_threshold = distance_threshold
         self._ops_dtype = ops_dtype
-        self._depth_to_meter = depth_to_meter
-        # initialisation of manipulate objects
         self.q_js = None
-        self.cam_obs = None
+        self.point_cloud = None
 
-        super().__init__('robot_segmentation')
+        # Create publisher for the masked point cloud
+        self.publisher_ = self.create_publisher(PointCloud2, "masked_pointcloud", 10)
 
-        # Create the publisher for the mask
-        self.publisher_ = self.create_publisher(PointCloud2, 'mask_pointcloud', 10)
-
-        # Create subscriber to listen to the fused cloud
+        # Subscribe to the fused point cloud
         self.subscription_fused_cloud = self.create_subscription(
-            PointCloud2,    # Type 
-            '/fused_pointcloud',        
-            self.listener_callback1,
-            10)
+            PointCloud2,
+            "/fused_pointcloud",
+            self.listener_callback_pointcloud,
+            10,
+        )
 
-        # Create subscriber to listen to the joint state of the robot
+        # Subscribe to the robot's joint state
         self.subscription_joint_state = self.create_subscription(
-            JointState,    # Type 
-            '/joint_states',        
-            self.listener_callback2,
-            10)
->>>>>>> c187dca (Correct the code after guillaume verification message)
+            SensorJointState,
+            "/dsr01/joint_states",
+            self.listener_callback_jointstate,
+            10,
+        )
 
-        self.get_logger().info('segmentation node is initialized')
+        self.get_logger().info("Segmentation node is initialized")
 
-    #Callback to recuperate fused cloud
-    def listener_callback1(self, msg):
-        self.get_logger().info('Pointcloud received')
-        # Préparer l'observation de la caméra
-        self.cam_obs = msg.data #http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/PointCloud2.html
-       
-    #Callback to recuperate Joinstate position and name
-    def listener_callback2(self, msg):
-        self.get_logger().info('JointState Received')
-        # Obtenir l'état actuel des articulations
-        self.q_js = JointState(position=msg.position, joint_names= msg.name) #http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/JointState.html
-    #
-    def _call_op(self, cam_obs, q):
-        if self._use_cuda_graph:
-            if self._cu_graph is None:
-                self._create_cg_graph(cam_obs, q)
-            self._cu_cam_obs.copy_(cam_obs)
-            self._cu_q.copy_(q)
-            self._cu_graph.replay()
-            return self._cu_out.clone(), self._cu_filtered_out.clone()
-        return self._mask_op(cam_obs, q)
-    #
-    def _mask_op(self, camera_obs, q):
+    # Callback to retrieve the fused point cloud
+    def listener_callback_pointcloud(self, msg):
+        self.get_logger().info("Point cloud received")
+        # Convert PointCloud2 message to numpy array
+        cloud_points = self.pointcloud2_to_array(msg)
+        if cloud_points is not None:
+            self.point_cloud = torch.tensor(cloud_points, dtype=self._ops_dtype)
+            # Proceed with segmentation if joint state is available
+            if self.q_js is not None:
+                self.segment_and_publish()
+
+    # Callback to retrieve the joint state
+    def listener_callback_jointstate(self, msg):
+        self.get_logger().info("JointState received")
+        # Get the current joint state
+        self.q_js = JointState(position=torch.tensor(msg.position), joint_names=msg.name)
+        # Proceed with segmentation if point cloud is available
+        if self.point_cloud is not None:
+            self.segment_and_publish()
+
+    def segment_and_publish(self):
+        # Perform robot segmentation
+        filtered_pointcloud = self._mask_op(self.point_cloud, self.q_js.position)
+
+        # Convert filtered point cloud back to PointCloud2 message
+        masked_pc_msg = self.array_to_pointcloud2(filtered_pointcloud)
+
+        # Publish the masked point cloud
+        self.publisher_.publish(masked_pc_msg)
+        self.get_logger().info("Masked point cloud published")
+
+    def _mask_op(self, point_cloud: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
         if len(q.shape) == 1:
             q = q.unsqueeze(0)
 
+        # Get robot's spheres for the current joint configuration
         robot_spheres = self._robot_world.get_kinematics(q).link_spheres_tensor
+        robot_spheres = robot_spheres.view(-1, 4)  # Reshape to (num_spheres, 4)
 
-        points = self.get_pointcloud_from_depth(camera_obs)
-        camera_to_robot = camera_obs.pose
-        points = points.to(dtype=torch.float32)
+        # Compute distance from each point to each sphere
+        points = point_cloud.unsqueeze(1)  # Shape: (num_points, 1, 3)
+        spheres_centers = robot_spheres[:, :3].unsqueeze(0)  # Shape: (1, num_spheres, 3)
+        spheres_radii = robot_spheres[:, 3].unsqueeze(0)  # Shape: (1, num_spheres)
 
-        if self._out_points_buffer is None:
-            self._out_points_buffer = points.clone()
-        if self._out_gpt is None:
-            self._out_gpt = torch.zeros((points.shape[0], points.shape[1], 3), device=points.device)
-        if self._out_gp is None:
-            self._out_gp = torch.zeros((camera_to_robot.position.shape[0], 3), device=points.device)
-        if self._out_gq is None:
-            self._out_gq = torch.zeros(
-                (camera_to_robot.quaternion.shape[0], 4), device=points.device
-            )
+        distances = torch.norm(points - spheres_centers, dim=2) - spheres_radii
+        min_distances, _ = torch.min(distances, dim=1)
 
-        points_in_robot_frame = camera_to_robot.batch_transform_points(
-            points,
-            out_buffer=self._out_points_buffer,
-            gp_out=self._out_gp,
-            gq_out=self._out_gq,
-            gpt_out=self._out_gpt,
-        )
+        # Create mask of points that are outside the robot (distance > threshold)
+        mask = min_distances > self.distance_threshold
 
-        out_points = points_in_robot_frame
+        # Filter the point cloud
+        filtered_point_cloud = point_cloud[mask]
 
-        mask, filtered_image = self.mask_spheres_image(
-            camera_obs.depth_image, robot_spheres, out_points, self.distance_threshold
-        )
+        return filtered_point_cloud
 
-        return mask, filtered_image
-    #function that conclude the last step of segmentation will return the filterd image and the robot mask
-    def mask_spheres_image(
-    image: torch.Tensor,
-    link_spheres_tensor: torch.Tensor,
-    points: torch.Tensor,
-    distance_threshold: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def pointcloud2_to_array(self, cloud_msg):
+        """Convert PointCloud2 message to numpy array"""
+        # Extract cloud data
+        field_names = [field.name for field in cloud_msg.fields]
+        if not ('x' in field_names and 'y' in field_names and 'z' in field_names):
+            self.get_logger().error("PointCloud2 message does not contain 'x', 'y', 'z' fields.")
+            return None
 
-        if link_spheres_tensor.shape[0] != 1:
-            assert link_spheres_tensor.shape[0] == points.shape[0]
-        if len(points.shape) == 2:
-            points = points.unsqueeze(0)
+        dtype_list = []
+        for field in cloud_msg.fields:
+            if field.datatype == PointField.FLOAT32:
+                dtype = np.float32
+            elif field.datatype == PointField.FLOAT64:
+                dtype = np.float64
+            else:
+                self.get_logger().warn(f"Unsupported PointField datatype: {field.datatype}")
+                return None
+            dtype_list.append((field.name, dtype))
 
-        robot_spheres = link_spheres_tensor.view(link_spheres_tensor.shape[0], -1, 4).contiguous()
-        robot_spheres = robot_spheres.unsqueeze(-3)
+        cloud_arr = np.frombuffer(cloud_msg.data, dtype=np.dtype(dtype_list))
+        points = np.zeros((cloud_msg.width * cloud_msg.height, 3), dtype=np.float32)
+        points[:, 0] = cloud_arr['x']
+        points[:, 1] = cloud_arr['y']
+        points[:, 2] = cloud_arr['z']
 
-        robot_radius = robot_spheres[..., 3]
-        points = points.unsqueeze(-2)
-        sph_distance = -1 * (
-            torch.linalg.norm(points - robot_spheres[..., :3], dim=-1) - robot_radius
-        )  # b, n_spheres
-        distance = torch.max(sph_distance, dim=-1)[0]
+        # Remove NaN or infinite values
+        mask = np.isfinite(points).all(axis=1)
+        points = points[mask, :]
 
-        distance = distance.view(
-            image.shape[0],
-            image.shape[1],
-            image.shape[2],
-        )
-        mask = torch.logical_and((image > 0.0), (distance > -distance_threshold))
-        filtered_image = torch.where(mask, 0, image)
-        return mask, filtered_image
-    
-    def segementation(self) :
+        return points
 
-         # Effectuer la segmentation du robot
-        depth_mask, filtered_pointcloud = self._mask_op(self,self.cam_obs,self.q_js)
+    def array_to_pointcloud2(self, points: torch.Tensor):
+        """Convert numpy array or torch tensor to PointCloud2 message"""
+        # Ensure points is a numpy array
+        if isinstance(points, torch.Tensor):
+            points = points.cpu().numpy()
 
-        # Publier le nuage de points masqué
-        self.publisher_.publish(filtered_pointcloud)
-        self.get_logger().info('Nuage de points masqué publié')
+        # Create PointCloud2 message
+        msg = PointCloud2()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "your_frame_id"  # Set appropriate frame id
+        msg.height = 1
+        msg.width = points.shape[0]
+        msg.is_bigendian = False
+        msg.is_dense = True
+        msg.point_step = 12  # Size of a point in bytes (3 x 4 bytes for float32)
+        msg.row_step = msg.point_step * points.shape[0]
 
-        # Publier le nuage de points masqué
-        self.publisher_.publish(depth_mask)
-        self.get_logger().info('maskage du robot publié')
-        
+        # Define fields x, y, z
+        msg.fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
 
-    def main(args=None):
-        rclpy.init(args=args)
-        robot_segmentation = RobotSegmentation()
-        rclpy.spin(robot_segmentation)
-        robot_segmentation.destroy_node()
-        rclpy.shutdown()
+        # Convert points to byte data
+        msg.data = np.asarray(points, dtype=np.float32).tobytes()
+        return msg
 
+
+def main(args=None):
+    rclpy.init(args=args)
+    robot_segmentation = RobotSegmentation()
+    rclpy.spin(robot_segmentation)
+    robot_segmentation.destroy_node()
+    rclpy.shutdown()
