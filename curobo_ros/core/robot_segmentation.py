@@ -58,7 +58,6 @@ class RobotSegmentation(Node):
             ops_dtype: torch.dtype = torch.float32,
             depth_to_meter: float = 0.001):
         # take from https://github.com/NVlabs/curobo/blob/main/src/curobo/wrap/model/robot_segmenter.py for segmentation
-
         self._robot_world = robot_world
         self._projection_rays = None
         self.ready = False
@@ -72,58 +71,44 @@ class RobotSegmentation(Node):
         self.distance_threshold = distance_threshold
         self._ops_dtype = ops_dtype
         self._depth_to_meter = depth_to_meter
-        super().__init__('robot_segmentation')
+        # initialisation of manipulate objects
+        self.q_js = None
+        self.cam_obs = None
 
-   
-        
+        super().__init__('robot_segmentation')
 
         # Create the publisher for the mask
         self.publisher_ = self.create_publisher(PointCloud2, 'mask_pointcloud', 10)
+
         # Create subscriber to listen to the fused cloud
         self.subscription_fused_cloud = self.create_subscription(
             PointCloud2,    # Type 
             '/fused_pointcloud',        
-            self.listener_callback,
+            self.listener_callback1,
             10)
-        #### Ne pas faire ca ! C'est pas grave un warning "variable inutilisée"
-        self.subscription_fused_cloud  # éviter l'avertissement de variable inutilisée
 
         # Create subscriber to listen to the joint state of the robot
         self.subscription_joint_state = self.create_subscription(
             JointState,    # Type 
             '/joint_states',        
-            ### tu ne peux pas avoir deux sub sur le meme callback
-            self.listener_callback,
+            self.listener_callback2,
             10)
-        #### Ne pas faire ca ! C'est pas grave un warning "variable inutilisée"
-        self.subscription_joint_state  # éviter l'avertissement de variable inutilisée 
+>>>>>>> c187dca (Correct the code after guillaume verification message)
 
-        self.get_logger().info('Le noeud de segmentation du robot a été initialisé')
+        self.get_logger().info('segmentation node is initialized')
 
-    def listener_callback(self, msg):
-        self.get_logger().info('Nuage de points fusionné reçu')
-
+    #Callback to recuperate fused cloud
+    def listener_callback1(self, msg):
+        self.get_logger().info('Pointcloud received')
         # Préparer l'observation de la caméra
-        ### Ici tu donne a cam_obs un objet "Subscription" et pas le point cloud. Ce que tu veux est dans le msg.data (cf:http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/PointCloud2.html)
-        cam_obs = self.subscription_fused_cloud
-
+        self.cam_obs = msg.data #http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/PointCloud2.html
+       
+    #Callback to recuperate Joinstate position and name
+    def listener_callback2(self, msg):
+        self.get_logger().info('JointState Received')
         # Obtenir l'état actuel des articulations
-        ### Idem ! tu donne un obje "Subscription" et pas n jointState
-        q_js = JointState(position=self.subscription_joint_state.position, joint_names= self.subscription_joint_state.names)
-
-        # Effectuer la segmentation du robot
-        depth_mask, filtered_pointcloud = self._mask_op(self,cam_obs,q_js)
-
-        # Publier le nuage de points masqué
-        self.publisher_.publish(filtered_pointcloud)
-        self.get_logger().info('Nuage de points masqué publié')
-
-        # Publier le nuage de points masqué
-        ### Tu ne peux pas pub deux message de type diffrente sur le meme topic
-        self.publisher_.publish(depth_mask)
-        self.get_logger().info('maskage du robot publié')
-        
-
+        self.q_js = JointState(position=msg.position, joint_names= msg.name) #http://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/JointState.html
+    #
     def _call_op(self, cam_obs, q):
         if self._use_cuda_graph:
             if self._cu_graph is None:
@@ -133,7 +118,7 @@ class RobotSegmentation(Node):
             self._cu_graph.replay()
             return self._cu_out.clone(), self._cu_filtered_out.clone()
         return self._mask_op(cam_obs, q)
-
+    #
     def _mask_op(self, camera_obs, q):
         if len(q.shape) == 1:
             q = q.unsqueeze(0)
@@ -170,21 +155,7 @@ class RobotSegmentation(Node):
         )
 
         return mask, filtered_image
-
-
-    def mask_image(
-        image: torch.Tensor, distance: torch.Tensor, distance_threshold: float
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        distance = distance.view(
-            image.shape[0],
-            image.shape[1],
-            image.shape[2],
-        )
-        mask = torch.logical_and((image > 0.0), (distance > -distance_threshold))
-        filtered_image = torch.where(mask, 0, image)
-        return mask, filtered_image
-
-
+    #function that conclude the last step of segmentation will return the filterd image and the robot mask
     def mask_spheres_image(
     image: torch.Tensor,
     link_spheres_tensor: torch.Tensor,
@@ -215,6 +186,20 @@ class RobotSegmentation(Node):
         mask = torch.logical_and((image > 0.0), (distance > -distance_threshold))
         filtered_image = torch.where(mask, 0, image)
         return mask, filtered_image
+    
+    def segementation(self) :
+
+         # Effectuer la segmentation du robot
+        depth_mask, filtered_pointcloud = self._mask_op(self,self.cam_obs,self.q_js)
+
+        # Publier le nuage de points masqué
+        self.publisher_.publish(filtered_pointcloud)
+        self.get_logger().info('Nuage de points masqué publié')
+
+        # Publier le nuage de points masqué
+        self.publisher_.publish(depth_mask)
+        self.get_logger().info('maskage du robot publié')
+        
 
     def main(args=None):
         rclpy.init(args=args)
