@@ -64,6 +64,9 @@ class CuRoboTrajectoryMaker(Node):
         self.add_object_srv = self.create_service(
             RemoveObject, node_name + '/remove_object', partial(self.config_wrapper.callback_remove_object, self))
 
+        self.remove_all_objects_srv = self.create_service(
+            Trigger, node_name + '/remove_all_objects', partial(self.config_wrapper.callback_remove_all_objects, self))
+
         # Markers
         self.marker_data = None
         self.marker_received = False

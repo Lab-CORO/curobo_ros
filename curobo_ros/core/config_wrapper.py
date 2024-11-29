@@ -63,7 +63,7 @@ class ConfigWrapper:
         self.world_cfg_table = WorldConfig.from_dict(
             load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
-    def set_motion_gen_config(self, node, request, response):
+    def set_motion_gen_config(self, node, _, response):
         '''
         This function sets the motion generation configuration for the trajectory generation node.
         It is called by the service callback created in the node.
@@ -133,6 +133,8 @@ class ConfigWrapper:
         It adds an object to the world configuration.
         The object is created based on the type, pose, dimensions and color requested.
         The object is then added to the world configuration.
+        Note: Since cuRobo currently only supports Cuboid object manipulation,
+        all objects are converted to a Cuboid object before being added.
         '''
         # Check for object name uniqueness
         for world_object in self.world_cfg.objects:
@@ -243,9 +245,10 @@ class ConfigWrapper:
             return response
 
         try:
-            # TODO Figure out why this is failing to remove it in the WorldCollision object
-            # but is properly removed from the WorldConfig obstacle list
             self.world_cfg.remove_obstacle(request.name)
+            self.world_cfg.cuboid = list(
+                filter(lambda obj: obj.name != request.name, self.world_cfg.cuboid))
+            self.update_world_config(node)
 
         except Exception as e:
             response.success = False
@@ -253,7 +256,26 @@ class ConfigWrapper:
                 ' failed to be removed: ' + str(e)
             return response
 
-        self.update_world_config(node)
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
+        return response
+
+    def callback_remove_all_objects(self, node, _, response):
+        '''
+        This function is called by the service callback created in the node.
+        It removes all objects from the world configuration.
+        Since cuRobo only supports Cuboid object manipulation, it only needs to remove objects of that type.
+        '''
+        # Get objects to remove
+        # Targeting only Cuboids protects any Blox that may have been added by cameras
+        for world_object in self.world_cfg.cuboid:
+            self.world_cfg.remove_obstacle(world_object.name)
+
+        # Empty the list of cuboids that lingers in the world config
+        self.world_cfg.cuboid = []
+
+        self.update_world_config(node)
+
+        response.success = True
+        response.message = 'All objects removed successfully'
         return response
