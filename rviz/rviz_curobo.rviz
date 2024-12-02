@@ -31,8 +31,6 @@ Panels:
     Name: Trajectory Preview
   - Class: curobo_rviz/RvizArgsPanel
     Name: RvizArgsPanel
-  - Class: add_objects_panel/AddObjectsPanel
-    Name: AddObjectsPanel
 Visualization Manager:
   Class: ""
   Displays:
@@ -77,6 +75,7 @@ Visualization Manager:
           Value: true
         link3:
           Value: true
+
         link4:
           Value: true
         link5:
