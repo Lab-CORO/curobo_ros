@@ -44,7 +44,8 @@ class RobotSegmentation(Node):
         distance_threshold: float = 0.05,
         ops_dtype: torch.dtype = torch.float32,
     ):
-        super().__init__("robot_segmentation")
+        node_name = 'curobo_robot_segmentation'
+        super().__init__(node_name)
 
         self._robot_world = robot_world
         self.distance_threshold = distance_threshold
@@ -194,3 +195,6 @@ def main(args=None):
     rclpy.spin(robot_segmentation)
     robot_segmentation.destroy_node()
     rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
