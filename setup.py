@@ -33,6 +33,7 @@ setup(
             'curobo_fk = curobo_ros.core.fk:main',
             'curobo_gen_traj = curobo_ros.core.generate_trajectory:main',
             'curobo_int_mark = curobo_ros.interfaces.simple_arrow:main',
+            'robot_segmentation = curobo_ros.core.robot_segmentation:main',
             # 'test_fk = curobo_ros.test_fk:main'
         ],
     },
