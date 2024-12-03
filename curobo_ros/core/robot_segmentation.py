@@ -1,36 +1,61 @@
+import os
 import torch
 from typing import Tuple
 
 from sensor_msgs.msg import JointState as SensorJointState, PointCloud2, PointField
 import rclpy
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 
-# CuRobo imports
+# cuRobo imports
+from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
 from curobo.types.base import TensorDeviceType
+from curobo.types.robot import RobotConfig
 from curobo.types.state import JointState
 from curobo.util_file import (
+    get_robot_path,
     get_world_configs_path,
     join_path,
     load_yaml,
 )
-from curobo.wrap.model.robot_world import RobotWorld, RobotWorldConfig
 from curobo.geom.types import WorldConfig
 
 import numpy as np
 
-robot_file = "'curobo_doosan/src/m1013/m1013.yml'"
+# Import read_points from sensor_msgs_py
+from sensor_msgs_py.point_cloud2 import read_points
 
-# Create world configuration
-world_config = WorldConfig.from_dict(
-    load_yaml(join_path(get_world_configs_path(), "collision_wall.yml"))
+# Initialize tensor arguments with CUDA device
+tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
+
+# Get the path to your curobo_ros package
+package_share_directory = get_package_share_directory('curobo_ros')
+
+# Construct the path to m1013.yml within your package
+robot_config_file = os.path.join(
+    package_share_directory,
+    'curobo_doosan', 'src', 'm1013', 'm1013.yml'
 )
 
-tensor_args = TensorDeviceType()
-config = RobotWorldConfig.load_from_config(
-    robot_file, world_config, collision_activation_distance=0.0
-)
-curobo_fn = RobotWorld(config)
+# Load the robot configuration
+config_file = load_yaml(robot_config_file)
 
+# Extract necessary information from the configuration
+urdf_file = config_file["robot_cfg"]["kinematics"]["urdf_path"]
+base_link = config_file["robot_cfg"]["kinematics"]["base_link"]
+ee_link = config_file["robot_cfg"]["kinematics"]["ee_link"]
+
+# Ensure the URDF file path is correct
+urdf_file = os.path.join(
+    package_share_directory,
+    'curobo_doosan', 'src', 'm1013', urdf_file
+)
+
+# Generate robot configuration from URDF path, base frame, and end-effector frame
+robot_cfg = RobotConfig.from_basic(urdf_file, base_link, ee_link, tensor_args)
+
+# Initialize the CUDA robot model
+kin_model = CudaRobotModel(robot_cfg.kinematics)
 
 class RobotSegmentation(Node):
     """
@@ -40,16 +65,17 @@ class RobotSegmentation(Node):
 
     def __init__(
         self,
-        robot_world=curobo_fn,
+        kin_model=kin_model,
         distance_threshold: float = 0.05,
         ops_dtype: torch.dtype = torch.float32,
     ):
         node_name = 'curobo_robot_segmentation'
         super().__init__(node_name)
 
-        self._robot_world = robot_world
+        self._kin_model = kin_model
         self.distance_threshold = distance_threshold
         self._ops_dtype = ops_dtype
+        self._device = torch.device('cuda')
         self.q_js = None
         self.point_cloud = None
 
@@ -77,19 +103,29 @@ class RobotSegmentation(Node):
     # Callback to retrieve the fused point cloud
     def listener_callback_pointcloud(self, msg):
         self.get_logger().info("Point cloud received")
-        # Convert PointCloud2 message to numpy array
-        cloud_points = self.pointcloud2_to_array(msg)
-        if cloud_points is not None:
-            self.point_cloud = torch.tensor(cloud_points, dtype=self._ops_dtype)
+
+        # Convert PointCloud2 message to numpy array using read_points
+        cloud_points = []
+        for point in read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True):
+            cloud_points.append([point[0], point[1], point[2]])
+        cloud_points = np.array(cloud_points, dtype=np.float32)
+
+        if cloud_points.size > 0:
+            self.point_cloud = torch.tensor(cloud_points, dtype=self._ops_dtype, device=self._device)
             # Proceed with segmentation if joint state is available
             if self.q_js is not None:
                 self.segment_and_publish()
+        else:
+            self.get_logger().warn("Received empty point cloud.")
 
     # Callback to retrieve the joint state
     def listener_callback_jointstate(self, msg):
         self.get_logger().info("JointState received")
         # Get the current joint state
-        self.q_js = JointState(position=torch.tensor(msg.position), joint_names=msg.name)
+        self.q_js = JointState(
+            position=torch.tensor(msg.position, dtype=self._ops_dtype, device=self._device),
+            joint_names=msg.name
+        )
         # Proceed with segmentation if point cloud is available
         if self.point_cloud is not None:
             self.segment_and_publish()
@@ -110,7 +146,8 @@ class RobotSegmentation(Node):
             q = q.unsqueeze(0)
 
         # Get robot's spheres for the current joint configuration
-        robot_spheres = self._robot_world.get_kinematics(q).link_spheres_tensor
+        kinematics_state = self._kin_model.get_state(q)
+        robot_spheres = kinematics_state.link_spheres_tensor
         robot_spheres = robot_spheres.view(-1, 4)  # Reshape to (num_spheres, 4)
 
         # Compute distance from each point to each sphere
@@ -129,37 +166,6 @@ class RobotSegmentation(Node):
 
         return filtered_point_cloud
 
-    def pointcloud2_to_array(self, cloud_msg):
-        """Convert PointCloud2 message to numpy array"""
-        # Extract cloud data
-        field_names = [field.name for field in cloud_msg.fields]
-        if not ('x' in field_names and 'y' in field_names and 'z' in field_names):
-            self.get_logger().error("PointCloud2 message does not contain 'x', 'y', 'z' fields.")
-            return None
-
-        dtype_list = []
-        for field in cloud_msg.fields:
-            if field.datatype == PointField.FLOAT32:
-                dtype = np.float32
-            elif field.datatype == PointField.FLOAT64:
-                dtype = np.float64
-            else:
-                self.get_logger().warn(f"Unsupported PointField datatype: {field.datatype}")
-                return None
-            dtype_list.append((field.name, dtype))
-
-        cloud_arr = np.frombuffer(cloud_msg.data, dtype=np.dtype(dtype_list))
-        points = np.zeros((cloud_msg.width * cloud_msg.height, 3), dtype=np.float32)
-        points[:, 0] = cloud_arr['x']
-        points[:, 1] = cloud_arr['y']
-        points[:, 2] = cloud_arr['z']
-
-        # Remove NaN or infinite values
-        mask = np.isfinite(points).all(axis=1)
-        points = points[mask, :]
-
-        return points
-
     def array_to_pointcloud2(self, points: torch.Tensor):
         """Convert numpy array or torch tensor to PointCloud2 message"""
         # Ensure points is a numpy array
@@ -169,7 +175,7 @@ class RobotSegmentation(Node):
         # Create PointCloud2 message
         msg = PointCloud2()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "your_frame_id"  # Set appropriate frame id
+        msg.header.frame_id = "base_link"  # Set appropriate frame id
         msg.height = 1
         msg.width = points.shape[0]
         msg.is_bigendian = False
@@ -185,9 +191,8 @@ class RobotSegmentation(Node):
         ]
 
         # Convert points to byte data
-        msg.data = np.asarray(points, dtype=np.float32).tobytes()
+        msg.data = points.astype(np.float32).tobytes()
         return msg
-
 
 def main(args=None):
     rclpy.init(args=args)
