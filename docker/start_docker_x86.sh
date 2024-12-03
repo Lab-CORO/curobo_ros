@@ -24,6 +24,8 @@ if ! [[ "$OSTYPE" == "msys" ]]; then
 
     # Exécutez le conteneur Docker avec les bonnes options
     docker run --name x86docker --rm -it \
+        --ipc=host \
+        --pid=host \
         --privileged \
         -e NVIDIA_DISABLE_REQUIRE=1 \
         -e NVIDIA_DRIVER_CAPABILITIES=all \
