@@ -164,6 +164,7 @@ class ConfigWrapper:
         # CAPSULE: [radius, _, _]
         # CYLINDER: [radius, height, _]
         # SPHERE: [radius, _, _]
+        # MESH: [scale_x, scale_y, scale_z]
         extracted_dimensions = [request.dimensions.x,
                                 request.dimensions.y, request.dimensions.z]
 
@@ -219,7 +220,7 @@ class ConfigWrapper:
                     pose=extracted_pose,
                     file_path=request.mesh_file_path,
                     scale=extracted_dimensions
-                )
+                ).get_cuboid()
 
             case _:  # default
                 response.success = False

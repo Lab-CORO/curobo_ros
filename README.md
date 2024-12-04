@@ -114,7 +114,7 @@ Présentement, il est possible d'ajouter ces types:
 - Sphère
 - Capsule
 - Cylindre
-- Mesh à partir d'un fichier fournis par le paramètre optionnel `mesh_file_path` (en développement)
+- Mesh à partir d'un fichier fournis par le paramètre optionnel `mesh_file_path`
 
 Voici un exemple pour l'ajout et le retrait d'un cube de 25 cm:
 
@@ -128,6 +128,12 @@ Retrait:
 
 ```bash
 ros2 service call /curobo_gen_traj/remove_object curobo_msgs/srv/RemoveObject "{name: 'test_cuboid'}"
+```
+
+Il est aussi possible de retirer tous les objets ajoutés d'un seul coup:
+
+```bash
+ros2 service call /curobo_gen_traj/remove_all_objects std_srvs/srv/Trigger
 ```
 
 ## Potentiels problèmes rencontrés
