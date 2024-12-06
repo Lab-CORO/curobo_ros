@@ -1,9 +1,9 @@
 import os
 
-from curobo_msgs.srv import AddObject
+from curobo_msgs.srv import AddObject, RemoveObject
 
 from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere
+from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh
 from curobo.util_file import load_yaml, join_path, get_world_configs_path
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
@@ -21,6 +21,7 @@ class ConfigWrapper:
         # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
+        self.collision_cache = {"obb": 10}
         self.collision_checker_type = CollisionCheckerType.BLOX
         self.use_cuda_graph = True
         self.num_trajopt_seeds = 12
@@ -39,6 +40,18 @@ class ConfigWrapper:
         self.world_pose = [0, 0, 0, 1, 0, 0, 0]
         self.world_integrator_type = "occupancy"
 
+        # Set the world configuration
+        self.world_cfg = WorldConfig.from_dict(
+            {
+                "blox": {
+                    "world": {
+                        "pose": self.world_pose,
+                        "integrator_type": self.world_integrator_type
+                    },
+                },
+            }
+        )
+
         # Load robot configuration and other configuration files
         config_file_path = os.path.join(get_package_share_directory(
             "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
@@ -50,7 +63,7 @@ class ConfigWrapper:
         self.world_cfg_table = WorldConfig.from_dict(
             load_yaml(join_path(get_world_configs_path(), "collision_wall.yml")))
 
-    def set_motion_gen_config(self, node, request, response):
+    def set_motion_gen_config(self, node, _, response):
         '''
         This function sets the motion generation configuration for the trajectory generation node.
         It is called by the service callback created in the node.
@@ -60,18 +73,9 @@ class ConfigWrapper:
         The function is also used at the node's initialization to set the motion generation configuration.
         In that case, the response argument is not used.
         '''
-        # Set the world configuration
-        self.world_cfg = WorldConfig.from_dict(
-            {
-                "blox": {
-                    "world": {
-                        "pose": self.world_pose,
-                        "integrator_type": self.world_integrator_type,
-                        "voxel_size":  node.get_parameter('voxel_size').get_parameter_value().double_value,
-                    },
-                },
-            }
-        )
+        # Update the world configuration
+        self.world_cfg.blox[0].voxel_size = node.get_parameter(
+            'voxel_size').get_parameter_value().double_value
 
         # Set the motion generation configuration with the values stored in this wrapper and the node
         motion_gen_config = MotionGenConfig.load_from_robot_config(
@@ -79,7 +83,8 @@ class ConfigWrapper:
             self.world_cfg,
             node.tensor_args,
             trajopt_tsteps=self.trajopt_tsteps,
-            collision_cache={"obb": 10},
+            # TODO Test with different values
+            collision_cache=self.collision_cache,
             collision_checker_type=self.collision_checker_type,
             use_cuda_graph=self.use_cuda_graph,
             num_trajopt_seeds=self.num_trajopt_seeds,
@@ -105,6 +110,9 @@ class ConfigWrapper:
 
         node.world_model = node.motion_gen.world_collision
 
+        # TODO Remove this when RViz has the ability to visualize the objects itself
+        node.debug_voxel()
+
         node.get_logger().info("Motion generation config set")
 
         # Set the response message when this function is called through the service
@@ -114,28 +122,62 @@ class ConfigWrapper:
 
         return response
 
+    def update_world_config(self, node):
+        node.motion_gen.world_coll_checker.clear_cache()
+        node.motion_gen.update_world(self.world_cfg)
+        node.debug_voxel()
+
     def callback_add_object(self, node, request: AddObject, response):
         '''
         This function is called by the service callback created in the node.
         It adds an object to the world configuration.
-        The object is created based on the type, pose, dimensiosn and color and requested.
+        The object is created based on the type, pose, dimensions and color requested.
         The object is then added to the world configuration.
+        Note: Since cuRobo currently only supports Cuboid object manipulation,
+        all objects are converted to a Cuboid object before being added.
         '''
+        # Check for object name uniqueness
+        for world_object in self.world_cfg.objects:
+            if world_object.name == request.name:
+                response.success = False
+                response.message = 'Object with name "' + request.name + '" already exists'
+                return response
+
+        # Check for object dimensions validity
+        if request.dimensions.x <= 0 or request.dimensions.y <= 0 or request.dimensions.z <= 0:
+            response.success = False
+            response.message = 'Object dimensions must be positive'
+            return response
+
+        # Check for object position validity
+        if request.pose.position.z - request.dimensions.z / 2 < 0:
+            response.success = False
+            response.message = 'Object must be above the ground'
+            return response
+
+        # Extract the values from the request
+        extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
+                          request.pose.orientation.w, request.pose.orientation.x, request.pose.orientation.y, request.pose.orientation.z]
+
+        # Extracted dimensions are interpreted differently based on the object type
+        # CUBOID: [x, y, z]
+        # CAPSULE: [radius, _, _]
+        # CYLINDER: [radius, height, _]
+        # SPHERE: [radius, _, _]
+        # MESH: [scale_x, scale_y, scale_z]
+        extracted_dimensions = [request.dimensions.x,
+                                request.dimensions.y, request.dimensions.z]
+
+        extracted_color = [request.color.r, request.color.g,
+                           request.color.b, request.color.a]
+
         node.get_logger().info(
             f"Adding object {request.name} for {node.get_name()}")
 
         response.success = True
         obstacle = None
 
-        # TODO adapt to other shapes
-        extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
-                          request.pose.orientation.w, request.pose.orientation.x, request.pose.orientation.y, request.pose.orientation.z]
-        extracted_dimensions = [request.dimensions.x,
-                                request.dimensions.y, request.dimensions.z]
-        extracted_color = [request.color.r, request.color.g,
-                           request.color.b, request.color.a]
-
-        # TODO add more shapes
+        # Create the object based on the type requested
         match request.type:
             case request.CUBOID:
                 obstacle = Cuboid(
@@ -145,16 +187,108 @@ class ConfigWrapper:
                     color=extracted_color,
                 )
 
+            case request.CAPSULE:
+                obstacle = Capsule(
+                    name=request.name,
+                    pose=extracted_pose,
+                    base=[0, 0, 0],
+                    tip=[0, 0, extracted_dimensions[1]],
+                    radius=extracted_dimensions[0],
+                    color=extracted_color,
+                ).get_cuboid()
+
+            case request.CYLINDER:
+                obstacle = Cylinder(
+                    name=request.name,
+                    pose=extracted_pose,
+                    radius=extracted_dimensions[0],
+                    height=extracted_dimensions[1],
+                    color=extracted_color,
+                ).get_cuboid()
+
+            case request.SPHERE:
+                obstacle = Sphere(
+                    name=request.name,
+                    pose=extracted_pose,
+                    radius=extracted_dimensions[0],
+                    color=extracted_color,
+                ).get_cuboid()
+
+            case request.MESH:
+                obstacle = Mesh(
+                    name=request.name,
+                    pose=extracted_pose,
+                    file_path=request.mesh_file_path,
+                    scale=extracted_dimensions
+                ).get_cuboid()
+
             case _:  # default
                 response.success = False
-                response.message = 'Object type "' + str(request.type) + '" not recognized'
+                response.message = 'Object type "' + \
+                    str(request.type) + '" not recognized'
 
         if response.success:
             self.world_cfg.add_obstacle(obstacle)
-            node.motion_gen.world_coll_checker.clear_cache()
-            node.motion_gen.update_world(self.world_cfg)
+            self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
+            node.get_logger().info(f"Successfully added {request.name}")
 
         return response
 
-    #TODO remove object from name
+    def callback_remove_object(self, node, request: RemoveObject, response):
+        '''
+        This function is called by the service callback created in the node.
+        It removes an object from the world configuration.
+        The object is removed based on the name requested.
+        '''
+        object_exists = False
+
+        # Check that the object exists
+        for world_object in self.world_cfg.objects:
+            if world_object.name == request.name:
+                object_exists = True
+                break
+
+        if not object_exists:
+            response.success = False
+            response.message = 'Object ' + request.name + ' does not exist'
+            return response
+
+        try:
+            self.world_cfg.remove_obstacle(request.name)
+            self.world_cfg.cuboid = list(
+                filter(lambda obj: obj.name != request.name, self.world_cfg.cuboid))
+            self.update_world_config(node)
+
+        except Exception as e:
+            response.success = False
+            response.message = 'Object ' + request.name + \
+                ' failed to be removed: ' + str(e)
+            return response
+
+        response.success = True
+        response.message = 'Object ' + request.name + ' removed successfully'
+        node.get_logger().info(
+            f"Removed object {request.name} for {node.get_name()}")
+        return response
+
+    def callback_remove_all_objects(self, node, _, response):
+        '''
+        This function is called by the service callback created in the node.
+        It removes all objects from the world configuration.
+        Since cuRobo only supports Cuboid object manipulation, it only needs to remove objects of that type.
+        '''
+        # Get objects to remove
+        # Targeting only Cuboids protects any Blox that may have been added by cameras
+        for world_object in self.world_cfg.cuboid:
+            self.world_cfg.remove_obstacle(world_object.name)
+
+        # Empty the list of cuboids that lingers in the world config
+        self.world_cfg.cuboid = []
+
+        self.update_world_config(node)
+
+        response.success = True
+        response.message = 'All objects removed successfully'
+        node.get_logger().info(f"All objects removed for {node.get_name()}")
+        return response
