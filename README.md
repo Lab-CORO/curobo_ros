@@ -106,7 +106,7 @@ Remplacer ces champs par ce qui vous convient.
 
 ### Gestion manuelle d'objets virtuels
 
-Des services ont été ajoutés pour ajouter et retirer différents types d'objets à l'environnement.
+Des services ont été ajoutés pour ajouter et retirer différents types d'objets à l'environnement. Il est à noté que, dans tous les cas, les objets sont transformés en Cuboid avant d'être ajoutés au système. Ceci est dû à une limitation actuelle du [Collision World Representation](https://curobo.org/get_started/2c_world_collision.html).
 
 Présentement, il est possible d'ajouter ces types:
 
@@ -134,6 +134,12 @@ Il est aussi possible de retirer tous les objets ajoutés d'un seul coup:
 
 ```bash
 ros2 service call /curobo_gen_traj/remove_all_objects std_srvs/srv/Trigger
+```
+
+Ajout dans le cas d'un mesh:
+
+```bash
+ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject "{type: 4, name: 'test_mesh', mesh_file_path: '/home/ros2_ws/src/curobo_ros/curobo_doosan/src/m1013/meshes/m1013_white/MF1013_0_0.dae', pose: {position: {x: 0.40, y: 0.0, z: 1.0}, orientation: {x: 1.0, y: 0.0, z: 0.0, w: 1.0}}, dimensions: {x: 0.0025, y: 0.0025, z: 0.0025}, color: {r: 1.0, g: 0.0, b: 0.0, a: 1.0}}"
 ```
 
 ## Potentiels problèmes rencontrés

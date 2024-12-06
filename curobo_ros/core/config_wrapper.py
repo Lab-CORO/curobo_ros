@@ -231,6 +231,7 @@ class ConfigWrapper:
             self.world_cfg.add_obstacle(obstacle)
             self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
+            node.get_logger().info(f"Successfully added {request.name}")
 
         return response
 
@@ -267,6 +268,8 @@ class ConfigWrapper:
 
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
+        node.get_logger().info(
+            f"Removed object {request.name} for {node.get_name()}")
         return response
 
     def callback_remove_all_objects(self, node, _, response):
@@ -287,4 +290,5 @@ class ConfigWrapper:
 
         response.success = True
         response.message = 'All objects removed successfully'
+        node.get_logger().info(f"All objects removed for {node.get_name()}")
         return response
