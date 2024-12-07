@@ -330,6 +330,9 @@ Visualization Manager:
       Update Interval: 0
       Value: true
       Visual Enabled: true
+      - Class: add_objects_display/AddObjectsDisplay
+      Name: AddObjectsDisplay
+      Enabled: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
