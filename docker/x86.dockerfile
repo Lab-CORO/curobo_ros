@@ -87,6 +87,7 @@ ARG CACHE_DATE=2024-07-19
 
 RUN pip install "robometrics[evaluator] @ git+https://github.com/fishbotics/robometrics.git"
 
+
 # if you want to use a different version of curobo, create folder as docker/pkgs and put your
 # version of curobo there. Then uncomment below line and comment the next line that clones from
 # github
@@ -231,3 +232,22 @@ RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 RUN chmod +x /home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh
 
 ENTRYPOINT [ "/home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh" ]
+
+# Mettre à jour Pip
+# RUN python3 -m pip install --upgrade pip
+
+# Installer Open3D avec des logs détaillés
+# RUN python3 -m pip install open3d
+
+# # Set the workspace directory
+# WORKDIR /home/ros2_ws/src
+
+# # Clone the repository directly into the src directory
+# RUN git clone https://github.com/your-repo/ros2_numpy.git
+
+# # Continue with the build process
+# WORKDIR /home/ros2_ws
+# RUN colcon build
+
+
+
