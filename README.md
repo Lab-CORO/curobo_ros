@@ -104,17 +104,21 @@ ros2 run tf2_ros static_transform_publisher  0.5 0 0.5 0 0 0  base_0 camera_link
 
 Remplacer ces champs par ce qui vous convient.
 
-### Gestion manuelle d'objets virtuels
+### Gestion manuelle d'objets virtuels pour évitement
 
 Des services ont été ajoutés pour ajouter et retirer différents types d'objets à l'environnement. Il est à noté que, dans tous les cas, les objets sont transformés en Cuboid avant d'être ajoutés au système. Ceci est dû à une limitation actuelle du [Collision World Representation](https://curobo.org/get_started/2c_world_collision.html).
 
-Présentement, il est possible d'ajouter ces types:
+Présentement, il est possible d'ajouter les types suivants. Dans chacun des cas, l'interprétation du champ `dimensions` varie selon la définition associée ci-bas :
 
-- Cube (Cuboid selon l'appellation cuRobo)
-- Sphère
-- Capsule
-- Cylindre
-- Mesh à partir d'un fichier fournis par le paramètre optionnel `mesh_file_path`
+| Type      | Interprétation de `dimensions` |
+| --------- | ----------------------------- |
+| Cube (Cuboid selon l'appellation cuRobo) | `[longueur en x, largeur en y, hauteur en z]` |
+| Sphère | `[rayon, _, _]` |
+| Capsule | `[rayon, _, _]` |
+| Cylindre | `[rayon, hauteur, _]` |
+| Mesh (à partir d'un fichier fournis par le paramètre optionnel `mesh_file_path`) | Échelles en `[x, y, z]` |
+
+À noter: le symbole `_` signifie que la valeur qui y est mise est inutilisée.
 
 Voici un exemple pour l'ajout et le retrait d'un cube de 25 cm:
 
