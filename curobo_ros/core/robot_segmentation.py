@@ -3,7 +3,9 @@ import sys
 import torch
 from typing import Tuple
 # ros2
-from sensor_msgs.msg import JointState as SensorJointState, PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import JointState as SensorJointState
+
 import rclpy
 from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
@@ -12,6 +14,8 @@ import tf2_ros
 import numpy as np
 import open3d as o3d
 import ros2_numpy
+
+from .wait_for_message import wait_for_message
 
 # cuRobo imports
 from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
@@ -52,7 +56,9 @@ class RobotSegmentation(Node):
         self.distance_threshold = distance_threshold
         self._ops_dtype = ops_dtype
         self._device = torch.device('cuda')
-        self.q_js = None
+
+        self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
+                                joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
         self.point_cloud = None
 
         # Publisher for the masked point cloud
@@ -76,7 +82,7 @@ class RobotSegmentation(Node):
         Callback for receiving point cloud data.
         Converts the PointCloud2 message into a numpy array and applies filtering using Open3D.
         """
-        self.get_logger().info("Point cloud received")
+        # self.get_logger().info("Point cloud received")
         cloud_points = ros2_numpy.point_cloud2.pointcloud2_to_array(msg)
         cloud_points = ros2_numpy.point_cloud2.get_xyz_points(cloud_points, remove_nans=True)
 
@@ -89,15 +95,15 @@ class RobotSegmentation(Node):
         pcd, _ = pcd.remove_radius_outlier(nb_points=16, radius=0.05)
 
         self.point_cloud = torch.tensor(np.asarray(pcd.points), dtype=self._ops_dtype, device=self._device)
-        self.get_logger().info(f"Point cloud size after filtering: {self.point_cloud.shape}")
+        # self.get_logger().info(f"Point cloud size after filtering: {self.point_cloud.shape}")
 
     def listener_callback_jointstate(self, msg):
         """
         Callback for receiving the robot's joint states.
         Stores the current joint state for segmentation calculations.
         """
-        self.q_js = JointState(position=torch.tensor(msg.position, dtype=self._ops_dtype, device=self._device),
-                               joint_names=msg.name)
+        if(msg.position[0] != 0.0):
+            self.q_js.position = torch.tensor(msg.position, dtype=self._ops_dtype, device=self._device)
 
     def timer_callback(self):
         """
@@ -115,7 +121,7 @@ class RobotSegmentation(Node):
         filtered_pointcloud = self._mask_op(self.point_cloud, self.q_js.position)
         masked_pc_msg = self.array_to_pointcloud2(filtered_pointcloud)
         self.publisher_.publish(masked_pc_msg)
-        self.get_logger().info("Masked point cloud published")
+        # self.get_logger().info("Masked point cloud published")
 
     def _mask_op(self, point_cloud: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
         """
@@ -133,6 +139,7 @@ class RobotSegmentation(Node):
         distances = torch.norm(points - spheres_centers, dim=2) - spheres_radii
         min_distances, _ = torch.min(distances, dim=1)
         mask = min_distances > self.distance_threshold
+        self.publish_collision_spheres(robot_spheres)
         return point_cloud[mask]
 
     def array_to_pointcloud2(self, points: torch.Tensor):
@@ -165,6 +172,7 @@ class RobotSegmentation(Node):
         Publishes the robot's collision spheres as markers for visualization in RViz.
         Useful for debugging and ensuring proper masking of the robot in the point cloud.
         """
+        robot_spheres = robot_spheres.cpu().numpy().tolist()
         marker_array = MarkerArray()
         for i, sphere in enumerate(robot_spheres):
             marker = Marker()
@@ -172,12 +180,12 @@ class RobotSegmentation(Node):
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
             marker.id = i
-            marker.pose.position.x = sphere[0].item()
-            marker.pose.position.y = sphere[1].item()
-            marker.pose.position.z = sphere[2].item()
-            marker.scale.x = sphere[3].item() * 2  # Diameter
-            marker.scale.y = sphere[3].item() * 2
-            marker.scale.z = sphere[3].item() * 2
+            marker.pose.position.x = sphere[0]
+            marker.pose.position.y = sphere[1]
+            marker.pose.position.z = sphere[2]
+            marker.scale.x = sphere[3] * 2  # Diameter
+            marker.scale.y = sphere[3] * 2
+            marker.scale.z = sphere[3] * 2
             marker.color.a = 0.5  # Transparency
             marker.color.r = 1.0
             marker.color.g = 0.0
