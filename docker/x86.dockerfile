@@ -233,21 +233,40 @@ RUN chmod +x /home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh
 
 ENTRYPOINT [ "/home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh" ]
 
-# Mettre à jour Pip
-# RUN python3 -m pip install --upgrade pip
+RUN apt remove python3-blinker -y
 
-# Installer Open3D avec des logs détaillés
-# RUN python3 -m pip install open3d
+# Install Open3D system dependencies and pip
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    libegl1 \
+    libgl1 \
+    libgomp1 \
+    python3-pip \
+    ros-humble-tf-transformations\
+    && rm -rf /var/lib/apt/lists/*
 
-# # Set the workspace directory
-# WORKDIR /home/ros2_ws/src
+# Install Open3D from the PyPI repositories
+RUN python3 -m pip install --no-cache-dir --upgrade pip && \
+    python3 -m pip install --no-cache-dir --upgrade open3d
 
-# # Clone the repository directly into the src directory
-# RUN git clone https://github.com/your-repo/ros2_numpy.git
+# # # Set the workspace directory
+WORKDIR /home/ros2_ws/src
 
-# # Continue with the build process
-# WORKDIR /home/ros2_ws
-# RUN colcon build
+# ARG CACHE_BUST
+# # # Clone the repository directly into the src directory
+RUN git clone -b humble https://github.com/Box-Robotics/ros2_numpy.git
+WORKDIR /home/ros2_ws
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    colcon build"
+
+RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
+    cd /home/ros2_ws && \
+    . install/local_setup.bash
+
+
+
+
+
+
 
 
 
