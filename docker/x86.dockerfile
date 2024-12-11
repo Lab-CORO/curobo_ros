@@ -197,7 +197,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /home/ros2_ws/src
-ARG CACHE_BUST
+
 RUN git clone https://github.com/Lab-CORO/curobo_msgs.git && \
     git clone --recurse-submodules https://github.com/Lab-CORO/curobo_ros.git && \
     git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master

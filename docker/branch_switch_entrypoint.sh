@@ -3,7 +3,14 @@
 
 # Check if the branch argument is empty
 if [ -z "$1" ]; then
-    echo "Branch argument empty, keeping default branch: main"
+    echo "Branch argument empty, keeping default branch: main and update"
+    cd /home/ros2_ws/src/curobo_ros
+    git fetch
+    git checkout ${1}
+    git pull
+    cd /home/ros2_ws/
+    colcon build
+    
 elif [ "$1" == "main" ]; then
     echo "Keeping default branch: main"
 else
