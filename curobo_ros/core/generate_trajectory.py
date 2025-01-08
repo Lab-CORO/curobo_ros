@@ -16,7 +16,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, Fk, RemoveObject
+from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
 from .config_wrapper import ConfigWrapper
 
 from curobo.geom.types import Cuboid
@@ -66,6 +66,9 @@ class CuRoboTrajectoryMaker(Node):
 
         self.remove_all_objects_srv = self.create_service(
             Trigger, node_name + '/remove_all_objects', partial(self.config_wrapper.callback_remove_all_objects, self))
+
+        self.get_voxel_map_srv = self.create_service(
+            GetVoxelGrid, node_name + '/get_voxel_grid', partial(self.config_wrapper.callback_get_voxel_grid, self))
 
         # Markers
         self.marker_data = None

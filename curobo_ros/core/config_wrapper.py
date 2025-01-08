@@ -1,6 +1,7 @@
 import os
 
-from curobo_msgs.srv import AddObject, RemoveObject
+from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid
+from geometry_msgs.msg import Point32
 
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh
@@ -292,3 +293,35 @@ class ConfigWrapper:
         response.message = 'All objects removed successfully'
         node.get_logger().info(f"All objects removed for {node.get_name()}")
         return response
+
+    def callback_get_voxel_grid(self):
+        # 2.6 for the reach of the doosan
+        dims = [2.6, 2.6, 2.6]
+        bounding = Cuboid("t", dims=dims, pose=[
+                          0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+
+        voxel_size = node.get_parameter(
+            'voxel_size').get_parameter_value().double_value
+
+        voxels = node.world_model.get_voxels_in_bounding_box(
+            bounding, voxel_size)
+
+        if not voxels.shape[0] > 0:
+            # send error msg
+            return 
+        voxels = voxels.cpu().numpy()
+        voxel_grid_msg = GetVoxelGrid()
+        voxel_grid_msg.voxel_grid.resolutions = voxel_size
+        voxel_grid_msg.voxel_grid.origin.x = voxels[0, 0]
+        voxel_grid_msg.voxel_grid.origin.y = voxels[0, 1]
+        voxel_grid_msg.voxel_grid.origin.z = voxels[0, 2]
+        voxel_grid_msg.voxel_grid.size_x = dims[0]
+        voxel_grid_msg.voxel_grid.size_y = dims[1]
+        voxel_grid_msg.voxel_grid.size_z = dims[2]
+        voxel_grid_msg.voxel_grid.header.frame_id = 'base_0'
+        voxel_grid_msg.voxel_grid.header.stamp = rospy.Time.now()
+        voxel_grid_msg.voxel_grid.data = voxels.flatten().tolist()
+        return voxel_grid_msg
+
+
+        
