@@ -1,15 +1,16 @@
 import os
-
 from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid
-from geometry_msgs.msg import Point32
+from geometry_msgs.msg import Point32, Vector3
 
 from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh
+from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh, VoxelGrid
 from curobo.util_file import load_yaml, join_path, get_world_configs_path
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
 from ament_index_python.packages import get_package_share_directory
-
+import ros2_numpy as rnp
+import numpy as np
+import torch
 
 class ConfigWrapper:
     '''
@@ -294,34 +295,71 @@ class ConfigWrapper:
         node.get_logger().info(f"All objects removed for {node.get_name()}")
         return response
 
-    def callback_get_voxel_grid(self):
-        # 2.6 for the reach of the doosan
-        dims = [2.6, 2.6, 2.6]
-        bounding = Cuboid("t", dims=dims, pose=[
-                          0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+    def callback_get_voxel_grid(self, node, request: GetVoxelGrid, response):
+        """
+        Get the worldConfig VoxelGrid and send it as message.
 
+        Args:
+            node (Node): Node object.
+            request (GetVoxelGrid): Request object.
+            response (GetVoxelGridResponse): Response object.
+
+        Returns:
+            GetVoxelGridResponse: Response object.
+        """
+        response.success = True
+        response.
         voxel_size = node.get_parameter(
-            'voxel_size').get_parameter_value().double_value
+                    'voxel_size').get_parameter_value().double_value
+        min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
+        max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
 
-        voxels = node.world_model.get_voxels_in_bounding_box(
-            bounding, voxel_size)
+        for cuboid in self.world_cfg.cuboid:
+            cuboid_min = np.array(cuboid.pose[:3]) - np.array(cuboid.dims) / 2
+            cuboid_max = np.array(cuboid.pose[:3]) + np.array(cuboid.dims) / 2
 
-        if not voxels.shape[0] > 0:
-            # send error msg
-            return 
-        voxels = voxels.cpu().numpy()
-        voxel_grid_msg = GetVoxelGrid()
-        voxel_grid_msg.voxel_grid.resolutions = voxel_size
-        voxel_grid_msg.voxel_grid.origin.x = voxels[0, 0]
-        voxel_grid_msg.voxel_grid.origin.y = voxels[0, 1]
-        voxel_grid_msg.voxel_grid.origin.z = voxels[0, 2]
-        voxel_grid_msg.voxel_grid.size_x = dims[0]
-        voxel_grid_msg.voxel_grid.size_y = dims[1]
-        voxel_grid_msg.voxel_grid.size_z = dims[2]
-        voxel_grid_msg.voxel_grid.header.frame_id = 'base_0'
-        voxel_grid_msg.voxel_grid.header.stamp = rospy.Time.now()
-        voxel_grid_msg.voxel_grid.data = voxels.flatten().tolist()
-        return voxel_grid_msg
+            min_x, min_y, min_z = np.minimum([min_x, min_y, min_z], cuboid_min)
+            max_x, max_y, max_z = np.maximum([max_x, max_y, max_z], cuboid_max)
+
+        max_x = 2.6
+        max_y = 2.6
+        max_z = 2.6
+        min_x = -2.6
+        min_y = -2.6
+        min_z = -2.6
+        grid_size_x = int(np.ceil((max_x - min_x) / voxel_size))
+        grid_size_y = int(np.ceil((max_y - min_y) / voxel_size))
+        grid_size_z = int(np.ceil((max_z - min_z) / voxel_size))
+
+        voxel_grid = np.zeros((grid_size_x, grid_size_y, grid_size_z), dtype=np.uint8)
+
+        for cuboid in self.world_cfg.cuboid:
+            cuboid_min = np.array(cuboid.pose[:3]) - np.array(cuboid.dims) / 2
+            cuboid_max = np.array(cuboid.pose[:3]) + np.array(cuboid.dims) / 2
+
+            min_voxel_idx = np.floor((cuboid_min - [min_x, min_y, min_z]) / voxel_size).astype(int)
+            max_voxel_idx = np.ceil((cuboid_max - [min_x, min_y, min_z]) / voxel_size).astype(int)
+
+            voxel_grid[
+                min_voxel_idx[0]:max_voxel_idx[0],
+                min_voxel_idx[1]:max_voxel_idx[1],
+                min_voxel_idx[2]:max_voxel_idx[2]
+            ] = 1  # Mark as occupied
+
+        response.voxel_grid.resolutions = rnp.msgify(Vector3, np.array([voxel_size, voxel_size, voxel_size]))
+        response.voxel_grid.size_x = grid_size_x
+        response.voxel_grid.size_y = grid_size_y
+        response.voxel_grid.size_z = grid_size_z
+
+        # Set the origin
+        response.voxel_grid.origin.x = min_x
+        response.voxel_grid.origin.y = min_y
+        response.voxel_grid.origin.z = min_z
+  
+        # Flatten the voxel grid into a 1D list and assign it to the message's data field
+        response.voxel_grid.data = voxel_grid.flatten().tolist()
+
+        return response
 
 
         
