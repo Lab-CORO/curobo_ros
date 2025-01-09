@@ -18,6 +18,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
 from .config_wrapper import ConfigWrapper
+from .config_wrapper_motion import ConfigWrapperMotion
 
 from curobo.geom.types import Cuboid
 from curobo.types.base import TensorDeviceType
@@ -35,7 +36,7 @@ class CuRoboTrajectoryMaker(Node):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
 
-        self.config_wrapper = ConfigWrapper()
+        self.config_wrapper = ConfigWrapperMotion()
 
         # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
