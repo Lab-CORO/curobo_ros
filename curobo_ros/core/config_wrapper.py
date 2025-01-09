@@ -308,7 +308,7 @@ class ConfigWrapper:
             GetVoxelGridResponse: Response object.
         """
         response.success = True
-        response.
+
         voxel_size = node.get_parameter(
                     'voxel_size').get_parameter_value().double_value
         min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
