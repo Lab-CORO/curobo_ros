@@ -12,6 +12,32 @@ import ros2_numpy as rnp
 import numpy as np
 import torch
 
+
+from functools import partial
+
+import rclpy
+from rclpy.node import Node
+from .wait_for_message import wait_for_message
+
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import JointState as SensorJointState
+from sensor_msgs.msg import Image, CameraInfo
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+from std_srvs.srv import Trigger
+from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
+# from .config_wrapper import ConfigWrapper
+# from .config_wrapper_motion import ConfigWrapperMotion
+
+from curobo.geom.types import Cuboid
+from curobo.types.base import TensorDeviceType
+from curobo.types.camera import CameraObservation
+from curobo.types.math import Pose
+from curobo.types.robot import JointState
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+from .marker_publisher import MarkerPublisher
+
 class ConfigWrapper:
     '''
     This class is used to wrap the configuration of the robot and the world for the trajectory generation class.
@@ -19,7 +45,22 @@ class ConfigWrapper:
     The original class uses the "Visitor" pattern to access these functionalities without splitting ownership of the node.
     '''
 
-    def __init__(self):
+    def __init__(self, node):
+
+        # Add all services
+
+        self.add_object_srv = node.create_service(
+            AddObject, node.get_name() + '/add_object', partial(self.callback_add_object, node))
+
+        self.add_object_srv = node.create_service(
+            RemoveObject, node.get_name() + '/remove_object', partial(self.callback_remove_object, node))
+
+        self.remove_all_objects_srv = node.create_service(
+            Trigger, node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, node))
+
+        self.get_voxel_map_srv = node.create_service(
+            GetVoxelGrid, node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, node))
+
 
         # World config parameters
         self.world_cfg = None
@@ -43,10 +84,6 @@ class ConfigWrapper:
             "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
         self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
 
-    def update_world_config(self, node):
-        node.motion_gen.world_coll_checker.clear_cache()
-        node.motion_gen.update_world(self.world_cfg)
-        node.debug_voxel()
 
     def callback_add_object(self, node, request: AddObject, response):
         '''

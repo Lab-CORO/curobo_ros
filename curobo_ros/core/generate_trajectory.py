@@ -55,22 +55,6 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_sub = self.create_subscription(
             PoseStamped, 'marker_pose', self.callback_marker, 1)
 
-        # Services
-        self.motion_gen_srv = self.create_service(
-            Trigger, node_name + '/update_motion_gen_config', partial(self.config_wrapper.set_motion_gen_config, self))
-
-        self.add_object_srv = self.create_service(
-            AddObject, node_name + '/add_object', partial(self.config_wrapper.callback_add_object, self))
-
-        self.add_object_srv = self.create_service(
-            RemoveObject, node_name + '/remove_object', partial(self.config_wrapper.callback_remove_object, self))
-
-        self.remove_all_objects_srv = self.create_service(
-            Trigger, node_name + '/remove_all_objects', partial(self.config_wrapper.callback_remove_all_objects, self))
-
-        self.get_voxel_map_srv = self.create_service(
-            GetVoxelGrid, node_name + '/get_voxel_grid', partial(self.config_wrapper.callback_get_voxel_grid, self))
-
         # Markers
         self.marker_data = None
         self.marker_received = False

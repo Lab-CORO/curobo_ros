@@ -21,6 +21,7 @@ from curobo.geom.types import WorldConfig
 from curobo.geom.sdf.world import CollisionCheckerType
 # msg ik
 from curobo_msgs.srv import Ik
+from .config_wrapper_motion import ConfigWrapperIK
 # from data_generation.srv import Collisions
 
 
@@ -29,49 +30,19 @@ from curobo_msgs.srv import Ik
 class IK(Node):
 
     def __init__(self):
-        super().__init__('IK')
-        # sub with the name string of the robot
-        # self.subscription = self.create_subscription( String, '/curobo/robot_name', self.robot_name_callback, 10)
-        # self.subscription
-        self.robot_name = "ur10e"
+        node_name = 'ik'
+        super().__init__(node_name)
 
         # service for list of poses to calculate the inverse kinematics
         self.srv_ik = self.create_service(
             Ik, '/curobo/ik_poses', self.ik_callback)
-        # self.srv_collision = self.create_service(, '/curobo/collision', self.add_collisions)
+ 
         # curobo args
         self.tensor_args = TensorDeviceType()
 
-        config_file = "ur10e.yml"
-        # urdf_file = config_file["robot_cfg"]["kinematics"]["urdf_path"]  # Send global path starting with "/"
-        # base_link = config_file["robot_cfg"]["kinematics"]["base_link"]
-        # ee_link = config_file["robot_cfg"]["kinematics"]["ee_link"]
-
-        self.robot_cfg = RobotConfig.from_dict(
-            load_yaml(join_path(get_robot_configs_path(), config_file))["robot_cfg"])
-
-        # collision
-        world_file = "collision_cage.yml"
-
-        self.world_cfg = WorldConfig.from_dict(
-            load_yaml(join_path(get_world_configs_path(), world_file)))
-
-        # self.world_cfg = WorldConfig(cuboid=world_cfg_table.cuboid, mesh=world_cfg1.mesh)
-
-        # print(join_path(get_world_configs_path(), world_file))
-        ik_config = IKSolverConfig.load_from_robot_config(
-            self.robot_cfg,
-            self.world_cfg,
-            rotation_threshold=0.05,
-            position_threshold=0.005,
-            num_seeds=20,
-            self_collision_check=True,
-            self_collision_opt=True,
-            tensor_args=self.tensor_args,
-            use_cuda_graph=True,
-        )
-        self.ik_solver = IKSolver(ik_config)
         self.size_init = 50
+        self.config_wrapper = ConfigWrapperIK(self)
+        self.config_wrapper.set_ik_gen_config(self, None, None)
         self.ik_init()
 
     def ik_callback(self, request, response):
@@ -142,17 +113,9 @@ class IK(Node):
         kin_state = self.ik_solver.fk(q_sample)
         goal = Pose(kin_state.ee_position, kin_state.ee_quaternion)
 
-        # st_time = time.time()
         result = self.ik_solver.solve_batch(goal)
         torch.cuda.synchronize()
-        # print sulutions in a numpy array
-        # join_results = []
-        # for j in result.solution.cpu().numpy():
-        #     joint = JointState()
-        #     joint.position = j[0].tolist()
-        #     join_results.append(joint)
-        # print the nb of solutions
-        # print(join_results)
+
         print("Init done")
 
     def add_collisions(self):

@@ -13,10 +13,65 @@ import numpy as np
 import torch
 from .config_wrapper import ConfigWrapper
 
+
+
+
+import time
+
+import rclpy
+import std_msgs.msg
+from sensor_msgs.msg import JointState
+from rclpy.node import Node
+from geometry_msgs.msg import PoseArray
+from std_srvs.srv import Trigger
+import numpy as np
+
+# Third Party
+import torch
+
+# cuRobo
+from curobo.types.base import TensorDeviceType
+from curobo.types.math import Pose
+from curobo.types.robot import RobotConfig
+from curobo.util_file import get_robot_configs_path, join_path, load_yaml, get_world_configs_path
+from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
+
+from curobo.geom.types import WorldConfig
+from curobo.geom.sdf.world import CollisionCheckerType
+# msg ik
+from curobo_msgs.srv import Ik
+
+from functools import partial
+
+import rclpy
+from rclpy.node import Node
+from .wait_for_message import wait_for_message
+
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import JointState as SensorJointState
+from sensor_msgs.msg import Image, CameraInfo
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+from std_srvs.srv import Trigger
+from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
+# from .config_wrapper import ConfigWrapper
+# from .config_wrapper_motion import ConfigWrapperMotion
+
+from curobo.geom.types import Cuboid
+from curobo.types.base import TensorDeviceType
+from curobo.types.camera import CameraObservation
+from curobo.types.math import Pose
+from curobo.types.robot import JointState
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+from .marker_publisher import MarkerPublisher
+
+
+
 class ConfigWrapperMotion(ConfigWrapper):
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, node):
+        super().__init__(node)
         # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
@@ -33,6 +88,10 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.fixed_iters_trajopt = True
         self.finetune_trajopt_iters = 300
         self.minimize_jerk = True
+
+        self.motion_gen_srv = node.create_service(
+            Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, self))
+
 
     def set_motion_gen_config(self, node, _, response):
         '''
@@ -92,3 +151,46 @@ class ConfigWrapperMotion(ConfigWrapper):
             response.message = "Motion generation config set"
 
         return response
+
+    def update_world_config(self, node):
+        node.motion_gen.world_coll_checker.clear_cache()
+        node.motion_gen.update_world(self.world_cfg)
+        node.debug_voxel()
+
+
+class ConfigWrapperIK(ConfigWrapper):
+
+    def __init__(self, node):
+        super().__init__(node)
+        self.collision_checker_type = CollisionCheckerType.BLOX
+
+        self.motion_gen_srv = node.create_service(
+            Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_ik_gen_config, self))
+
+    def set_ik_gen_config(self, node, _, response):
+        ik_config = IKSolverConfig.load_from_robot_config(
+            self.robot_cfg,
+            self.world_cfg,
+            rotation_threshold=0.05,
+            position_threshold=0.005,
+            num_seeds=20,
+            self_collision_check=True,
+            self_collision_opt=True,
+            collision_checker_type=self.collision_checker_type,
+            tensor_args=node.tensor_args,
+            use_cuda_graph=True,
+        )
+        node.ik_solver = IKSolver(ik_config)
+       
+        # Set the response message when this function is called through the service
+        if response is not None:
+            response.success = True
+            response.message = "Motion generation config set"
+
+        return response
+    
+    def update_world_config(self, node):
+        node.ik_solver.world_coll_checker.clear_cache()
+        node.ik_solver.update_world(self.world_cfg)
+        
+        
