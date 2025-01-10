@@ -30,12 +30,10 @@ from .config_wrapper_motion import ConfigWrapperIK
 class IK(Node):
 
     def __init__(self):
-        node_name = 'ik'
+        node_name = 'curobo_ik'
         super().__init__(node_name)
 
-        # service for list of poses to calculate the inverse kinematics
-        self.srv_ik = self.create_service(
-            Ik, '/curobo/ik_poses', self.ik_callback)
+        
  
         # curobo args
         self.tensor_args = TensorDeviceType()
@@ -44,6 +42,10 @@ class IK(Node):
         self.config_wrapper = ConfigWrapperIK(self)
         self.config_wrapper.set_ik_gen_config(self, None, None)
         self.ik_init()
+
+        # service for list of poses to calculate the inverse kinematics
+        self.srv_ik = self.create_service(
+            Ik,  self.get_name() +'/ik_batch_poses', self.ik_callback)
 
     def ik_callback(self, request, response):
 
@@ -116,7 +118,7 @@ class IK(Node):
         result = self.ik_solver.solve_batch(goal)
         torch.cuda.synchronize()
 
-        print("Init done")
+        self.get_logger().info("Init done")
 
     def add_collisions(self):
         return True

@@ -36,7 +36,7 @@ class CuRoboTrajectoryMaker(Node):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
 
-        self.config_wrapper = ConfigWrapperMotion()
+        self.config_wrapper = ConfigWrapperMotion(self)
 
         # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
