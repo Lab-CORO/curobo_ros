@@ -129,10 +129,10 @@ class ConfigWrapper:
             return response
 
         # Check for object position validity
-        if request.pose.position.z - request.dimensions.z / 2 < 0:
-            response.success = False
-            response.message = 'Object must be above the ground'
-            return response
+        # if request.pose.position.z - request.dimensions.z / 2 < 0:
+        #     response.success = False
+        #     response.message = 'Object must be above the ground'
+        #     return response
 
         # Extract the values from the request
         extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
