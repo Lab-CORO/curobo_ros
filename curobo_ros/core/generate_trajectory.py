@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 from cv_bridge import CvBridge, CvBridgeError
-from functools import partial
+
 
 import rclpy
 from rclpy.node import Node
@@ -15,9 +15,8 @@ from sensor_msgs.msg import JointState as SensorJointState
 from sensor_msgs.msg import Image, CameraInfo
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
-from .config_wrapper import ConfigWrapper
+
+from curobo_msgs.srv import Fk
 from .config_wrapper_motion import ConfigWrapperMotion
 
 from curobo.geom.types import Cuboid
@@ -224,10 +223,12 @@ class CuRoboTrajectoryMaker(Node):
                     time_dilation_factor=time_dilation_factor,
                 ),
             )
+            print(result)
             new_result = result.clone()
             new_result.retime_trajectory(
                 time_dilation_factor, create_interpolation_buffer=True)
             traj = result.get_interpolated_plan()
+
             self.callback_joint_trajectory(traj, result.interpolation_dt)
             positions = traj.position.cpu().tolist()
 

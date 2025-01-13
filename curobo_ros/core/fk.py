@@ -1,9 +1,5 @@
 import rclpy
-import std_msgs.msg
-from sensor_msgs.msg import JointState
 from rclpy.node import Node
-from geometry_msgs.msg import PoseArray
-import numpy as np
 import os
 from ament_index_python.packages import get_package_share_directory
 
@@ -15,7 +11,7 @@ from curobo_msgs.srv import Fk
 from geometry_msgs.msg import Pose
 
 # cuRobo
-from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel, CudaRobotModelConfig
+from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import RobotConfig
 from curobo.util_file import get_robot_configs_path, join_path, load_yaml

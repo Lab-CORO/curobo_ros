@@ -1,70 +1,20 @@
-import os
-from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid
-from geometry_msgs.msg import Point32, Vector3
 
-from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh, VoxelGrid
-from curobo.util_file import load_yaml, join_path, get_world_configs_path
-from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
-
-from ament_index_python.packages import get_package_share_directory
-import ros2_numpy as rnp
-import numpy as np
-import torch
 from .config_wrapper import ConfigWrapper
-
-
-
-
-import time
-
-import rclpy
-import std_msgs.msg
-from sensor_msgs.msg import JointState
-from rclpy.node import Node
-from geometry_msgs.msg import PoseArray
-from std_srvs.srv import Trigger
-import numpy as np
 
 # Third Party
 import torch
-
-# cuRobo
-from curobo.types.base import TensorDeviceType
-from curobo.types.math import Pose
-from curobo.types.robot import RobotConfig
-from curobo.util_file import get_robot_configs_path, join_path, load_yaml, get_world_configs_path
-from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
-
-from curobo.geom.types import WorldConfig
-from curobo.geom.sdf.world import CollisionCheckerType
-# msg ik
-from curobo_msgs.srv import Ik
-
 from functools import partial
 
-import rclpy
-from rclpy.node import Node
-from .wait_for_message import wait_for_message
-
-from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import JointState as SensorJointState
-from sensor_msgs.msg import Image, CameraInfo
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-
-from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
-# from .config_wrapper import ConfigWrapper
-# from .config_wrapper_motion import ConfigWrapperMotion
-
-from curobo.geom.types import Cuboid
+# cuRobo
+from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.types.base import TensorDeviceType
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
-from curobo.types.robot import JointState
-from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
-from .marker_publisher import MarkerPublisher
+from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
+from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
+
+# ros
+from std_srvs.srv import Trigger
+
+
 
 
 
@@ -88,6 +38,10 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.fixed_iters_trajopt = True
         self.finetune_trajopt_iters = 300
         self.minimize_jerk = True
+
+        # for distance collision checker
+        self._ops_dtype = torch.float32
+        self._device = torch.device('cuda')
 
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, self))
@@ -122,7 +76,8 @@ class ConfigWrapperMotion(ConfigWrapper):
             interpolation_dt=self.interpolation_dt,
             collision_activation_distance=node.get_parameter(
                 'collision_activation_distance').get_parameter_value().double_value,
-            acceleration_scale=self.acceleration_scale,
+            # acceleration_scale=self.acceleration_scale,
+            # TODO issue when modif acceleration scale
             self_collision_check=self.self_collision_check,
             maximum_trajectory_dt=self.maximum_trajectory_dt,
             finetune_dt_scale=self.finetune_dt_scale,
@@ -157,6 +112,23 @@ class ConfigWrapperMotion(ConfigWrapper):
         node.motion_gen.update_world(self.world_cfg)
         node.debug_voxel()
 
+    def callback_get_collision_distance(self, node, request: Trigger, response):
+        # get robot spheres poses
+        kinematics_state = self.kin_model.get_state(self.q_js.position)
+        robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
+        # arg for fct
+        tensor_args = TensorDeviceType()
+        x_sph = robot_spheres
+        query_buffer = CollisionQueryBuffer.initialize_from_shape(
+            x_sph.shape, tensor_args, node.motion_gen.world_coll_checker.collision_types
+        )
+        act_distance = tensor_args.to_device([0.01])
+        weight = tensor_args.to_device([1])
+        env_query_idx = torch.zeros((x_sph.shape[0]), device=tensor_args.device, dtype=torch.int32)
+        sphere_dist = node.world_model.get_sphere_distance( x_sph, query_buffer, weight, act_distance, env_query_idx, compute_esdf=True)
+        response.success = True
+        response.message = "Collision distance"
+        return response
 
 class ConfigWrapperIK(ConfigWrapper):
 
@@ -193,4 +165,6 @@ class ConfigWrapperIK(ConfigWrapper):
         node.ik_solver.world_coll_checker.clear_cache()
         node.ik_solver.update_world(self.world_cfg)
         
-        
+    def callback_get_collision_distance(self, node, request: Trigger, response):
+        # Get sphere distance from node.ik_solver.world_collision
+        pass

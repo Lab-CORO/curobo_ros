@@ -4,8 +4,6 @@ import rclpy
 import std_msgs.msg
 from sensor_msgs.msg import JointState
 from rclpy.node import Node
-from geometry_msgs.msg import PoseArray
-import numpy as np
 
 # Third Party
 import torch
@@ -13,16 +11,14 @@ import torch
 # cuRobo
 from curobo.types.base import TensorDeviceType
 from curobo.types.math import Pose
-from curobo.types.robot import RobotConfig
-from curobo.util_file import get_robot_configs_path, join_path, load_yaml, get_world_configs_path
+
 from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 
-from curobo.geom.types import WorldConfig
-from curobo.geom.sdf.world import CollisionCheckerType
+
 # msg ik
 from curobo_msgs.srv import Ik
 from .config_wrapper_motion import ConfigWrapperIK
-# from data_generation.srv import Collisions
+
 
 
 # This class use curobo to generate the inverse kinematics of the robot

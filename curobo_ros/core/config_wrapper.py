@@ -1,42 +1,30 @@
 import os
-from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid
-from geometry_msgs.msg import Point32, Vector3
+from abc import ABC, abstractmethod
 
-from curobo.geom.sdf.world import CollisionCheckerType
-from curobo.geom.types import WorldConfig, Cuboid, Capsule, Cylinder, Sphere, Mesh, VoxelGrid
-from curobo.util_file import load_yaml, join_path, get_world_configs_path
-from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
+from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
+from curobo.types.base import TensorDeviceType
+from curobo.types.robot import RobotConfig
+from curobo.types.state import JointState
+from geometry_msgs.msg import Vector3
+
+from curobo.geom.types import WorldConfig, Capsule, Cylinder, Sphere, Mesh
+from curobo.util_file import load_yaml
 
 from ament_index_python.packages import get_package_share_directory
 import ros2_numpy as rnp
 import numpy as np
-import torch
-
 
 from functools import partial
+import torch
 
-import rclpy
 from rclpy.node import Node
-from .wait_for_message import wait_for_message
 
-from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import JointState as SensorJointState
-from sensor_msgs.msg import Image, CameraInfo
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, Fk, RemoveObject, GetVoxelGrid
-# from .config_wrapper import ConfigWrapper
-# from .config_wrapper_motion import ConfigWrapperMotion
-
+from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid
 from curobo.geom.types import Cuboid
-from curobo.types.base import TensorDeviceType
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
-from curobo.types.robot import JointState
-from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
-from .marker_publisher import MarkerPublisher
+from visualization_msgs.msg import MarkerArray, Marker
+
 
 class ConfigWrapper:
     '''
@@ -61,6 +49,14 @@ class ConfigWrapper:
         self.get_voxel_map_srv = node.create_service(
             GetVoxelGrid, node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, node))
 
+        self.get_collision_distance_srv = node.create_service(
+            Trigger, node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, node))
+
+        # Add publisher
+        self.publish_collision_spheres_pub = node.create_publisher(MarkerArray, node.get_name() + '/collision_spheres', 1)
+
+        # Add timer 
+        self.publish_collision_spheres_timer = node.create_timer(0.5, partial(self.publish_collision_spheres, node))
 
         # World config parameters
         self.world_cfg = None
@@ -80,9 +76,31 @@ class ConfigWrapper:
         )
 
         # Load robot configuration and other configuration files
-        config_file_path = os.path.join(get_package_share_directory(
-            "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
-        self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
+        # config_file_path = os.path.join(get_package_share_directory(
+        #     "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
+        # self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
+
+        # Initialize tensor arguments with CUDA device
+        tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
+
+        # Get the path to your curobo_ros package
+        package_share_directory = get_package_share_directory('curobo_ros')
+        robot_config_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml')
+        config_file = load_yaml(robot_config_file)
+        robot_cfg_dict = config_file["robot_cfg"]
+        robot_cfg_dict.pop('cspace', None)
+        self.robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
+        urdf_file = self.robot_cfg.kinematics.generator_config.urdf_path
+        print(urdf_file)
+
+        if not os.path.isabs(urdf_file):
+            urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
+            self.robot_cfg.kinematics.generator_config.urdf_path = urdf_file
+            print(self.robot_cfg)
+        self.kin_model = CudaRobotModel(self.robot_cfg.kinematics)
+
+        self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
+                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
 
 
     def callback_add_object(self, node, request: AddObject, response):
@@ -317,5 +335,39 @@ class ConfigWrapper:
 
         return response
 
+    @abstractmethod
+    def callback_get_collision_distance(self, node, request: Trigger, response):
+        raise NotImplementedError
 
-        
+    @abstractmethod
+    def update_world_config(self, node):
+        raise NotImplementedError
+
+
+    def publish_collision_spheres(self, node):
+        """
+        Publishes the robot's collision spheres as markers for visualization in RViz.
+        Useful for debugging and ensuring proper masking of the robot in the point cloud.
+        """
+        kinematics_state = self.kin_model.get_state(self.q_js.position)
+        robot_spheres = kinematics_state.link_spheres_tensor.view(-1, 4)
+        robot_spheres = robot_spheres.cpu().numpy().tolist()
+        marker_array = MarkerArray()
+        for i, sphere in enumerate(robot_spheres):
+            marker = Marker()
+            marker.header.frame_id = 'base_0'
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.id = i
+            marker.pose.position.x = sphere[0]
+            marker.pose.position.y = sphere[1]
+            marker.pose.position.z = sphere[2]
+            marker.scale.x = sphere[3] * 2  # Diameter
+            marker.scale.y = sphere[3] * 2
+            marker.scale.z = sphere[3] * 2
+            marker.color.a = 0.5  # Transparency
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker_array.markers.append(marker)
+        self.publish_collision_spheres_pub.publish(marker_array)

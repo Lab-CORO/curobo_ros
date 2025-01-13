@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import sys
 import time
 from geometry_msgs.msg import Point, PoseStamped
 from interactive_markers import InteractiveMarkerServer
