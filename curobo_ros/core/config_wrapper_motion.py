@@ -1,4 +1,3 @@
-
 from .config_wrapper import ConfigWrapper
 
 # Third Party
@@ -10,12 +9,9 @@ from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.types.base import TensorDeviceType
 from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
-
+from curobo_msgs.srv import GetCollisionDistance
 # ros
 from std_srvs.srv import Trigger
-
-
-
 
 
 class ConfigWrapperMotion(ConfigWrapper):
@@ -45,7 +41,6 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, self))
-
 
     def set_motion_gen_config(self, node, _, response):
         '''
@@ -112,7 +107,7 @@ class ConfigWrapperMotion(ConfigWrapper):
         node.motion_gen.update_world(self.world_cfg)
         node.debug_voxel()
 
-    def callback_get_collision_distance(self, node, request: Trigger, response):
+    def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
         kinematics_state = self.kin_model.get_state(self.q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
@@ -125,10 +120,13 @@ class ConfigWrapperMotion(ConfigWrapper):
         act_distance = tensor_args.to_device([0.01])
         weight = tensor_args.to_device([1])
         env_query_idx = torch.zeros((x_sph.shape[0]), device=tensor_args.device, dtype=torch.int32)
-        sphere_dist = node.world_model.get_sphere_distance( x_sph, query_buffer, weight, act_distance, env_query_idx, compute_esdf=True)
-        response.success = True
-        response.message = "Collision distance"
+        sphere_dist = node.world_model.get_sphere_distance(x_sph, query_buffer, weight, act_distance, env_query_idx,
+                                                           compute_esdf=True)
+        sphere_dist_ar = torch.flatten(sphere_dist, start_dim=0).tolist()
+        response.nb_sphere = len(sphere_dist_ar)
+        response.data = sphere_dist_ar
         return response
+
 
 class ConfigWrapperIK(ConfigWrapper):
 
@@ -153,18 +151,18 @@ class ConfigWrapperIK(ConfigWrapper):
             use_cuda_graph=True,
         )
         node.ik_solver = IKSolver(ik_config)
-       
+
         # Set the response message when this function is called through the service
         if response is not None:
             response.success = True
             response.message = "Motion generation config set"
 
         return response
-    
+
     def update_world_config(self, node):
         node.ik_solver.world_coll_checker.clear_cache()
         node.ik_solver.update_world(self.world_cfg)
-        
+
     def callback_get_collision_distance(self, node, request: Trigger, response):
         # Get sphere distance from node.ik_solver.world_collision
         pass

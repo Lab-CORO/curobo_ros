@@ -21,7 +21,7 @@ from rclpy.node import Node
 
 
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid
+from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance
 from curobo.geom.types import Cuboid
 from visualization_msgs.msg import MarkerArray, Marker
 
@@ -50,7 +50,7 @@ class ConfigWrapper:
             GetVoxelGrid, node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, node))
 
         self.get_collision_distance_srv = node.create_service(
-            Trigger, node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, node))
+            GetCollisionDistance, node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, node))
 
         # Add publisher
         self.publish_collision_spheres_pub = node.create_publisher(MarkerArray, node.get_name() + '/collision_spheres', 1)
@@ -99,6 +99,9 @@ class ConfigWrapper:
             print(self.robot_cfg)
         self.kin_model = CudaRobotModel(self.robot_cfg.kinematics)
 
+        # for distance collision checker
+        self._ops_dtype = torch.float32
+        self._device = torch.device('cuda')
         self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
                                joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
 
@@ -336,7 +339,7 @@ class ConfigWrapper:
         return response
 
     @abstractmethod
-    def callback_get_collision_distance(self, node, request: Trigger, response):
+    def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         raise NotImplementedError
 
     @abstractmethod
