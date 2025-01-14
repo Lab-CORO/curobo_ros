@@ -2,6 +2,7 @@ import os
 from abc import ABC, abstractmethod
 
 from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
+from curobo.geom.sdf.world import CollisionQueryBuffer
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import RobotConfig
 from curobo.types.state import JointState
@@ -79,10 +80,6 @@ class ConfigWrapper:
             }
         )
 
-        # Load robot configuration and other configuration files
-        # config_file_path = os.path.join(get_package_share_directory(
-        #     "curobo_ros"), 'curobo_doosan/src/m1013/m1013.yml')
-        # self.robot_cfg = load_yaml(config_file_path)["robot_cfg"]
 
         # Initialize tensor arguments with CUDA device
         tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
@@ -132,11 +129,6 @@ class ConfigWrapper:
             response.message = 'Object dimensions must be positive'
             return response
 
-        # Check for object position validity
-        # if request.pose.position.z - request.dimensions.z / 2 < 0:
-        #     response.success = False
-        #     response.message = 'Object must be above the ground'
-        #     return response
 
         # Extract the values from the request
         extracted_pose = [request.pose.position.x, request.pose.position.y, request.pose.position.z,
@@ -215,7 +207,7 @@ class ConfigWrapper:
             self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
             node.get_logger().info(f"Successfully added {request.name}")
-
+        print(response)
         return response
 
     def callback_get_obstacles(self, node, request: Trigger, response):
@@ -292,10 +284,9 @@ class ConfigWrapper:
         Returns:
             GetVoxelGridResponse: Response object.
         """
-        response.success = True
+        # response.success = True
 
-        voxel_size = node.get_parameter(
-                    'voxel_size').get_parameter_value().double_value
+        voxel_size = self.world_cfg.blox[0].voxel_size
         min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
         max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
 
@@ -346,7 +337,7 @@ class ConfigWrapper:
 
         return response
 
-    @abstractmethod
+    
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         raise NotImplementedError
 

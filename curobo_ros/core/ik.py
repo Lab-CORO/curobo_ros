@@ -29,7 +29,7 @@ class IK(Node):
         node_name = 'curobo_ik'
         super().__init__(node_name)
 
-        
+        self.declare_parameter('voxel_size', 0.05)
  
         # curobo args
         self.tensor_args = TensorDeviceType()
@@ -40,8 +40,7 @@ class IK(Node):
         self.ik_init()
 
         # service for list of poses to calculate the inverse kinematics
-        self.srv_ik = self.create_service(
-            Ik,  self.get_name() +'/ik_batch_poses', self.ik_callback)
+        
 
     def ik_callback(self, request, response):
 
@@ -49,18 +48,19 @@ class IK(Node):
         if len(request.poses) != self.size_init:
             print("new size")
             self.tensor_args = TensorDeviceType()
-            ik_config = IKSolverConfig.load_from_robot_config(
-                self.robot_cfg,
-                self.world_cfg,
-                rotation_threshold=0.05,
-                position_threshold=0.005,
-                num_seeds=20,
-                self_collision_check=True,
-                self_collision_opt=True,
-                tensor_args=self.tensor_args,
-                use_cuda_graph=True,
-            )
-            self.ik_solver = IKSolver(ik_config)
+            self.config_wrapper.set_ik_gen_config(self, None, None)
+            # ik_config = IKSolverConfig.load_from_robot_config(
+            #     self.robot_cfg,
+            #     self.world_cfg,
+            #     rotation_threshold=0.05,
+            #     position_threshold=0.005,
+            #     num_seeds=20,
+            #     self_collision_check=True,
+            #     self_collision_opt=True,
+            #     tensor_args=self.tensor_args,
+            #     use_cuda_graph=True,
+            # )
+            # self.ik_solver = IKSolver(ik_config)
             self.size_init = len(request.poses)
             self.ik_init()
         # get the poses
