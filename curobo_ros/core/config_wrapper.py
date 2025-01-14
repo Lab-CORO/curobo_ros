@@ -43,6 +43,10 @@ class ConfigWrapper:
         self.add_object_srv = node.create_service(
             RemoveObject, node.get_name() + '/remove_object', partial(self.callback_remove_object, node))
 
+        self.add_object_srv = node.create_service(
+            Trigger, node.get_name() + '/get_obstacles', partial(self.callback_get_obstacles, node))
+
+
         self.remove_all_objects_srv = node.create_service(
             Trigger, node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, node))
 
@@ -214,6 +218,10 @@ class ConfigWrapper:
 
         return response
 
+    def callback_get_obstacles(self, node, request: Trigger, response):
+        for world_object in self.world_cfg.objects:
+            response.message = response.message + world_object.name
+        return response
     def callback_remove_object(self, node, request: RemoveObject, response):
         '''
         This function is called by the service callback created in the node.
