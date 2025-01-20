@@ -146,8 +146,8 @@ class ConfigWrapper:
         extracted_color = [request.color.r, request.color.g,
                            request.color.b, request.color.a]
 
-        node.get_logger().info(
-            f"Adding object {request.name} for {node.get_name()}")
+        # node.get_logger().info(
+        #     f"Adding object {request.name} for {node.get_name()}")
 
         response.success = True
         obstacle = None
@@ -206,8 +206,8 @@ class ConfigWrapper:
             self.world_cfg.add_obstacle(obstacle)
             self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
-            node.get_logger().info(f"Successfully added {request.name}")
-        print(response)
+            # node.get_logger().info(f"Successfully added {request.name}")
+        # print(response)
         return response
 
     def callback_get_obstacles(self, node, request: Trigger, response):
@@ -247,8 +247,8 @@ class ConfigWrapper:
 
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
-        node.get_logger().info(
-            f"Removed object {request.name} for {node.get_name()}")
+        # node.get_logger().info(
+        #     f"Removed object {request.name} for {node.get_name()}")
         return response
 
     def callback_remove_all_objects(self, node, _, response):
@@ -269,7 +269,7 @@ class ConfigWrapper:
 
         response.success = True
         response.message = 'All objects removed successfully'
-        node.get_logger().info(f"All objects removed for {node.get_name()}")
+        # node.get_logger().info(f"All objects removed for {node.get_name()}")
         return response
 
     def callback_get_voxel_grid(self, node, request: GetVoxelGrid, response):

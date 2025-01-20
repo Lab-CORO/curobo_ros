@@ -46,7 +46,7 @@ class IK(Node):
 
         # check limit of poses 1000 poses
         if len(request.poses) != self.size_init:
-            print("new size")
+            # print("new size")
             self.tensor_args = TensorDeviceType()
             self.config_wrapper.set_ik_gen_config(self, None, None)
             # ik_config = IKSolverConfig.load_from_robot_config(
@@ -107,7 +107,7 @@ class IK(Node):
 
     def ik_init(self):
         q_sample = self.ik_solver.sample_configs(self.size_init)
-        print(q_sample)
+        # print(q_sample)
         kin_state = self.ik_solver.fk(q_sample)
         goal = Pose(kin_state.ee_position, kin_state.ee_quaternion)
 
