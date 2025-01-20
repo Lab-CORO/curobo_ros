@@ -36,8 +36,8 @@ class IK(Node):
 
         self.size_init = 50
         self.config_wrapper = ConfigWrapperIK(self)
-        self.config_wrapper.set_ik_gen_config(self, None, None)
-        self.ik_init()
+        # self.config_wrapper.set_ik_gen_config(self, None, None)
+        # self.ik_init()
 
         # service for list of poses to calculate the inverse kinematics
         

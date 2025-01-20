@@ -36,33 +36,7 @@ class ConfigWrapper:
 
     def __init__(self, node):
 
-        # Add all services
-
-        self.add_object_srv = node.create_service(
-            AddObject, node.get_name() + '/add_object', partial(self.callback_add_object, node))
-
-        self.add_object_srv = node.create_service(
-            RemoveObject, node.get_name() + '/remove_object', partial(self.callback_remove_object, node))
-
-        self.add_object_srv = node.create_service(
-            Trigger, node.get_name() + '/get_obstacles', partial(self.callback_get_obstacles, node))
-
-
-        self.remove_all_objects_srv = node.create_service(
-            Trigger, node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, node))
-
-        self.get_voxel_map_srv = node.create_service(
-            GetVoxelGrid, node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, node))
-
-        self.get_collision_distance_srv = node.create_service(
-            GetCollisionDistance, node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, node))
-
-        # Add publisher
-        self.publish_collision_spheres_pub = node.create_publisher(MarkerArray, node.get_name() + '/collision_spheres', 1)
-
-        # Add timer 
-        self.publish_collision_spheres_timer = node.create_timer(0.5, partial(self.publish_collision_spheres, node))
-
+       
         # World config parameters
         self.world_cfg = None
         self.world_pose = [0, 0, 0, 1, 0, 0, 0]
@@ -92,7 +66,6 @@ class ConfigWrapper:
         robot_cfg_dict.pop('cspace', None)
         self.robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
         urdf_file = self.robot_cfg.kinematics.generator_config.urdf_path
-        print(urdf_file)
 
         if not os.path.isabs(urdf_file):
             urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
@@ -106,6 +79,33 @@ class ConfigWrapper:
         self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
                                joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
 
+    def init_services(self, node):
+         # Add all services
+
+        self.add_object_srv = node.create_service(
+            AddObject, node.get_name() + '/add_object', partial(self.callback_add_object, node))
+
+        self.add_object_srv = node.create_service(
+            RemoveObject, node.get_name() + '/remove_object', partial(self.callback_remove_object, node))
+
+        self.add_object_srv = node.create_service(
+            Trigger, node.get_name() + '/get_obstacles', partial(self.callback_get_obstacles, node))
+
+
+        self.remove_all_objects_srv = node.create_service(
+            Trigger, node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, node))
+
+        self.get_voxel_map_srv = node.create_service(
+            GetVoxelGrid, node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, node))
+
+        self.get_collision_distance_srv = node.create_service(
+            GetCollisionDistance, node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, node))
+
+        # Add publisher
+        self.publish_collision_spheres_pub = node.create_publisher(MarkerArray, node.get_name() + '/collision_spheres', 1)
+
+        # Add timer 
+        self.publish_collision_spheres_timer = node.create_timer(0.5, partial(self.publish_collision_spheres, node))
 
     def callback_add_object(self, node, request: AddObject, response):
         '''

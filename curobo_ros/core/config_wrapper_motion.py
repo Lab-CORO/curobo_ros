@@ -40,6 +40,7 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, self))
+        self.init_services(node)
 
     def set_motion_gen_config(self, node, _, response):
         '''
@@ -134,12 +135,18 @@ class ConfigWrapperIK(ConfigWrapper):
         self.collision_checker_type = CollisionCheckerType.BLOX
         self.collision_cache = {"obb": 100}  # TODO: make this configurable as ros param
 
+        # Setup service at the end to be sure the node is correctly init befor proposing services. TODO Should use lifecycle
+        self.set_ik_gen_config(node, None, None)
+        node.ik_init()
+        
+        self.init_services(node)
 
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_ik_gen_config, self))
 
         self.srv_ik = node.create_service(
             Ik,  node.get_name() +'/ik_batch_poses', node.ik_callback)
+
 
     def set_ik_gen_config(self, node, _, response):
         self.world_cfg.blox[0].voxel_size = node.get_parameter(
