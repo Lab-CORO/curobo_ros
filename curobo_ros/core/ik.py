@@ -29,8 +29,11 @@ class IK(Node):
         node_name = 'curobo_ik'
         super().__init__(node_name)
 
+        
         self.declare_parameter('voxel_size', 0.5)
- 
+        voxel_size = self.get_parameter(
+                'voxel_size').get_parameter_value().double_value
+        
         # curobo args
         self.tensor_args = TensorDeviceType()
 
