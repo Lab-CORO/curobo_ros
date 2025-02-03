@@ -163,7 +163,7 @@ class ConfigWrapperIK(ConfigWrapper):
             collision_checker_type=self.collision_checker_type,
             collision_cache=self.collision_cache,
             tensor_args=node.tensor_args,
-            use_cuda_graph=True,
+            use_cuda_graph=False,
         )
         node.ik_solver = IKSolver(ik_config)
 

@@ -37,7 +37,7 @@ class IK(Node):
         # curobo args
         self.tensor_args = TensorDeviceType()
 
-        self.size_init = 50
+        self.size_init = 5500
         self.config_wrapper = ConfigWrapperIK(self)
         # self.config_wrapper.set_ik_gen_config(self, None, None)
         # self.ik_init()
@@ -46,7 +46,10 @@ class IK(Node):
         
 
     def ik_callback(self, request, response):
-
+        if len(request.poses) == 0:
+            self.get_logger().info("0 pose requested")
+            # self.get_logger().info(len(request.poses))
+            return response
         # check limit of poses 1000 poses
         if len(request.poses) != self.size_init:
             # print("new size")
@@ -65,7 +68,13 @@ class IK(Node):
             # )
             # self.ik_solver = IKSolver(ik_config)
             self.size_init = len(request.poses)
-            self.ik_init()
+            try:
+                self.ik_init()
+            except:
+                # response.error_msg = "May be in collision"
+                self.size_init = 0 # Init could not be done also the size is set to 0.
+                response.success = False
+                return response
         # get the poses
         poses = request.poses
         # print(poses[0])
@@ -85,8 +94,17 @@ class IK(Node):
 
         goal = Pose(position_tensor, orientation_tensor)
         # print(goal.position)
-
-        result = self.ik_solver.solve_batch(goal)
+        # ca pete ici
+        try:
+            result = self.ik_solver.solve_batch(goal)
+        except:
+            try:
+                self.ik_init()
+                result = self.ik_solver.solve_batch(goal)
+            except:
+                self.size_init = 0 # Init could not be done also the size is set to 0.
+                response.success = False
+                return response
         torch.cuda.synchronize()
 
         # convert result joins angles to sensor_msgs/JointState
@@ -103,6 +121,7 @@ class IK(Node):
 
             response.joint_states_valid.append(res)
             response.joint_states.append(joint)
+            response.success = True
         # response.joint_states_valid = result.success.cpu().numpy()[:,0]
 
         # response.joint_angles = result.joint_angles.cpu().numpy().tolist()
