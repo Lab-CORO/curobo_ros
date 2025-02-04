@@ -1,4 +1,5 @@
 # Curobo_ros
+Better documentation and implementation [curobo_dockers](https://github.com/Lab-CORO/curobo_dockers/tree/main?tab=readme-ov-file)
 
 This package is a light implementation for curobo. Three services are exeposed:
 
