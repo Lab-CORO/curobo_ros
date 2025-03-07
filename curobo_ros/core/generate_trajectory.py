@@ -19,6 +19,10 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from curobo_msgs.srv import Fk
 from .config_wrapper_motion import ConfigWrapperMotion
 
+from curobo_ros.robot.joint_control_strategy import JointCommandStrategy
+from curobo_ros.robot.robot_context import RobotContext
+from curobo_ros.robot.doosan_strategy import DoosanControl
+
 from curobo.geom.types import Cuboid
 from curobo.types.base import TensorDeviceType
 from curobo.types.camera import CameraObservation
@@ -48,8 +52,6 @@ class CuRoboTrajectoryMaker(Node):
 
         # Publishers and subscribers
         self.marker_publisher = MarkerPublisher()
-        self.trajectory_publisher = self.create_publisher(
-            JointTrajectory, 'trajectory', 10)
 
         self.marker_sub = self.create_subscription(
             PoseStamped, 'marker_pose', self.callback_marker, 1)
@@ -82,6 +84,16 @@ class CuRoboTrajectoryMaker(Node):
         self.sub_depth = self.create_subscription(
             Image, DEPTH_CAMERA_NAMESPACE + 'image_rect_raw', self.callback_depth, 1)
 
+        # get control dt
+        time_dilation_factor = self.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
+
+        # Create the strategy
+        self.robot_contexte = RobotContext()
+        self.robot_strategy = DoosanControl(self, time_dilation_factor)
+
+        self.robot_contexte.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
+
         # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
 
@@ -102,44 +114,6 @@ class CuRoboTrajectoryMaker(Node):
         except CvBridgeError as e:
             self.get_logger().error(f"An error has occurred: {e}")
 
-    def callback_joint_trajectory(self, traj: JointState, time_step: float):
-        """
-        Convert CuRobo JointState to ROS2 JointTrajectory message with multiple points.
-
-        Args:
-            joint_state (JointState): CuRobo JointState object that may contain multiple time steps.
-            time_step (float): Time between each trajectory point in seconds.
-
-        Returns:
-            JointTrajectory: A ROS2 JointTrajectory message.
-        """
-        # Initialize JointTrajectory message
-        joint_trajectory_msg = JointTrajectory()
-
-        # Set joint names
-        joint_trajectory_msg.joint_names = traj.joint_names
-
-        # Create a list of JointTrajectoryPoints for every position in the JointState
-        for i in range(len(traj.position)):
-            joint_trajectory_point = JointTrajectoryPoint()
-
-            # Extract the i-th positions, velocities, and accelerations
-            joint_trajectory_point.positions = traj.position[i].tolist()
-            joint_trajectory_point.velocities = traj.velocity[i].tolist()
-            joint_trajectory_point.accelerations = traj.acceleration[i].tolist(
-            )
-
-            # Set efforts to an empty list (can be customized later)
-            joint_trajectory_point.effort = []
-
-            # Set the time_from_start for this point (incremented by time_step for each point)
-            joint_trajectory_point.time_from_start = Duration(sec=int(time_step * i),
-                                                              nanosec=int((time_step * i % 1) * 1e9))
-
-            # Add the point to the trajectory message
-            joint_trajectory_msg.points.append(joint_trajectory_point)
-
-        self.trajectory_publisher.publish(joint_trajectory_msg)
 
     def callback_marker(self, msg):
         # self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
@@ -229,7 +203,9 @@ class CuRoboTrajectoryMaker(Node):
                 time_dilation_factor, create_interpolation_buffer=True)
             traj = result.get_interpolated_plan()
 
-            self.callback_joint_trajectory(traj, result.interpolation_dt)
+            # send command to strategies:
+            self.robot_contexte.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
+        
             positions = traj.position.cpu().tolist()
 
         except Exception as e:
