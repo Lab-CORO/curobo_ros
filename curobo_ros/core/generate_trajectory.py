@@ -23,6 +23,9 @@ from curobo_ros.robot.joint_control_strategy import JointCommandStrategy
 from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.robot.doosan_strategy import DoosanControl
 
+from curobo_ros.cameras.camera_context import CameraContext
+from curobo_ros.cameras.realsense_strategy import RealsenseStrategy
+
 from curobo.geom.types import Cuboid
 from curobo.types.base import TensorDeviceType
 from curobo.types.camera import CameraObservation
@@ -30,8 +33,6 @@ from curobo.types.math import Pose
 from curobo.types.robot import JointState
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 from .marker_publisher import MarkerPublisher
-
-DEPTH_CAMERA_NAMESPACE = '/camera/camera/depth'
 
 
 class CuRoboTrajectoryMaker(Node):
@@ -60,60 +61,41 @@ class CuRoboTrajectoryMaker(Node):
         self.marker_data = None
         self.marker_received = False
 
-        # Image processing
-        self.depth_image = None
-        self.bridge = CvBridge()
         self.tensor_args = TensorDeviceType()
 
         self.config_wrapper.set_motion_gen_config(self, None, None)
 
-        # Camera info
-        self.success, camera_info_sub = wait_for_message(
-            CameraInfo, self, DEPTH_CAMERA_NAMESPACE + '/camera_info', 1)
-
-        self.intrinsics = None
-        if self.success:
-            self.intrinsics = torch.tensor(
-                camera_info_sub.k).view(3, 3).float()
-        else:
-            self.get_logger().error("Warning: no camera info received")
 
         self.camera_pose = Pose.from_list(
             [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
-
-        self.sub_depth = self.create_subscription(
-            Image, DEPTH_CAMERA_NAMESPACE + 'image_rect_raw', self.callback_depth, 1)
 
         # get control dt
         time_dilation_factor = self.get_parameter(
                 'time_dilation_factor').get_parameter_value().double_value
 
-        # Create the strategy
-        self.robot_contexte = RobotContext()
+        # Create the robot strategy
+        self.robot_context = RobotContext()
         self.robot_strategy = DoosanControl(self, time_dilation_factor)
 
-        self.robot_contexte.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
+        self.robot_context.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
+        
+        # create camera strategy 
+        self.camera_context = CameraContext()
+        self.camera_strategy = RealsenseStrategy(self)
+        self.camera_context.set_camera_strategy(self.camera_strategy)
+        
+        # update the voxel obstacle at 30hz
+        camera_update_hz = 30
+        self.timer_update_camera = self.create_timer(1/camera_update_hz, self.update_camera)
 
         # CUROBO FK
         self.client = self.create_client(Fk, '/curobo/fk_poses')
-
-        self.get_logger().info("Ready to generate trajectories")
 
         # create time for traj gen
         timer_period = 0.1  # seconds
         self.timer = self.create_timer(timer_period, self.trajectory_generator)
 
-    def callback_depth(self, msg):
-        try:
-            depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
-            depth_img_float = (depth_img.astype(np.float32))
-            self.depth_image = torch.from_numpy(depth_img_float).float()
-
-            self.update_camera()
-
-        except CvBridgeError as e:
-            self.get_logger().error(f"An error has occurred: {e}")
-
+        self.get_logger().info("Ready to generate trajectories")
 
     def callback_marker(self, msg):
         # self.get_logger().info(f"Message reçu sur marker_pose: {msg}")
@@ -136,9 +118,15 @@ class CuRoboTrajectoryMaker(Node):
             self.get_logger().error(f'Service call failed: {e}')
 
     def update_camera(self):
+        if (self.camera_context.get_depth_map() is None):
+            return
+        # get depth map from camera strategy
         self.world_model.decay_layer("world")
         data_camera = CameraObservation(
-            depth_image=self.depth_image/1000, intrinsics=self.intrinsics, pose=self.camera_pose)
+            depth_image=self.camera_context.get_depth_map()/1000, 
+            intrinsics=self.camera_context.get_camera_intrinsic(), 
+            pose=self.camera_pose)
+
         data_camera = data_camera.to(device=self.tensor_args.device)
         self.world_model.add_camera_frame(data_camera, "world")
         self.world_model.process_camera_frames("world", False)
@@ -204,7 +192,7 @@ class CuRoboTrajectoryMaker(Node):
             traj = result.get_interpolated_plan()
 
             # send command to strategies:
-            self.robot_contexte.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
+            self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
         
             positions = traj.position.cpu().tolist()
 
