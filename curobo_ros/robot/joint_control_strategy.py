@@ -32,4 +32,11 @@ class JointCommandStrategy:
     @abstractmethod
     def get_joint_pose(self, node):
         pass 
+    
+    @abstractmethod
+    def stop_robot(self):
+        pass
 
+    @abstractmethod
+    def get_progression(self):
+        pass

@@ -2,26 +2,17 @@
 
 import torch
 import numpy as np
-from cv_bridge import CvBridge, CvBridgeError
 
+import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse
 
-from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import JointState as SensorJointState
-from sensor_msgs.msg import Image, CameraInfo
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-
-
-from curobo_msgs.srv import Fk
-from curobo_msgs.action import  TrajectoryGeneration
+from curobo_msgs.action import TrajectoryGeneration
 
 from .config_wrapper_motion import ConfigWrapperMotion
 
-from curobo_ros.robot.joint_control_strategy import JointCommandStrategy
 from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.robot.doosan_strategy import DoosanControl
 
@@ -56,17 +47,9 @@ class CuRoboTrajectoryMaker(Node):
         # Publishers and subscribers
         self.marker_publisher = MarkerPublisher()
 
-        self.marker_sub = self.create_subscription(
-            PoseStamped, 'marker_pose', self.callback_marker, 1)
-
-        # Markers
-        self.marker_data = None
-        self.marker_received = False
-
         self.tensor_args = TensorDeviceType()
 
         self.config_wrapper.set_motion_gen_config(self, None, None)
-
 
         self.camera_pose = Pose.from_list(
             [0.5, 0, 0.5, 0.5, -0.5, 0.5, -0.5])
@@ -78,7 +61,6 @@ class CuRoboTrajectoryMaker(Node):
         # Create the robot strategy
         self.robot_context = RobotContext()
         self.robot_strategy = DoosanControl(self, time_dilation_factor)
-
         self.robot_context.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
         
         # create camera strategy 
@@ -90,10 +72,7 @@ class CuRoboTrajectoryMaker(Node):
         camera_update_hz = 30
         self.timer_update_camera = self.create_timer(1/camera_update_hz, self.update_camera)
 
-        # create time for traj gen
-        # change to create an action server
-        timer_period = 0.1  # seconds
-        self.timer = self.create_timer(timer_period, self.trajectory_generator)
+        # create an action server
         self._action_server = ActionServer(
             self,
             TrajectoryGeneration,                   # The action type
@@ -106,25 +85,79 @@ class CuRoboTrajectoryMaker(Node):
         self.get_logger().info("Ready to generate trajectories")
 
     def execute_callback(self, goal_handle):
-        return True
+        # if not self.marker_received:
+        #     return
+
+        # Get Robot pose
+        self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose(self)]).to(device=self.tensor_args.device))
+
+        # Get goal pose
+        self.goal_pose = Pose.from_list([
+            goal_handle.request.target_pose.position.x, goal_handle.request.target_pose.position.y, goal_handle.request.target_pose.position.z,
+            goal_handle.request.target_pose.orientation.x, goal_handle.request.target_pose.orientation.y,
+            goal_handle.request.target_pose.orientation.z, goal_handle.request.target_pose.orientation.w
+        ])
+
+        # get goal pose and generate traj
+        try:
+            max_attempts = self.get_parameter(
+                'max_attempts').get_parameter_value().integer_value
+            timeout = self.get_parameter(
+                'timeout').get_parameter_value().double_value
+            time_dilation_factor = self.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
+
+            result = self.motion_gen.plan_single(
+                self.start_state,
+                self.goal_pose,
+                MotionGenPlanConfig(
+                    max_attempts=max_attempts,
+                    timeout=timeout,
+                    time_dilation_factor=time_dilation_factor,
+                ),
+            )
+            new_result = result.clone()
+            new_result.retime_trajectory(
+                time_dilation_factor, create_interpolation_buffer=True)
+            traj = result.get_interpolated_plan()
+
+            # send command to strategies:
+            self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
+
+        except Exception as e:
+            self.get_logger().error(
+                f"An error occurred during trajectory generation: {e}")
+
+        # self.marker_received = False
+        start_time = time.time()
+        # loop with dt timer
+
+        # while self.robot_context.get_progression != 1.0 and self.is_goal_up is True:
+        #     # sleep as dt
+        #     # time.sleep(time_dilation_factor)
+        #     if (time.time() - start_time) > time_dilation_factor:
+
+        #         feedback_msg = TrajectoryGeneration.Feedback()
+        #         feedback_msg.step_progression = self.robot_context.get_progression()
+        #         goal_handle.publish_feedback(feedback_msg)
+        #         self.get_logger().info(f"Progression: {self.robot_context.get_progression()}")
+        #         start_time = time.time()
+        result_msg = TrajectoryGeneration.Result()
+        result_msg.success = True
+        result_msg.message = "Aucun scan n'a été acquis."
+        goal_handle.succeed()
+        return result_msg
 
     def goal_callback(self, goal):
-        return True
+        self.get_logger().info("Received goal request")
+        self.is_goal_up = True
+        return rclpy.action.GoalResponse.ACCEPT
         
     def cancel_callback(self, goal_handle):
+        self.robot_context.stop_robot()
+        self.is_goal_up = False
         self.get_logger().info("Canceling goal")
         return True
-
-
-
-    def callback_marker(self, msg):
-        self.marker_data = msg
-        self.marker_received = True  # Met le booléen à True lorsque le message est reçu
-        self.goal_pose = Pose.from_list([
-            self.marker_data.pose.position.x, self.marker_data.pose.position.y, self.marker_data.pose.position.z,
-            self.marker_data.pose.orientation.x, self.marker_data.pose.orientation.y,
-            self.marker_data.pose.orientation.z, self.marker_data.pose.orientation.w
-        ])
 
     def update_camera(self):
         if (self.camera_context.get_depth_map() is None):
@@ -158,48 +191,6 @@ class CuRoboTrajectoryMaker(Node):
         if voxels.shape[0] > 0:
             voxels = voxels.cpu().numpy()
         self.marker_publisher.publish_markers_voxel(voxels, voxel_size)
-
-    def trajectory_generator(self):
-        if not self.marker_received:
-            return
-
-        # Get Robot pose
-        self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose(self)]).to(device=self.tensor_args.device))
-
-        # get goal pose and generate traj
-        try:
-            max_attempts = self.get_parameter(
-                'max_attempts').get_parameter_value().integer_value
-            timeout = self.get_parameter(
-                'timeout').get_parameter_value().double_value
-            time_dilation_factor = self.get_parameter(
-                'time_dilation_factor').get_parameter_value().double_value
-
-            result = self.motion_gen.plan_single(
-                self.start_state,
-                self.goal_pose,
-                MotionGenPlanConfig(
-                    max_attempts=max_attempts,
-                    timeout=timeout,
-                    time_dilation_factor=time_dilation_factor,
-                ),
-            )
-            new_result = result.clone()
-            new_result.retime_trajectory(
-                time_dilation_factor, create_interpolation_buffer=True)
-            traj = result.get_interpolated_plan()
-
-            # send command to strategies:
-            self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
-        
-            positions = traj.position.cpu().tolist()
-
-        except Exception as e:
-            self.get_logger().error(
-                f"An error occurred during trajectory generation: {e}")
-            positions = []
-
-        self.marker_received = False
 
 
 def main(args=None):

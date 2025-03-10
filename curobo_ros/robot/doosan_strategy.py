@@ -28,15 +28,15 @@ class DoosanControl(JointCommandStrategy):
             self.vel_command = []
             self.accel_command = []
             self.robot_state = RobotState.IDLE
+            print("command not send")
         else:
             # create the message with dt
             msg = SpeedjRtStream()
             msg.vel = self.vel_command[self.command_index]
             msg.acc = self.accel_command[self.command_index]
-            # msg.time = self.dt
-            # print(self.vel_command[self.command_index])
             self.command_index += 1
             self.pub_speed_command.publish(msg)
+            print(msg)
             self.robot_state = RobotState.RUNNING
         return
     
@@ -46,4 +46,24 @@ class DoosanControl(JointCommandStrategy):
             return joint_pose_msg.position
         else:
             return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def stop_robot(self):
+        # set var to 0
+        self.vel_command = []
+        self.accel_command = []
+        self.command_index = 0
+
+        self.robot_state = RobotState.STOPPED
+
+        # send msg to robot
+        msg = SpeedjRtStream()
+        msg.vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        msg.acc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        msg.time = 0.0
+        self.pub_speed_command.publish(msg)
         
+    def get_progression(self):
+        print(self.command_index)
+        print("len de vel")
+        print(len(self.vel_command))
+        return float(self.command_index / len(self.vel_command))

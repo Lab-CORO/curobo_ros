@@ -26,4 +26,8 @@ class RobotContext:
     def get_joint_pose(self, node):
         return self.robot_strategy.get_joint_pose(node)
 
-    
+    def stop_robot(self):
+        self.robot_strategy.stop_robot()
+
+    def get_progression(self):
+        return self.robot_strategy.get_progression()
