@@ -29,4 +29,7 @@ class JointCommandStrategy:
     def send_command(self, node, vel_command, accel_command, dt):
         pass
 
+    @abstractmethod
+    def get_joint_pose(self, node):
+        pass 
 

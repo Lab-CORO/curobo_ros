@@ -1,7 +1,7 @@
 from dsr_msgs2.msg import SpeedjRtStream
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
-
-
+from rclpy.wait_for_message import wait_for_message
+from sensor_msgs.msg import JointState
 
 class DoosanControl(JointCommandStrategy):
     '''
@@ -34,8 +34,16 @@ class DoosanControl(JointCommandStrategy):
             msg.vel = self.vel_command[self.command_index]
             msg.acc = self.accel_command[self.command_index]
             # msg.time = self.dt
-            print(self.vel_command[self.command_index])
+            # print(self.vel_command[self.command_index])
             self.command_index += 1
             self.pub_speed_command.publish(msg)
             self.robot_state = RobotState.RUNNING
         return
+    
+    def get_joint_pose(self, node):
+        ret, joint_pose_msg = wait_for_message(JointState, node, "/dsr01/joint_states", time_to_wait = 0.1)
+        if ret:
+            return joint_pose_msg.position
+        else:
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        

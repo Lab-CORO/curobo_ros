@@ -60,3 +60,4 @@ class GhostStrategy(JointCommandStrategy):
 
         self.pub_command.publish(joint_trajectory_msg)
 
+
