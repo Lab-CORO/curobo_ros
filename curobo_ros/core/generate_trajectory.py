@@ -85,8 +85,6 @@ class CuRoboTrajectoryMaker(Node):
         self.get_logger().info("Ready to generate trajectories")
 
     def execute_callback(self, goal_handle):
-        # if not self.marker_received:
-        #     return
 
         # Get Robot pose
         self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose(self)]).to(device=self.tensor_args.device))
@@ -127,24 +125,23 @@ class CuRoboTrajectoryMaker(Node):
         except Exception as e:
             self.get_logger().error(
                 f"An error occurred during trajectory generation: {e}")
-
-        # self.marker_received = False
-        start_time = time.time()
+        
         # loop with dt timer
+        start_time = time.time()
+        while self.robot_context.get_progression() < 1.0 and self.is_goal_up is True:
+            if (time.time() - start_time) > time_dilation_factor:
+                feedback_msg = TrajectoryGeneration.Feedback()
+                feedback_msg.step_progression = self.robot_context.get_progression()
+                goal_handle.publish_feedback(feedback_msg)
 
-        # while self.robot_context.get_progression != 1.0 and self.is_goal_up is True:
-        #     # sleep as dt
-        #     # time.sleep(time_dilation_factor)
-        #     if (time.time() - start_time) > time_dilation_factor:
+                # self.get_logger().info(f"Progression: {round(self.robot_context.get_progression()*100, 2)}%")
+                start_time = time.time()
+                
+            rclpy.spin_once(self)
 
-        #         feedback_msg = TrajectoryGeneration.Feedback()
-        #         feedback_msg.step_progression = self.robot_context.get_progression()
-        #         goal_handle.publish_feedback(feedback_msg)
-        #         self.get_logger().info(f"Progression: {self.robot_context.get_progression()}")
-        #         start_time = time.time()
         result_msg = TrajectoryGeneration.Result()
         result_msg.success = True
-        result_msg.message = "Aucun scan n'a été acquis."
+        result_msg.message = "Goal reached"
         goal_handle.succeed()
         return result_msg
 
@@ -195,9 +192,16 @@ class CuRoboTrajectoryMaker(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    curobo_test = CuRoboTrajectoryMaker()
-    rclpy.spin(curobo_test)
-    rclpy.shutdown()
+    node_curobo_test = CuRoboTrajectoryMaker()
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node_curobo_test)
+    except KeyboardInterrupt:
+        node_curobo_test.get_logger().info("Terminaison")
+    finally:
+        node_curobo_test.destroy_node()
+        rclpy.shutdown()
+
 
 
 if __name__ == '__main__':

@@ -28,7 +28,6 @@ class DoosanControl(JointCommandStrategy):
             self.vel_command = []
             self.accel_command = []
             self.robot_state = RobotState.IDLE
-            print("command not send")
         else:
             # create the message with dt
             msg = SpeedjRtStream()
@@ -36,7 +35,6 @@ class DoosanControl(JointCommandStrategy):
             msg.acc = self.accel_command[self.command_index]
             self.command_index += 1
             self.pub_speed_command.publish(msg)
-            print(msg)
             self.robot_state = RobotState.RUNNING
         return
     
@@ -63,7 +61,8 @@ class DoosanControl(JointCommandStrategy):
         self.pub_speed_command.publish(msg)
         
     def get_progression(self):
-        print(self.command_index)
-        print("len de vel")
-        print(len(self.vel_command))
-        return float(self.command_index / len(self.vel_command))
+        try:
+            percentage = float(self.command_index / len(self.vel_command))
+        except:
+            percentage = 0.0
+        return percentage
