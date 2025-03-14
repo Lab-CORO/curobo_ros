@@ -27,9 +27,29 @@ def generate_launch_description():
         description='Inclure le fichier de lancement realsense.launch.py si défini à true'
     )
 
+
+
     include_realsense_launch = LaunchConfiguration('include_realsense_launch', default = 'false')
 
     return LaunchDescription([
+        # Définition des arguments de lancement
+        DeclareLaunchArgument(
+            'max_attempts', default_value='42', description='Premier paramètre'
+        ),
+        DeclareLaunchArgument(
+            'timeout', default_value='42', description='Deuxième paramètre (nombre)'
+        ),
+        DeclareLaunchArgument(
+            'time_dilation_factor', default_value='42', description='Facteur de dilatation du temps'
+        ),
+        DeclareLaunchArgument(
+            'voxel_size', default_value='42', description='Taille des voxels'
+        ),
+        DeclareLaunchArgument(
+            'collision_activation_distance', default_value='42', description='Distance d\'activation de la collision'
+        ),
+
+
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(curobo_ros_launch_dir, 'realsense.launch.py')),
@@ -40,7 +60,14 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(curobo_ros_launch_dir, 'launch_rviz2.launch.py')
-            )
+            ),
+            launch_arguments={
+                'max_attempts': LaunchConfiguration('max_attempts'),
+                'timeout': LaunchConfiguration('timeout'),
+                'time_dilation_factor': LaunchConfiguration('time_dilation_factor'),
+                'voxel_size': LaunchConfiguration('voxel_size'),
+                'collision_activation_distance':LaunchConfiguration('collision_activation_distance')
+            }.items()
         ),
 
         # Run curobo_fk node
