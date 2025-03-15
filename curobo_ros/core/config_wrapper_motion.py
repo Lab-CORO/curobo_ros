@@ -11,6 +11,7 @@ from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 from curobo_msgs.srv import GetCollisionDistance
 # ros
+import rclpy
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import Ik
 
@@ -39,7 +40,7 @@ class ConfigWrapperMotion(ConfigWrapper):
 
 
         self.motion_gen_srv = node.create_service(
-            Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, self))
+            Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, node))
         self.init_services(node)
 
     def set_motion_gen_config(self, node, _, response):
@@ -86,7 +87,16 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         node.get_logger().info("warming up..")
 
+        self.node_is_available = False
+        node_is_available_param = rclpy.parameter.Parameter('node_is_available',rclpy.Parameter.Type.BOOL, False)
+        node.set_parameters([node_is_available_param])
+
         node.motion_gen.warmup()
+
+        node_is_available_param = rclpy.parameter.Parameter('node_is_available',rclpy.Parameter.Type.BOOL, True)
+        node.set_parameters([node_is_available_param])
+
+        self.node_is_available = True
 
         node.world_model = node.motion_gen.world_collision
 
