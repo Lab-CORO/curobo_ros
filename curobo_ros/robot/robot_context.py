@@ -1,5 +1,6 @@
 from curobo_ros.robot.ghost_strategy import GhostStrategy
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
+from std_srvs.srv import SetBool
 
 
 class RobotContext:
@@ -31,3 +32,6 @@ class RobotContext:
 
     def get_progression(self):
         return self.robot_strategy.get_progression()
+
+    def set_send_to_robot(self,  request: SetBool, response):
+        return self.set_send_to_robot(request, response)

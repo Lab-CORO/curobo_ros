@@ -26,6 +26,7 @@ from curobo.types.math import Pose
 from curobo.types.robot import JointState
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 from .marker_publisher import MarkerPublisher
+from std_srvs.srv import SetBool
 
 
 class CuRoboTrajectoryMaker(Node):
@@ -81,6 +82,9 @@ class CuRoboTrajectoryMaker(Node):
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback
         )
+
+        self.send_trajectory_srv = self.create_service(
+            SetBool, self.get_name() + '/send_trajectory', self.robot_context.set_send_to_robot)
 
         self.get_logger().info("Ready to generate trajectories")
 

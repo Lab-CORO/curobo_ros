@@ -2,6 +2,8 @@ from dsr_msgs2.msg import SpeedjRtStream
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import JointState
+from std_srvs.srv import SetBool
+
 
 class DoosanControl(JointCommandStrategy):
     '''
@@ -17,12 +19,19 @@ class DoosanControl(JointCommandStrategy):
         self.accel_command = []
         self.command_index = 0
         self.robot_state = RobotState.IDLE
-    
+        self.send_to_robot = False
+
+    def set_send_to_robot(self,  request: SetBool, response):
+        self.send_to_robot = msg.data
+        response.success = True
+        response.message = "Trajectory send to the robot"
+        return response
+
 
 
     def send_command(self):
 
-        if self.command_index >= len(self.vel_command):
+        if self.command_index >= len(self.vel_command) or not self.send_to_robot:
             self.robot_state = RobotState.IDLE
             self.command_index = 0
             self.vel_command = []

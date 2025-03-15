@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from std_srvs.srv import SetBool
+
 
 
 class RobotState():
@@ -40,3 +42,8 @@ class JointCommandStrategy:
     @abstractmethod
     def get_progression(self):
         pass
+
+    @abstractmethod
+    def set_send_to_robot(self,  request: SetBool, response):
+        pass
+    
