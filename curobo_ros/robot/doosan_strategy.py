@@ -22,7 +22,7 @@ class DoosanControl(JointCommandStrategy):
         self.send_to_robot = False
 
     def set_send_to_robot(self,  request: SetBool, response):
-        self.send_to_robot = msg.data
+        self.send_to_robot = request.data
         response.success = True
         response.message = "Trajectory send to the robot"
         return response
@@ -31,12 +31,15 @@ class DoosanControl(JointCommandStrategy):
 
     def send_command(self):
 
-        if self.command_index >= len(self.vel_command) or not self.send_to_robot:
+        if self.command_index >= len(self.vel_command):
             self.robot_state = RobotState.IDLE
             self.command_index = 0
             self.vel_command = []
             self.accel_command = []
+
+        elif(not self.send_to_robot):
             self.robot_state = RobotState.IDLE
+            
         else:
             # create the message with dt
             msg = SpeedjRtStream()

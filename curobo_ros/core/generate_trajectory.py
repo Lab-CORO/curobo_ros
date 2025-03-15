@@ -8,6 +8,9 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from std_srvs.srv import SetBool
 
 from curobo_msgs.action import TrajectoryGeneration
 
@@ -26,14 +29,14 @@ from curobo.types.math import Pose
 from curobo.types.robot import JointState
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 from .marker_publisher import MarkerPublisher
-from std_srvs.srv import SetBool
+
 
 
 class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
-
+        
         self.config_wrapper = ConfigWrapperMotion(self)
 
         # Trajectory generation parameters
@@ -80,11 +83,12 @@ class CuRoboTrajectoryMaker(Node):
             self.get_name() + "/generate_trajectrory",     # The action name
             execute_callback=self.execute_callback,
             goal_callback=self.goal_callback,
-            cancel_callback=self.cancel_callback
+            cancel_callback=self.cancel_callback,
+            callback_group=MutuallyExclusiveCallbackGroup()
         )
 
         self.send_trajectory_srv = self.create_service(
-            SetBool, self.get_name() + '/send_trajectory', self.robot_context.set_send_to_robot)
+            SetBool, self.get_name() + '/send_trajectory', self.robot_context.set_send_to_robot, callback_group=MutuallyExclusiveCallbackGroup())
 
         self.get_logger().info("Ready to generate trajectories")
 
@@ -141,8 +145,6 @@ class CuRoboTrajectoryMaker(Node):
                 # self.get_logger().info(f"Progression: {round(self.robot_context.get_progression()*100, 2)}%")
                 start_time = time.time()
                 
-            rclpy.spin_once(self)
-
         result_msg = TrajectoryGeneration.Result()
         result_msg.success = True
         result_msg.message = "Goal reached"
@@ -157,6 +159,7 @@ class CuRoboTrajectoryMaker(Node):
     def cancel_callback(self, goal_handle):
         self.robot_context.stop_robot()
         self.is_goal_up = False
+        self.robot_context.send_to_robot = False
         self.get_logger().info("Canceling goal")
         return True
 
@@ -196,17 +199,18 @@ class CuRoboTrajectoryMaker(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node_curobo_test = CuRoboTrajectoryMaker()
+    node_curobo = CuRoboTrajectoryMaker()
+
+    executor = MultiThreadedExecutor()
+    executor.add_node(node_curobo)
+
     try:
-        while rclpy.ok():
-            rclpy.spin_once(node_curobo_test)
+        node_curobo.get_logger().info('Beginning client, shut down with CTRL-C')
+        executor.spin()
     except KeyboardInterrupt:
-        node_curobo_test.get_logger().info("Terminaison")
-    finally:
-        node_curobo_test.destroy_node()
-        rclpy.shutdown()
-
-
+        node_curobo.get_logger().info('Keyboard interrupt, shutting down.\n')
+    node_curobo.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
