@@ -78,6 +78,10 @@ class ConfigWrapper:
         self._device = torch.device('cuda')
         self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
                                joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+        
+        # State information
+        self.node_is_available = False
+        node.declare_parameter('node_is_available', False)
 
     def init_services(self, node):
          # Add all services
@@ -91,6 +95,8 @@ class ConfigWrapper:
         self.add_object_srv = node.create_service(
             Trigger, node.get_name() + '/get_obstacles', partial(self.callback_get_obstacles, node))
 
+        self.node_available_srv = node.create_service(
+            Trigger, node.get_name() + '/is_available', partial(self.callback_is_available, node))
 
         self.remove_all_objects_srv = node.create_service(
             Trigger, node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, node))
@@ -214,6 +220,11 @@ class ConfigWrapper:
         for world_object in self.world_cfg.objects:
             response.message = response.message + world_object.name
         return response
+
+    def callback_is_available(self, node, request: Trigger, response):
+        response.success = self.node_is_available
+        return response
+
     def callback_remove_object(self, node, request: RemoveObject, response):
         '''
         This function is called by the service callback created in the node.
