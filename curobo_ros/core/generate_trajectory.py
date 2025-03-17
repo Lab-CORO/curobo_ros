@@ -18,7 +18,7 @@ from curobo_msgs.action import SendTrajectory
 from .config_wrapper_motion import ConfigWrapperMotion
 
 from curobo_ros.robot.robot_context import RobotContext
-from curobo_ros.robot.doosan_strategy import DoosanControl
+# from curobo_ros.robot.doosan_strategy import DoosanControl
 
 from curobo_ros.cameras.camera_context import CameraContext
 from curobo_ros.cameras.realsense_strategy import RealsenseStrategy
@@ -64,9 +64,9 @@ class CuRoboTrajectoryMaker(Node):
                 'time_dilation_factor').get_parameter_value().double_value
 
         # Create the robot strategy
-        self.robot_context = RobotContext()
-        self.robot_strategy = DoosanControl(self, time_dilation_factor)
-        self.robot_context.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
+        self.robot_context = RobotContext(self, time_dilation_factor)
+        # self.robot_strategy = DoosanControl(self, time_dilation_factor)
+        # self.robot_context.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
         
         # create camera strategy 
         self.camera_context = CameraContext()

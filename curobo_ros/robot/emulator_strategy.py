@@ -1,19 +1,16 @@
-from dsr_msgs2.msg import SpeedjRtStream
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
-from rclpy.wait_for_message import wait_for_message
-from sensor_msgs.msg import JointState
-from std_srvs.srv import SetBool
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
 
-
-class DoosanControl(JointCommandStrategy):
+class EmulatorStrategy(JointCommandStrategy):
     '''
-    This class is a strategie to control doosan robot with motion_gen
+    This class is a strategie to control an emulator of the robot with motion_gen
     '''
-
+    
     def __init__(self, node, dt):
         super().__init__(node, dt)
         # create a publisher
-        self.pub_speed_command = node.create_publisher(SpeedjRtStream, '/dsr01/speedj_rt_stream', 10)
+        self.pub_speed_command = node.create_publisher(JointState, '/joint_state', 10)
         # Creatre a timer at dt
         self.time_dilation_factor = dt
         self.timer = node.create_timer(dt, self.send_command)
@@ -21,7 +18,8 @@ class DoosanControl(JointCommandStrategy):
         self.accel_command = []
         self.command_index = 0
         self.robot_state = RobotState.IDLE
-
+        
+    
 
     def send_command(self):
 

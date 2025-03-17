@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from std_srvs.srv import SetBool
+import threading
 
 
 
@@ -17,6 +18,8 @@ class JointCommandStrategy:
     '''
     @abstractmethod
     def __init__(self, node, dt):
+        self.send_to_robot = False
+        self.buffer_lock = threading.Lock() 
         pass
 
     def set_command(self, joint_names,  vel_command, accel_command, position_command):
@@ -43,10 +46,10 @@ class JointCommandStrategy:
     def get_progression(self):
         pass
 
-    @abstractmethod
-    def set_send_to_robot(self, data):
-        pass
+    def set_send_to_robot(self,  data):
+        with self.buffer_lock:
+            self.send_to_robot = data
 
-    @abstractmethod
     def get_send_to_robot(self):
-        pass
+        with self.buffer_lock:
+            return self.send_to_robot

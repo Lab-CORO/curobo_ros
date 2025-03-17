@@ -10,6 +10,28 @@ class RobotContext:
     # def __init__(self, robot_strategy: JointSpeedCommandStrategy = None)  :
     robot_strategy: JointCommandStrategy
 
+    def __init__(self, node, dt):
+        node.declare_parameter('robot_type', "doosan_m1013")
+        self.robot_strategy = self.select_strategy(node, dt)
+        self.ghost_strategy = GhostStrategy(node, dt)
+
+    def select_strategy(self, node, time_dilation_factor):
+
+        robot_type = node.get_parameter('robot_type').get_parameter_value().string_value
+        match robot_type:
+            case "doosan_m1013":
+                from curobo_ros.robot.doosan_strategy import DoosanControl
+                robot_strategy = DoosanControl(node, time_dilation_factor)
+
+            case "ur5e":
+                print("ur5e")
+            case "emulator":
+                robot_strategy = None
+            case _:
+                robot_strategy = None
+
+        return robot_strategy
+
     def set_robot_strategy(self, robot_strategy, node, dt):
         self.robot_strategy = robot_strategy
         self.ghost_strategy = GhostStrategy(node, dt) 
