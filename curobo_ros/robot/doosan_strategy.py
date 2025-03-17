@@ -3,7 +3,7 @@ from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotS
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import JointState
 from std_srvs.srv import SetBool
-
+import threading
 
 class DoosanControl(JointCommandStrategy):
     '''
@@ -14,34 +14,41 @@ class DoosanControl(JointCommandStrategy):
         # create a publisher
         self.pub_speed_command = node.create_publisher(SpeedjRtStream, '/dsr01/speedj_rt_stream', 10)
         # Creatre a timer at dt
+        self.time_dilation_factor = dt
         self.timer = node.create_timer(dt, self.send_command)
         self.vel_command = []
         self.accel_command = []
         self.command_index = 0
         self.robot_state = RobotState.IDLE
         self.send_to_robot = False
+        self.buffer_lock = threading.Lock() 
+        self.set_send_to_robot(False)
 
-    def set_send_to_robot(self,  request: SetBool, response):
-        self.send_to_robot = request.data
-        response.success = True
-        response.message = "Trajectory send to the robot"
-        return response
+    def set_send_to_robot(self,  data):
+        with self.buffer_lock:
+            self.send_to_robot = data
 
-
+    def get_send_to_robot(self):
+        with self.buffer_lock:
+            return self.send_to_robot
 
     def send_command(self):
 
         if self.command_index >= len(self.vel_command):
+            print("LA")
             self.robot_state = RobotState.IDLE
             self.command_index = 0
             self.vel_command = []
             self.accel_command = []
 
-        elif(not self.send_to_robot):
+        elif(not self.get_send_to_robot()):
+            print(self.get_send_to_robot())
+            print("ici")
             self.robot_state = RobotState.IDLE
-            
+
         else:
             # create the message with dt
+            print("couco")
             msg = SpeedjRtStream()
             msg.vel = self.vel_command[self.command_index]
             msg.acc = self.accel_command[self.command_index]

@@ -10,9 +10,10 @@ from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from std_srvs.srv import SetBool
+from std_srvs.srv import Trigger
 
-from curobo_msgs.action import TrajectoryGeneration
+from curobo_msgs.srv import TrajectoryGeneration
+from curobo_msgs.action import SendTrajectory
 
 from .config_wrapper_motion import ConfigWrapperMotion
 
@@ -76,32 +77,32 @@ class CuRoboTrajectoryMaker(Node):
         camera_update_hz = 30
         self.timer_update_camera = self.create_timer(1/camera_update_hz, self.update_camera)
 
-        # create an action server
+        # create an action server to send the trajectory to the robot.
         self._action_server = ActionServer(
             self,
-            TrajectoryGeneration,                   # The action type
-            self.get_name() + "/generate_trajectrory",     # The action name
+            SendTrajectory,                   # The action type
+            self.get_name() + "/send_trajectrory",     # The action name
             execute_callback=self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
             callback_group=MutuallyExclusiveCallbackGroup()
         )
-
+        #  create a service server to generate the trajectory
         self.send_trajectory_srv = self.create_service(
-            SetBool, self.get_name() + '/send_trajectory', self.robot_context.set_send_to_robot, callback_group=MutuallyExclusiveCallbackGroup())
+            TrajectoryGeneration, self.get_name() + '/generate_trajectory', self.generate_trajectrory_callback, callback_group=MutuallyExclusiveCallbackGroup())
 
         self.get_logger().info("Ready to generate trajectories")
 
-    def execute_callback(self, goal_handle):
+    def generate_trajectrory_callback(self,  request: TrajectoryGeneration, response):
 
         # Get Robot pose
         self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose(self)]).to(device=self.tensor_args.device))
 
         # Get goal pose
         self.goal_pose = Pose.from_list([
-            goal_handle.request.target_pose.position.x, goal_handle.request.target_pose.position.y, goal_handle.request.target_pose.position.z,
-            goal_handle.request.target_pose.orientation.x, goal_handle.request.target_pose.orientation.y,
-            goal_handle.request.target_pose.orientation.z, goal_handle.request.target_pose.orientation.w
+            request.target_pose.position.x, request.target_pose.position.y, request.target_pose.position.z,
+            request.target_pose.orientation.x, request.target_pose.orientation.y,
+            request.target_pose.orientation.z, request.target_pose.orientation.w
         ])
 
         # get goal pose and generate traj
@@ -129,23 +130,36 @@ class CuRoboTrajectoryMaker(Node):
 
             # send command to strategies:
             self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
+            
+            response.success = True
+            response.message = "Trajectory generated"
 
         except Exception as e:
+            response.success = False
+            response.message = "Error The trajectory could not be generated"
             self.get_logger().error(
                 f"An error occurred during trajectory generation: {e}")
+        return response
         
+    def execute_callback(self, goal_handle):
+
+        self.robot_context.set_send_to_robot(True)
+        time_dilation_factor = self.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
         # loop with dt timer
         start_time = time.time()
         while self.robot_context.get_progression() < 1.0 and self.is_goal_up is True:
             if (time.time() - start_time) > time_dilation_factor:
-                feedback_msg = TrajectoryGeneration.Feedback()
+                print(self.robot_context.get_send_to_robot())
+
+                feedback_msg = SendTrajectory.Feedback()
                 feedback_msg.step_progression = self.robot_context.get_progression()
                 goal_handle.publish_feedback(feedback_msg)
 
                 # self.get_logger().info(f"Progression: {round(self.robot_context.get_progression()*100, 2)}%")
                 start_time = time.time()
-                
-        result_msg = TrajectoryGeneration.Result()
+        self.robot_context.stop_robot()
+        result_msg = SendTrajectory.Result()
         result_msg.success = True
         result_msg.message = "Goal reached"
         goal_handle.succeed()
@@ -159,7 +173,7 @@ class CuRoboTrajectoryMaker(Node):
     def cancel_callback(self, goal_handle):
         self.robot_context.stop_robot()
         self.is_goal_up = False
-        self.robot_context.send_to_robot = False
+        self.robot_context.set_send_to_robot(False)
         self.get_logger().info("Canceling goal")
         return True
 

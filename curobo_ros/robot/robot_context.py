@@ -33,5 +33,8 @@ class RobotContext:
     def get_progression(self):
         return self.robot_strategy.get_progression()
 
-    def set_send_to_robot(self,  request: SetBool, response):
-        return self.robot_strategy.set_send_to_robot(request, response)
+    def set_send_to_robot(self,  data):
+        return self.robot_strategy.set_send_to_robot(data)
+
+    def get_send_to_robot(self,):
+        return self.robot_strategy.get_send_to_robot()

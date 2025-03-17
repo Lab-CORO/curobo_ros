@@ -44,6 +44,9 @@ class JointCommandStrategy:
         pass
 
     @abstractmethod
-    def set_send_to_robot(self,  request: SetBool, response):
+    def set_send_to_robot(self, data):
         pass
-    
+
+    @abstractmethod
+    def get_send_to_robot(self):
+        pass
