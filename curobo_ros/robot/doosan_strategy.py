@@ -35,20 +35,16 @@ class DoosanControl(JointCommandStrategy):
     def send_command(self):
 
         if self.command_index >= len(self.vel_command):
-            print("LA")
             self.robot_state = RobotState.IDLE
             self.command_index = 0
             self.vel_command = []
             self.accel_command = []
 
         elif(not self.get_send_to_robot()):
-            print(self.get_send_to_robot())
-            print("ici")
             self.robot_state = RobotState.IDLE
 
         else:
             # create the message with dt
-            print("couco")
             msg = SpeedjRtStream()
             msg.vel = self.vel_command[self.command_index]
             msg.acc = self.accel_command[self.command_index]

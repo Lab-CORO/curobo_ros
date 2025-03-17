@@ -150,7 +150,6 @@ class CuRoboTrajectoryMaker(Node):
         start_time = time.time()
         while self.robot_context.get_progression() < 1.0 and self.is_goal_up is True:
             if (time.time() - start_time) > time_dilation_factor:
-                print(self.robot_context.get_send_to_robot())
 
                 feedback_msg = SendTrajectory.Feedback()
                 feedback_msg.step_progression = self.robot_context.get_progression()

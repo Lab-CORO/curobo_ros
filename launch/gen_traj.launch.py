@@ -34,19 +34,19 @@ def generate_launch_description():
     return LaunchDescription([
         # Définition des arguments de lancement
         DeclareLaunchArgument(
-            'max_attempts', default_value='42', description='Premier paramètre'
+            'max_attempts', default_value='2', description='Premier paramètre'
         ),
         DeclareLaunchArgument(
-            'timeout', default_value='42', description='Deuxième paramètre (nombre)'
+            'timeout', default_value='1', description='Deuxième paramètre (nombre)'
         ),
         DeclareLaunchArgument(
-            'time_dilation_factor', default_value='42', description='Facteur de dilatation du temps'
+            'time_dilation_factor', default_value='0.01', description='Facteur de dilatation du temps'
         ),
         DeclareLaunchArgument(
-            'voxel_size', default_value='42', description='Taille des voxels'
+            'voxel_size', default_value='1.0', description='Taille des voxels'
         ),
         DeclareLaunchArgument(
-            'collision_activation_distance', default_value='42', description='Distance d\'activation de la collision'
+            'collision_activation_distance', default_value='0.5', description='Distance d\'activation de la collision'
         ),
 
 
@@ -87,12 +87,12 @@ def generate_launch_description():
         # ),
 
         # Run curobo_int_mark node
-        Node(
-            package='curobo_ros',
-            executable='curobo_int_mark',
-            name='curobo_int_mark',
-            output='screen'
-        ),
+        # Node(
+        #     package='curobo_ros',
+        #     executable='curobo_int_mark',
+        #     name='curobo_int_mark',
+        #     output='screen'
+        # ),
 
         # Include the trajectory_preview launch file
         IncludeLaunchDescription(
