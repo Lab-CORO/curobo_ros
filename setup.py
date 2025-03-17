@@ -34,7 +34,7 @@ setup(
             'curobo_gen_traj = curobo_ros.core.generate_trajectory:main',
             'curobo_int_mark = curobo_ros.interfaces.simple_arrow:main',
             'viz_voxel_grid = curobo_ros.interfaces.show_voxel_grid:main',
-            # 'test_fk = curobo_ros.test_fk:main'
+            'robot_segmentation = curobo_ros.core.robot_segmentation:main',
         ],
     },
 )
