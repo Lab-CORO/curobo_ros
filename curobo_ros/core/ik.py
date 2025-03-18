@@ -24,7 +24,9 @@ from .config_wrapper_motion import ConfigWrapperIK
 # This class use curobo to generate the inverse kinematics of the robot
 
 class IK(Node):
-
+    '''
+    
+    '''
     def __init__(self):
         node_name = 'curobo_ik'
         super().__init__(node_name)

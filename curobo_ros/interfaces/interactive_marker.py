@@ -10,6 +10,9 @@ from visualization_msgs.msg import Marker
 
 
 class SingleMarkerBroadcaster(Node):
+    '''
+    With the new version of curobo_rviz, this class is useless
+    '''
     def __init__(self):
         super().__init__('target_pose_publisher')
 

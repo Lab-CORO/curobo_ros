@@ -19,10 +19,11 @@ from curobo.util_file import get_robot_configs_path, join_path, load_yaml
 
 class FK(Node):
     def __init__(self):
+        '''
+        This class is working but needs to be rework to add the config wrapper.
+        '''
         super().__init__('IK')
         # sub with the name string of the robot
-        # self.subscription = self.create_subscription( String, '/curobo/robot_name', self.robot_name_callback, 10)
-        # self.subscription
         self.robot_name = "ur10e"
 
         # service for list of poses to calculate the inverse kinematics

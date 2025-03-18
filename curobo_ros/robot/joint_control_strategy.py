@@ -5,6 +5,10 @@ import threading
 
 
 class RobotState():
+    '''
+    This class is a enum to represent the robot state
+    Currently useless but maybe later...
+    '''
     RUNNING = 0
     STOPPED = 1
     READY = 2

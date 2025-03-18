@@ -4,9 +4,8 @@ from builtin_interfaces.msg import Duration
 
 class EmulatorStrategy(JointCommandStrategy):
     '''
-    This class is a strategie to control an emulator of the robot with motion_gen
+    TODO This class is a strategie to control an emulator of the robot with motion_gen
     '''
-    
     def __init__(self, node, dt):
         super().__init__(node, dt)
         # create a publisher

@@ -12,6 +12,9 @@ from visualization_msgs.msg import InteractiveMarkerFeedback
 
 
 class SimpleMarker(Node):
+    '''
+    Useless this the new curobo_rviz
+    '''
     def __init__(self):
         super().__init__('simple_marker')
         self.server = InteractiveMarkerServer(self, 'simple_marker')

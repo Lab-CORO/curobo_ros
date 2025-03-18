@@ -6,6 +6,9 @@ from geometry_msgs.msg import Point
 from curobo_msgs.srv import GetVoxelGrid
 
 class VoxelGridVisualizer(Node):
+    '''
+    This claas display the voxel grid in rviz. (need more testes)
+    '''
     def __init__(self):
         super().__init__('voxel_grid_visualizer')
 

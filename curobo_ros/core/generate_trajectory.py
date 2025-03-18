@@ -18,7 +18,6 @@ from curobo_msgs.action import SendTrajectory
 from .config_wrapper_motion import ConfigWrapperMotion
 
 from curobo_ros.robot.robot_context import RobotContext
-# from curobo_ros.robot.doosan_strategy import DoosanControl
 
 from curobo_ros.cameras.camera_context import CameraContext
 from curobo_ros.cameras.realsense_strategy import RealsenseStrategy
@@ -34,6 +33,14 @@ from .marker_publisher import MarkerPublisher
 
 
 class CuRoboTrajectoryMaker(Node):
+    '''
+    This class is a node that generates a trajectory for the robot to reach a given goal.
+    It uses the motion generation module to generate the trajectory and the robot context to send the commands to the robot.
+    It also uses the camera context to get the camera observations and the robot context to send the commands to the robot.
+    The classic workflow is to set a goal from the ros2 service. The trajectory generated is show to rviz with a ghost robot. 
+    To send the commands to an exeterne robot, an action is available. The feedback is percentage of advevncament of the trajectory.
+    This class use a config wrapper so it has many other sesrvice available (add object, get voxel map....)
+    '''
     def __init__(self):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
@@ -65,8 +72,6 @@ class CuRoboTrajectoryMaker(Node):
 
         # Create the robot strategy
         self.robot_context = RobotContext(self, time_dilation_factor)
-        # self.robot_strategy = DoosanControl(self, time_dilation_factor)
-        # self.robot_context.set_robot_strategy(self.robot_strategy, self, time_dilation_factor)
         
         # create camera strategy 
         self.camera_context = CameraContext()
@@ -94,7 +99,9 @@ class CuRoboTrajectoryMaker(Node):
         self.get_logger().info("Ready to generate trajectories")
 
     def generate_trajectrory_callback(self,  request: TrajectoryGeneration, response):
-
+        '''
+        This method generate a trajectory to the goal pose.
+        '''
         # Get Robot pose
         self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose(self)]).to(device=self.tensor_args.device))
 
@@ -142,7 +149,9 @@ class CuRoboTrajectoryMaker(Node):
         return response
         
     def execute_callback(self, goal_handle):
-
+        '''
+        This method sends the trajectory to the robot (currently with a twist message). Currently there is not verifications (TODO). 
+        '''
         self.robot_context.set_send_to_robot(True)
         time_dilation_factor = self.get_parameter(
                 'time_dilation_factor').get_parameter_value().double_value
@@ -157,6 +166,7 @@ class CuRoboTrajectoryMaker(Node):
 
                 # self.get_logger().info(f"Progression: {round(self.robot_context.get_progression()*100, 2)}%")
                 start_time = time.time()
+        # Stop the robot and clean the command list at the end.
         self.robot_context.stop_robot()
         result_msg = SendTrajectory.Result()
         result_msg.success = True
@@ -177,6 +187,10 @@ class CuRoboTrajectoryMaker(Node):
         return True
 
     def update_camera(self):
+        '''
+        This method get the camera depth map and add it in the collision map.
+        TODO using a point cloud for robot segmentation with multi-cameras
+        '''
         if (self.camera_context.get_depth_map() is None):
             return
         # get depth map from camera strategy
@@ -195,6 +209,10 @@ class CuRoboTrajectoryMaker(Node):
 
 
     def debug_voxel(self):
+        '''
+        This method show voxels with rviz. 
+        TODO change it and using voxelmap method
+        '''
         # Voxel debug
         bounding = Cuboid("t", dims=[2.0, 2.0, 2.0], pose=[
                           0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0])
