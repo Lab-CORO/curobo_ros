@@ -24,31 +24,35 @@ from curobo.types.robot import RobotConfig
 from curobo.types.state import JointState
 from curobo.util_file import load_yaml
 
-# Initialize tensor arguments with CUDA device
-tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
 
-# Get the path to your curobo_ros package
-package_share_directory = get_package_share_directory('curobo_ros')
-robot_config_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml')
-config_file = load_yaml(robot_config_file)
-robot_cfg_dict = config_file["robot_cfg"]
-robot_cfg_dict.pop('cspace', None)
-robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
-urdf_file = robot_cfg.kinematics.generator_config.urdf_path
-
-if not os.path.isabs(urdf_file):
-    urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
-    robot_cfg.kinematics.generator_config.urdf_path = urdf_file
-
-kin_model = CudaRobotModel(robot_cfg.kinematics)
 
 class RobotSegmentation(Node):
-    def __init__(self, kin_model=kin_model, distance_threshold=0.05, ops_dtype=torch.float32):
+    def __init__(self, distance_threshold=0.05, ops_dtype=torch.float32):
         """
         Initializes the segmentation node, setting up the publishers and subscriptions.
         Also creates the timer callback for real-time segmentation.
         """
         super().__init__('curobo_robot_segmentation')
+
+        # Initialize tensor arguments with CUDA device
+        tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
+
+        # Get the path to your curobo_ros package
+        package_share_directory = get_package_share_directory('curobo_ros')
+        self.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
+        robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
+        config_file = load_yaml(robot_config_file)
+        robot_cfg_dict = config_file["robot_cfg"]
+        robot_cfg_dict.pop('cspace', None)
+        robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
+        urdf_file = robot_cfg.kinematics.generator_config.urdf_path
+
+        if not os.path.isabs(urdf_file):
+            urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
+            robot_cfg.kinematics.generator_config.urdf_path = urdf_file
+
+        kin_model = CudaRobotModel(robot_cfg.kinematics)
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 

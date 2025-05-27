@@ -60,7 +60,8 @@ class ConfigWrapper:
 
         # Get the path to your curobo_ros package
         package_share_directory = get_package_share_directory('curobo_ros')
-        robot_config_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml')
+        self.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
+        robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
         config_file = load_yaml(robot_config_file)
         robot_cfg_dict = config_file["robot_cfg"]
         robot_cfg_dict.pop('cspace', None)
