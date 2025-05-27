@@ -58,19 +58,24 @@ class RobotSegmentation(Node):
         self._device = torch.device('cuda')
 
         self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
-                                joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+                                joint_names=[])
         self.point_cloud = None
 
+        self.declare_parameter('joint_states_topic', '/dsr01/joint_states')
+        self.declare_parameter('point_cloud_topic', '/fused_pointcloud')
+        joint_states_topic = self.get_parameter('joint_states_topic').get_parameter_value().string_value
+        point_cloud_topic = self.get_parameter('point_cloud_topic').get_parameter_value().string_value
+        
         # Publisher for the masked point cloud
         self.publisher_ = self.create_publisher(PointCloud2, "masked_pointcloud", 10)
         # Publisher for collision spheres visualization
         self.sphere_marker_pub = self.create_publisher(MarkerArray, 'collision_spheres', 10)
 
         # Subscription to the fused point cloud topic
-        self.subscription_fused_cloud = self.create_subscription(PointCloud2, "/fused_pointcloud", self.listener_callback_pointcloud, 1)
+        self.subscription_fused_cloud = self.create_subscription(PointCloud2, point_cloud_topic, self.listener_callback_pointcloud, 1)
 
         # Subscription to the robot's joint state topic
-        self.subscription_joint_state = self.create_subscription(SensorJointState, "/dsr01/joint_states", self.listener_callback_jointstate, 1)
+        self.subscription_joint_state = self.create_subscription(SensorJointState, joint_states_topic, self.listener_callback_jointstate, 1)
 
         # Timer callback for segmentation
         self.create_timer(0.01, self.timer_callback)
@@ -104,6 +109,7 @@ class RobotSegmentation(Node):
         """
         if(msg.position[0] != 0.0):
             self.q_js.position = torch.tensor(msg.position, dtype=self._ops_dtype, device=self._device)
+            self.q_js.joint_names = msg.name
 
     def timer_callback(self):
         """
