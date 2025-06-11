@@ -230,4 +230,4 @@ RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 
 RUN chmod +x /home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh
 
-ENTRYPOINT [ "/home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh" ]
+# not needed anymore ENTRYPOINT [ "/home/ros2_ws/src/curobo_ros/docker/branch_switch_entrypoint.sh" ]
