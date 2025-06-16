@@ -19,15 +19,24 @@ Everything runs inside a ready-made Docker image, so your host OS stays clean.
 ## 2. Clone the repo
 
 ```bash
-git clone https://github.com/Lab-CORO/curobo_ros.git
-cd curobo_ros/docker
-````
+mkdir ros2_ws/src
+cd ros2_ws/src
+git clone https://github.com/Lab-CORO/curobo_ros.git --recurse-submodules
+```
+To setup the dev environement, you need this tool:
+```
+sudo apt install python3-vcstool
+vcs import < my.repos
+```
+This package is mainly for developpement so every packages are include in the docker throught volumes share.
+
 
 ---
 
 ## 3. Build the Docker image (x86 *+ GPU*)
 
 ```bash
+cd curobo_ros/docker
 bash build_docker.sh x86
 ```
 

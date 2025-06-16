@@ -197,9 +197,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /home/ros2_ws/src
 
-RUN git clone https://github.com/Lab-CORO/curobo_msgs.git && \
-    git clone --recurse-submodules https://github.com/Lab-CORO/curobo_ros.git && \
-    git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
+RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
 
 # Construire les packages un par un pour résoudre les dépendances
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select curobo_msgs"
@@ -214,7 +212,6 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
 RUN git clone https://github.com/swri-robotics/trajectory_preview.git
 
 # Setup for curobo_rviz
-RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
 WORKDIR /home/ros2_ws
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build"
@@ -222,8 +219,6 @@ RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
 RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
     cd /home/ros2_ws && \
     . install/local_setup.bash
-
-WORKDIR /home/ros2_ws
 
 # Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
 RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
