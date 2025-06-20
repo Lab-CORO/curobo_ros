@@ -15,8 +15,9 @@ class GhostStrategy(JointCommandStrategy):
         self.accel_command = []
         self.joint_names = []
         self.command_index = 0
-        self.dt = dt
+        self.dt = 0.01
         self.robot_state = RobotState.IDLE
+        self.node = node
 
     def set_joint_name(names):
         self.joint_names = names
@@ -57,6 +58,7 @@ class GhostStrategy(JointCommandStrategy):
 
             # Add the point to the trajectory message
             joint_trajectory_msg.points.append(joint_trajectory_point)
+
 
         self.pub_command.publish(joint_trajectory_msg)
 

@@ -73,12 +73,13 @@ class RobotContext:
         '''
         return self.robot_strategy.get_progression()
 
-    def set_send_to_robot(self,  data):
+    def send_trajectrory(self,  data):
         '''
         This method set the send_to_robot variable. 
         The send_to_robot variable activates the command list send to the robot.
         '''
-        return self.robot_strategy.set_send_to_robot(data)
+        return self.robot_strategy.send_trajectrory(data)
 
     def get_send_to_robot(self):
         return self.robot_strategy.get_send_to_robot()
+

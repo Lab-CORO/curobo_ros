@@ -50,9 +50,11 @@ class JointCommandStrategy:
     def get_progression(self):
         pass
 
-    def set_send_to_robot(self,  data):
-        with self.buffer_lock:
-            self.send_to_robot = data
+    @abstractmethod
+    def send_trajectrory(self,  data):
+        # with self.buffer_lock:
+        #     self.send_to_robot = data
+        pass
 
     def get_send_to_robot(self):
         with self.buffer_lock:

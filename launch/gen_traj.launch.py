@@ -79,12 +79,11 @@ def generate_launch_description():
         ),
 
         # Run curobo_gen_traj node
-        # Node(
-        #     package='curobo_ros',
-        #     executable='curobo_gen_traj',
-        #     name='curobo_gen_traj',
-        #     output='screen'
-        # ),
+        Node(
+            package='curobo_ros',
+            executable='curobo_gen_traj',
+            output='screen'
+        ),
 
         # Run curobo_int_mark node
         # Node(

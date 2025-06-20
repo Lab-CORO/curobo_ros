@@ -130,14 +130,14 @@ class CuRoboTrajectoryMaker(Node):
                     time_dilation_factor=time_dilation_factor,
                 ),
             )
-            new_result = result.clone()
-            new_result.retime_trajectory(
-                time_dilation_factor, create_interpolation_buffer=True)
+            # new_result = result.clone()
+            # new_result.retime_trajectory(
+            #     time_dilation_factor, create_interpolation_buffer=True)
             traj = result.get_interpolated_plan()
 
             # send command to strategies:
             self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
-            
+
             response.success = True
             response.message = "Trajectory generated"
 
@@ -152,20 +152,16 @@ class CuRoboTrajectoryMaker(Node):
         '''
         This method sends the trajectory to the robot (currently with a twist message). Currently there is not verifications (TODO). 
         '''
-        self.robot_context.set_send_to_robot(True)
-        time_dilation_factor = self.get_parameter(
-                'time_dilation_factor').get_parameter_value().double_value
-        # loop with dt timer
-        start_time = time.time()
-        while self.robot_context.get_progression() < 1.0 and self.is_goal_up is True:
-            if (time.time() - start_time) > time_dilation_factor:
+        self.robot_context.send_trajectrory(True)
 
-                feedback_msg = SendTrajectory.Feedback()
-                feedback_msg.step_progression = self.robot_context.get_progression()
-                goal_handle.publish_feedback(feedback_msg)
+        # Here we wait the message from leeloo to 
+        progression = self.robot_context.get_progression()
+        while progression < 1.0 and self.is_goal_up is True:
+            feedback_msg = SendTrajectory.Feedback()
+            feedback_msg.step_progression = self.robot_context.get_progression()
+            goal_handle.publish_feedback(feedback_msg)
+            progression = self.robot_context.get_progression()
 
-                # self.get_logger().info(f"Progression: {round(self.robot_context.get_progression()*100, 2)}%")
-                start_time = time.time()
         # Stop the robot and clean the command list at the end.
         self.robot_context.stop_robot()
         result_msg = SendTrajectory.Result()

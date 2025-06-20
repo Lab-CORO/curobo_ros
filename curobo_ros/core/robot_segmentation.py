@@ -15,7 +15,7 @@ import numpy as np
 import open3d as o3d
 import ros2_numpy
 
-from .wait_for_message import wait_for_message
+from rclpy.wait_for_message import wait_for_message
 
 # cuRobo imports
 from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
