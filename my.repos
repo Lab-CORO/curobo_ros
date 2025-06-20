@@ -1,0 +1,9 @@
+repositories:
+  ../curobo_msgs:
+    type: git
+    url: https://github.com/Lab-CORO/curobo_msgs.git
+    version: main
+  ../curobo_rviz:
+    type: git
+    url: https://github.com/Lab-CORO/curobo_rviz.git
+    version: main
