@@ -156,15 +156,21 @@ class CuRoboTrajectoryMaker(Node):
         self.robot_context.send_trajectrory(True)
 
         # Here we wait the message from leeloo to 
+        start_time = time.time()
         progression = self.robot_context.get_progression()
+        time_dilation_factor = self.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
         while progression < 1.0 and self.is_goal_up is True:
-            feedback_msg = SendTrajectory.Feedback()
-            feedback_msg.step_progression = self.robot_context.get_progression()
-            goal_handle.publish_feedback(feedback_msg)
-            progression = self.robot_context.get_progression()
+            if (time.time() - start_time) > time_dilation_factor:
+                feedback_msg = SendTrajectory.Feedback()
+                feedback_msg.step_progression = self.robot_context.get_progression()
+                goal_handle.publish_feedback(feedback_msg)
+                progression = self.robot_context.get_progression()
+                start_time = time.time()
 
         # Stop the robot and clean the command list at the end.
         self.robot_context.stop_robot()
+        self.is_goal_up = False
         result_msg = SendTrajectory.Result()
         result_msg.success = True
         result_msg.message = "Goal reached"
@@ -179,7 +185,7 @@ class CuRoboTrajectoryMaker(Node):
     def cancel_callback(self, goal_handle):
         self.robot_context.stop_robot()
         self.is_goal_up = False
-        self.robot_context.set_send_to_robot(False)
+        # self.robot_context.set_send_to_robot(False)
         self.get_logger().info("Canceling goal")
         return True
 

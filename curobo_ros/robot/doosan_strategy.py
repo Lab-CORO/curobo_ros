@@ -110,12 +110,8 @@ class DoosanControl(JointCommandStrategy):
         self.trajectory_progression = 0.0
         self.robot_state = RobotState.STOPPED
 
-        # send msg to robot
-        msg = SpeedjRtStream()
-        msg.vel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        msg.acc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        msg.time = 0.0
-        self.pub_speed_command.publish(msg)
+        traj = JointTrajectory()    
+        self.pub_trajectory.publish(traj)
         
     def callback_trajectory_state(self, msg):
         self.trajectory_progression = msg.data 
