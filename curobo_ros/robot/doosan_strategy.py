@@ -29,7 +29,7 @@ class DoosanControl(JointCommandStrategy):
         self.node = node
         # Creatre a timer at dt
         self.time_dilation_factor = 0.01 #dt
-        # self.timer = node.create_timer(0.01, self.send_command)
+        
         self.vel_command = []
         self.accel_command = []
         self.command_index = 0
@@ -38,7 +38,8 @@ class DoosanControl(JointCommandStrategy):
         self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     def send_trajectrory(self, data):
-
+        self.time_dilation_factor = self.node.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
         self.robot_state = RobotState.RUNNING
         joint_trajectory_msg = JointTrajectory()
 
@@ -65,8 +66,7 @@ class DoosanControl(JointCommandStrategy):
             joint_trajectory_point.effort = []
 
             # Set the time_from_start for this point (incremented by time_step for each point)
-            joint_trajectory_point.time_from_start = Duration(sec=int(self.time_dilation_factor * i),
-                                                            nanosec=int((self.time_dilation_factor * i % 1) * 1e9))
+            joint_trajectory_point.time_from_start = Duration(sec=int(0), nanosec=int((round(self.time_dilation_factor, 2)) * 1000000000))
 
             # Add the point to the trajectory message
             joint_trajectory_msg.points.append(joint_trajectory_point)
@@ -92,7 +92,8 @@ class DoosanControl(JointCommandStrategy):
             for vel in self.vel_command:
                 pt = JointTrajectoryPoint()
                 pt.velocities = vel
-                pt.time_from_start = 0.01
+                pt.time_from_start = self.node.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value
                 traj.append(traj)
             self.pub_trajectory.publish(traj)
         #   self.robot_state = RobotState.RUNNING

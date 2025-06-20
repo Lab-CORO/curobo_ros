@@ -69,7 +69,8 @@ class ConfigWrapperMotion(ConfigWrapper):
             use_cuda_graph=self.use_cuda_graph,
             num_trajopt_seeds=self.num_trajopt_seeds,
             num_graph_seeds=self.num_graph_seeds,
-            interpolation_dt=self.interpolation_dt,
+            interpolation_dt=node.get_parameter(
+                'time_dilation_factor').get_parameter_value().double_value,
             collision_activation_distance=node.get_parameter(
                 'collision_activation_distance').get_parameter_value().double_value,
             # acceleration_scale=self.acceleration_scale,
