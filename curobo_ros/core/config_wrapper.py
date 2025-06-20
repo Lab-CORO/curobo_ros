@@ -34,7 +34,7 @@ class ConfigWrapper:
     The original class uses the "Visitor" pattern to access these functionalities without splitting ownership of the node.
     '''
 
-    def __init__(self, node):
+    def __init__(self, node, robot):
 
        
         # World config parameters
@@ -73,11 +73,13 @@ class ConfigWrapper:
             print(self.robot_cfg)
         self.kin_model = CudaRobotModel(self.robot_cfg.kinematics)
 
+        # Interface with robot information
+        self.robot = robot
         # for distance collision checker
         self._ops_dtype = torch.float32
         self._device = torch.device('cuda')
-        self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
-                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+        # self.q_js = JointState(position=torch.tensor(robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
+                            #    joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
         
         # State information
         self.node_is_available = False
@@ -362,7 +364,9 @@ class ConfigWrapper:
         Publishes the robot's collision spheres as markers for visualization in RViz.
         Useful for debugging and ensuring proper masking of the robot in the point cloud.
         """
-        kinematics_state = self.kin_model.get_state(self.q_js.position)
+        q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
+                        joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+        kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(-1, 4)
         robot_spheres = robot_spheres.cpu().numpy().tolist()
         marker_array = MarkerArray()

@@ -45,7 +45,9 @@ class CuRoboTrajectoryMaker(Node):
         node_name = 'curobo_gen_traj'
         super().__init__(node_name)
         
-        self.config_wrapper = ConfigWrapperMotion(self)
+        # Create the robot strategy
+        self.robot_context = RobotContext(self, 0.03) # TODO issue dt
+        self.config_wrapper = ConfigWrapperMotion(self, self.robot_context)
 
         # Trajectory generation parameters
         self.declare_parameter('max_attempts', 1)
@@ -70,8 +72,7 @@ class CuRoboTrajectoryMaker(Node):
         time_dilation_factor = self.get_parameter(
                 'time_dilation_factor').get_parameter_value().double_value
 
-        # Create the robot strategy
-        self.robot_context = RobotContext(self, time_dilation_factor)
+        
         
         # create camera strategy 
         self.camera_context = CameraContext()
@@ -103,7 +104,7 @@ class CuRoboTrajectoryMaker(Node):
         This method generate a trajectory to the goal pose.
         '''
         # Get Robot pose
-        self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose(self)]).to(device=self.tensor_args.device))
+        self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose()]).to(device=self.tensor_args.device))
 
         # Get goal pose
         self.goal_pose = Pose.from_list([
@@ -134,7 +135,7 @@ class CuRoboTrajectoryMaker(Node):
             # new_result.retime_trajectory(
             #     time_dilation_factor, create_interpolation_buffer=True)
             traj = result.get_interpolated_plan()
-
+            # TODO check if the traj is validate.
             # send command to strategies:
             self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
 

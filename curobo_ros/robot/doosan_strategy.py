@@ -25,6 +25,7 @@ class DoosanControl(JointCommandStrategy):
         self.pub_speed_command = node.create_publisher(SpeedjRtStream, '/dsr01/speedj_rt_stream', 10)
         self.pub_trajectory = node.create_publisher(JointTrajectory, '/leeloo/execute_trajectory', 10)
         self.sub_trajectory_state = node.create_subscription(Float32, "/leeloo/trajectory_state", self.callback_trajectory_state, 10, callback_group = MutuallyExclusiveCallbackGroup())
+        self.sub_trajectory_state = node.create_subscription(JointState, "/dsr01/joint_states", self.callback_joint_pose, 10, callback_group = MutuallyExclusiveCallbackGroup())
         self.node = node
         # Creatre a timer at dt
         self.time_dilation_factor = 0.01 #dt
@@ -34,6 +35,7 @@ class DoosanControl(JointCommandStrategy):
         self.command_index = 0
         self.robot_state = RobotState.IDLE
         self.trajectory_progression = 0.0
+        self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     def send_trajectrory(self, data):
 
@@ -96,19 +98,8 @@ class DoosanControl(JointCommandStrategy):
         #   self.robot_state = RobotState.RUNNING
         return
     
-    def get_joint_pose(self, node):
-        ret, joint_pose_msg = wait_for_message(JointState, node, "/dsr01/joint_states", time_to_wait = 0.1)
-
-        if ret:
-            joint_pose = [joint_pose_msg.position[0], 
-            joint_pose_msg.position[1], 
-            joint_pose_msg.position[4],
-            joint_pose_msg.position[2],
-            joint_pose_msg.position[3], 
-            joint_pose_msg.position[5]] # Stupidities from doosan cf joint_states msg
-            return joint_pose
-        else:
-            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    def get_joint_pose(self):
+        return self.joint_pose
 
     def stop_robot(self):
         # set var to 0
@@ -128,6 +119,15 @@ class DoosanControl(JointCommandStrategy):
         
     def callback_trajectory_state(self, msg):
         self.trajectory_progression = msg.data 
+
+    def callback_joint_pose(self, joint_pose_msg):
+        self.joint_pose = [joint_pose_msg.position[0], 
+        joint_pose_msg.position[1], 
+        joint_pose_msg.position[4],
+        joint_pose_msg.position[2],
+        joint_pose_msg.position[3], 
+        joint_pose_msg.position[5]] # Stupidities from doosan cf joint_states msg
+    
 
     def get_progression(self):
         return self.trajectory_progression

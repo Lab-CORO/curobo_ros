@@ -51,11 +51,11 @@ class RobotContext:
         self.ghost_strategy.set_command(joint_names, vel_command, accel_command, position_command)
         self.ghost_strategy.send_command()
 
-    def get_joint_pose(self, node):
+    def get_joint_pose(self):
         '''
         This method return the pose of the robot. 
         '''
-        return self.robot_strategy.get_joint_pose(node)
+        return self.robot_strategy.get_joint_pose()
 
     def stop_robot(self):
         '''

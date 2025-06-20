@@ -18,8 +18,8 @@ from curobo_msgs.srv import Ik
 
 class ConfigWrapperMotion(ConfigWrapper):
 
-    def __init__(self, node):
-        super().__init__(node)
+    def __init__(self, node, robot):
+        super().__init__(node, robot)
         # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
@@ -119,7 +119,9 @@ class ConfigWrapperMotion(ConfigWrapper):
 
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
-        kinematics_state = self.kin_model.get_state(self.q_js.position)
+        q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
+                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+        kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
         # arg for fct
         tensor_args = TensorDeviceType()
@@ -140,8 +142,8 @@ class ConfigWrapperMotion(ConfigWrapper):
 
 class ConfigWrapperIK(ConfigWrapper):
 
-    def __init__(self, node):
-        super().__init__(node)
+    def __init__(self, node, robot):
+        super().__init__(node, robot)
         self.collision_checker_type = CollisionCheckerType.BLOX
         self.collision_cache = {"obb": 100}  # TODO: make this configurable as ros param
 
@@ -192,7 +194,9 @@ class ConfigWrapperIK(ConfigWrapper):
 
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
-        kinematics_state = self.kin_model.get_state(self.q_js.position)
+        q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
+                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+        kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
         # arg for fct
         tensor_args = TensorDeviceType()

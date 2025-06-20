@@ -39,7 +39,7 @@ class JointCommandStrategy:
         pass
 
     @abstractmethod
-    def get_joint_pose(self, node):
+    def get_joint_pose(self):
         pass 
     
     @abstractmethod
