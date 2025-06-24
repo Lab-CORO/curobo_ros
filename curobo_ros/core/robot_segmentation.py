@@ -24,31 +24,35 @@ from curobo.types.robot import RobotConfig
 from curobo.types.state import JointState
 from curobo.util_file import load_yaml
 
-# Initialize tensor arguments with CUDA device
-tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
 
-# Get the path to your curobo_ros package
-package_share_directory = get_package_share_directory('curobo_ros')
-robot_config_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml')
-config_file = load_yaml(robot_config_file)
-robot_cfg_dict = config_file["robot_cfg"]
-robot_cfg_dict.pop('cspace', None)
-robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
-urdf_file = robot_cfg.kinematics.generator_config.urdf_path
-
-if not os.path.isabs(urdf_file):
-    urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
-    robot_cfg.kinematics.generator_config.urdf_path = urdf_file
-
-kin_model = CudaRobotModel(robot_cfg.kinematics)
 
 class RobotSegmentation(Node):
-    def __init__(self, kin_model=kin_model, distance_threshold=0.05, ops_dtype=torch.float32):
+    def __init__(self, distance_threshold=0.05, ops_dtype=torch.float32):
         """
         Initializes the segmentation node, setting up the publishers and subscriptions.
         Also creates the timer callback for real-time segmentation.
         """
         super().__init__('curobo_robot_segmentation')
+
+        # Initialize tensor arguments with CUDA device
+        tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
+
+        # Get the path to your curobo_ros package
+        package_share_directory = get_package_share_directory('curobo_ros')
+        self.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
+        robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
+        config_file = load_yaml(robot_config_file)
+        robot_cfg_dict = config_file["robot_cfg"]
+        robot_cfg_dict.pop('cspace', None)
+        robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
+        urdf_file = robot_cfg.kinematics.generator_config.urdf_path
+
+        if not os.path.isabs(urdf_file):
+            urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
+            robot_cfg.kinematics.generator_config.urdf_path = urdf_file
+
+        kin_model = CudaRobotModel(robot_cfg.kinematics)
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
@@ -58,19 +62,24 @@ class RobotSegmentation(Node):
         self._device = torch.device('cuda')
 
         self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
-                                joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+                                joint_names=[])
         self.point_cloud = None
 
+        self.declare_parameter('joint_states_topic', '/dsr01/joint_states')
+        self.declare_parameter('point_cloud_topic', '/fused_pointcloud')
+        joint_states_topic = self.get_parameter('joint_states_topic').get_parameter_value().string_value
+        point_cloud_topic = self.get_parameter('point_cloud_topic').get_parameter_value().string_value
+        
         # Publisher for the masked point cloud
         self.publisher_ = self.create_publisher(PointCloud2, "masked_pointcloud", 10)
         # Publisher for collision spheres visualization
         self.sphere_marker_pub = self.create_publisher(MarkerArray, 'collision_spheres', 10)
 
         # Subscription to the fused point cloud topic
-        self.subscription_fused_cloud = self.create_subscription(PointCloud2, "/fused_pointcloud", self.listener_callback_pointcloud, 1)
+        self.subscription_fused_cloud = self.create_subscription(PointCloud2, point_cloud_topic, self.listener_callback_pointcloud, 1)
 
         # Subscription to the robot's joint state topic
-        self.subscription_joint_state = self.create_subscription(SensorJointState, "/dsr01/joint_states", self.listener_callback_jointstate, 1)
+        self.subscription_joint_state = self.create_subscription(SensorJointState, joint_states_topic, self.listener_callback_jointstate, 1)
 
         # Timer callback for segmentation
         self.create_timer(0.01, self.timer_callback)
@@ -104,6 +113,7 @@ class RobotSegmentation(Node):
         """
         if(msg.position[0] != 0.0):
             self.q_js.position = torch.tensor(msg.position, dtype=self._ops_dtype, device=self._device)
+            self.q_js.joint_names = msg.name
 
     def timer_callback(self):
         """
