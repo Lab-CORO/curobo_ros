@@ -40,7 +40,7 @@ def generate_launch_description():
             'timeout', default_value='1', description='Deuxième paramètre (nombre)'
         ),
         DeclareLaunchArgument(
-            'time_dilation_factor', default_value='0.01', description='Facteur de dilatation du temps'
+            'time_dilation_factor', default_value='0.5', description='Facteur de dilatation du temps'
         ),
         DeclareLaunchArgument(
             'voxel_size', default_value='1.0', description='Taille des voxels'

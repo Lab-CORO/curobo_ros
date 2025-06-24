@@ -27,8 +27,7 @@ class DoosanControl(JointCommandStrategy):
         self.sub_trajectory_state = node.create_subscription(Float32, "/leeloo/trajectory_state", self.callback_trajectory_state, 10, callback_group = MutuallyExclusiveCallbackGroup())
         self.sub_trajectory_state = node.create_subscription(JointState, "/dsr01/joint_states", self.callback_joint_pose, 10, callback_group = MutuallyExclusiveCallbackGroup())
         self.node = node
-        # Creatre a timer at dt
-        self.time_dilation_factor = 0.01 #dt
+        self.dt = 0.02 #dt is defined by curobo 
         
         self.vel_command = []
         self.accel_command = []
@@ -38,8 +37,6 @@ class DoosanControl(JointCommandStrategy):
         self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     def send_trajectrory(self, data):
-        self.time_dilation_factor = self.node.get_parameter(
-                'time_dilation_factor').get_parameter_value().double_value
         self.robot_state = RobotState.RUNNING
         joint_trajectory_msg = JointTrajectory()
 
@@ -66,7 +63,8 @@ class DoosanControl(JointCommandStrategy):
             joint_trajectory_point.effort = []
 
             # Set the time_from_start for this point (incremented by time_step for each point)
-            joint_trajectory_point.time_from_start = Duration(sec=int(0), nanosec=int((round(self.time_dilation_factor, 2)) * 1000000000))
+            joint_trajectory_point.time_from_start = Duration(sec=int(self.dt * i),
+                                                            nanosec=int((self.dt * i % 1) * 1e9))
 
             # Add the point to the trajectory message
             joint_trajectory_msg.points.append(joint_trajectory_point)
@@ -75,28 +73,7 @@ class DoosanControl(JointCommandStrategy):
 
 
     def send_command(self):
-        # Need to remove
 
-        if self.command_index >= len(self.vel_command):
-            self.robot_state = RobotState.IDLE
-            self.command_index = 0
-            self.vel_command = []
-            self.accel_command = []
-
-        elif(not self.get_send_to_robot()):
-            self.robot_state = RobotState.IDLE
-
-        else:
-            traj = JointTrajectory()
-
-            for vel in self.vel_command:
-                pt = JointTrajectoryPoint()
-                pt.velocities = vel
-                pt.time_from_start = self.node.get_parameter(
-                'time_dilation_factor').get_parameter_value().double_value
-                traj.append(traj)
-            self.pub_trajectory.publish(traj)
-        #   self.robot_state = RobotState.RUNNING
         return
     
     def get_joint_pose(self):
