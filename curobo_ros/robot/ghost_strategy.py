@@ -15,7 +15,7 @@ class GhostStrategy(JointCommandStrategy):
         self.accel_command = []
         self.joint_names = []
         self.command_index = 0
-        self.dt = 0.01
+        self.dt = 0.02  # value defined by interpolation_dt can't be changed (esealy), need to rebuild curobo.
         self.robot_state = RobotState.IDLE
         self.node = node
 
@@ -33,7 +33,6 @@ class GhostStrategy(JointCommandStrategy):
         Returns:
             JointTrajectory: A ROS2 JointTrajectory message.
         """
-       
         self.robot_state = RobotState.RUNNING
         joint_trajectory_msg = JointTrajectory()
 
