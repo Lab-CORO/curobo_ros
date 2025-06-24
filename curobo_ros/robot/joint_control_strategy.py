@@ -32,12 +32,6 @@ class JointCommandStrategy:
         self.accel_command = accel_command
         self.joint_names = joint_names
         
-        
-
-    @abstractmethod
-    def send_command(self, node, vel_command, accel_command, dt):
-        pass
-
     @abstractmethod
     def get_joint_pose(self):
         pass 
@@ -55,9 +49,7 @@ class JointCommandStrategy:
         pass
 
     @abstractmethod
-    def send_trajectrory(self,  data):
-        # with self.buffer_lock:
-        #     self.send_to_robot = data
+    def send_trajectrory(self):
         pass
 
     def get_send_to_robot(self):

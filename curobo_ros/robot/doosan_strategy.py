@@ -2,16 +2,13 @@ from dsr_msgs2.msg import SpeedjRtStream
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 
 
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
-from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import JointState
-from std_srvs.srv import SetBool
 from std_msgs.msg import Float32
-import numpy as np 
 
 
 class DoosanControl(JointCommandStrategy):
@@ -37,7 +34,7 @@ class DoosanControl(JointCommandStrategy):
         self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.joint_name = []
 
-    def send_trajectrory(self, data):
+    def send_trajectrory(self):
         self.robot_state = RobotState.RUNNING
         joint_trajectory_msg = JointTrajectory()
 
@@ -71,11 +68,6 @@ class DoosanControl(JointCommandStrategy):
             joint_trajectory_msg.points.append(joint_trajectory_point)
 
         self.pub_trajectory.publish(joint_trajectory_msg)
-
-
-    def send_command(self):
-
-        return
     
     def get_joint_pose(self):
         return self.joint_pose

@@ -1,10 +1,7 @@
 import os
-import sys
 import torch
-from typing import Tuple
 # ros2
 from sensor_msgs.msg import PointCloud2, PointField
-from sensor_msgs.msg import JointState as SensorJointState
 
 import rclpy
 from rclpy.node import Node
@@ -14,8 +11,6 @@ import tf2_ros
 import numpy as np
 import open3d as o3d
 import ros2_numpy
-
-from rclpy.wait_for_message import wait_for_message
 
 from curobo_ros.robot.robot_context import RobotContext
 

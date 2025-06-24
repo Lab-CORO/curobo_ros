@@ -1,6 +1,5 @@
 import rclpy
 from rclpy.node import Node
-from nav2_msgs.msg import VoxelGrid
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
 from curobo_msgs.srv import GetVoxelGrid

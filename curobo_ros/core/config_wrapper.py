@@ -2,7 +2,6 @@ import os
 from abc import ABC, abstractmethod
 
 from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
-from curobo.geom.sdf.world import CollisionQueryBuffer
 from curobo.types.base import TensorDeviceType
 from curobo.types.robot import RobotConfig
 from curobo.types.state import JointState
@@ -18,7 +17,6 @@ import numpy as np
 from functools import partial
 import torch
 
-from rclpy.node import Node
 
 
 from std_srvs.srv import Trigger
@@ -60,8 +58,8 @@ class ConfigWrapper:
 
         # Get the path to your curobo_ros package
         package_share_directory = get_package_share_directory('curobo_ros')
-        self.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
-        robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
+        node.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
+        robot_config_file = node.get_parameter('robot_config_file').get_parameter_value().string_value
         config_file = load_yaml(robot_config_file)
         robot_cfg_dict = config_file["robot_cfg"]
         robot_cfg_dict.pop('cspace', None)
@@ -79,9 +77,7 @@ class ConfigWrapper:
         # for distance collision checker
         self._ops_dtype = torch.float32
         self._device = torch.device('cuda')
-        # self.q_js = JointState(position=torch.tensor(robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
-                            #    joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
-        
+
         # State information
         self.node_is_available = False
         node.declare_parameter('node_is_available', False)
@@ -215,8 +211,7 @@ class ConfigWrapper:
             self.world_cfg.add_obstacle(obstacle)
             self.update_world_config(node)
             response.message = 'Object ' + request.name + ' added successfully'
-            # node.get_logger().info(f"Successfully added {request.name}")
-        # print(response)
+
         return response
 
     def callback_get_obstacles(self, node, request: Trigger, response):
@@ -261,8 +256,7 @@ class ConfigWrapper:
 
         response.success = True
         response.message = 'Object ' + request.name + ' removed successfully'
-        # node.get_logger().info(
-        #     f"Removed object {request.name} for {node.get_name()}")
+
         return response
 
     def callback_remove_all_objects(self, node, _, response):
@@ -283,7 +277,6 @@ class ConfigWrapper:
 
         response.success = True
         response.message = 'All objects removed successfully'
-        # node.get_logger().info(f"All objects removed for {node.get_name()}")
         return response
 
     def callback_get_voxel_grid(self, node, request: GetVoxelGrid, response):

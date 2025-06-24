@@ -12,11 +12,9 @@ import torch
 from curobo.types.base import TensorDeviceType
 from curobo.types.math import Pose
 
-from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 
 
 # msg ik
-from curobo_msgs.srv import Ik
 from .config_wrapper_motion import ConfigWrapperIK
 
 

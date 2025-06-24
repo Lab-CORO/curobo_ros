@@ -49,7 +49,7 @@ class RobotContext:
         self.robot_strategy.set_command(joint_names, vel_command, accel_command, position_command)
         # Active all the time for rviz visualisation
         self.ghost_strategy.set_command(joint_names, vel_command, accel_command, position_command)
-        self.ghost_strategy.send_command()
+        self.ghost_strategy.send_trajectrory()
 
     def get_joint_pose(self):
         '''
@@ -79,12 +79,12 @@ class RobotContext:
         '''
         return self.robot_strategy.get_progression()
 
-    def send_trajectrory(self,  data):
+    def send_trajectrory(self):
         '''
         This method set the send_to_robot variable. 
         The send_to_robot variable activates the command list send to the robot.
         '''
-        return self.robot_strategy.send_trajectrory(data)
+        return self.robot_strategy.send_trajectrory()
 
     def get_send_to_robot(self):
         return self.robot_strategy.get_send_to_robot()

@@ -19,10 +19,9 @@ class GhostStrategy(JointCommandStrategy):
         self.robot_state = RobotState.IDLE
         self.node = node
 
-    def set_joint_name(names):
-        self.joint_names = names
+ 
 
-    def send_command(self):
+    def send_trajectrory(self):
         """
         Convert CuRobo JointState to ROS2 JointTrajectory message with multiple points.
 

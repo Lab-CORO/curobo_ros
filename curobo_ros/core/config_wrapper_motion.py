@@ -102,9 +102,6 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         node.world_model = node.motion_gen.world_collision
 
-        # TODO Remove this when RViz has the ability to visualize the objects itself
-        node.debug_voxel()
-
         node.get_logger().info("Motion generation config set")
 
         # Set the response message when this function is called through the service
