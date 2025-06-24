@@ -57,6 +57,12 @@ class RobotContext:
         '''
         return self.robot_strategy.get_joint_pose()
 
+    def get_joint_name(self):
+        '''
+        This method return the pose of the robot. 
+        '''
+        return self.robot_strategy.get_joint_name()
+
     def stop_robot(self):
         '''
         The methode send a twits command of 0 to stop the robot.

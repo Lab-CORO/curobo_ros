@@ -17,6 +17,8 @@ import ros2_numpy
 
 from rclpy.wait_for_message import wait_for_message
 
+from curobo_ros.robot.robot_context import RobotContext
+
 # cuRobo imports
 from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
 from curobo.types.base import TensorDeviceType
@@ -64,9 +66,14 @@ class RobotSegmentation(Node):
         self.q_js = JointState(position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
                                 joint_names=[])
         self.point_cloud = None
+        self.point_cloud_frame_id = None
+
+        # Robot strategie because of doosan stupidities... 
+        self.robot_context = RobotContext(self, 0.03) # dt is not important here.
 
         self.declare_parameter('joint_states_topic', '/dsr01/joint_states')
         self.declare_parameter('point_cloud_topic', '/fused_pointcloud')
+        self.declare_parameter('robot_base_frame', 'base_link')
         joint_states_topic = self.get_parameter('joint_states_topic').get_parameter_value().string_value
         point_cloud_topic = self.get_parameter('point_cloud_topic').get_parameter_value().string_value
         
@@ -77,9 +84,6 @@ class RobotSegmentation(Node):
 
         # Subscription to the fused point cloud topic
         self.subscription_fused_cloud = self.create_subscription(PointCloud2, point_cloud_topic, self.listener_callback_pointcloud, 1)
-
-        # Subscription to the robot's joint state topic
-        self.subscription_joint_state = self.create_subscription(SensorJointState, joint_states_topic, self.listener_callback_jointstate, 1)
 
         # Timer callback for segmentation
         self.create_timer(0.01, self.timer_callback)
@@ -104,16 +108,8 @@ class RobotSegmentation(Node):
         pcd, _ = pcd.remove_radius_outlier(nb_points=16, radius=0.05)
 
         self.point_cloud = torch.tensor(np.asarray(pcd.points), dtype=self._ops_dtype, device=self._device)
-        # self.get_logger().info(f"Point cloud size after filtering: {self.point_cloud.shape}")
+        self.point_cloud_frame_id = msg.header.frame_id
 
-    def listener_callback_jointstate(self, msg):
-        """
-        Callback for receiving the robot's joint states.
-        Stores the current joint state for segmentation calculations.
-        """
-        if(msg.position[0] != 0.0):
-            self.q_js.position = torch.tensor(msg.position, dtype=self._ops_dtype, device=self._device)
-            self.q_js.joint_names = msg.name
 
     def timer_callback(self):
         """
@@ -121,6 +117,10 @@ class RobotSegmentation(Node):
         Ensures consistent and real-time segmentation updates.
         """
         if self.point_cloud is not None and self.q_js is not None:
+            # Get joint state
+            self.q_js.position = torch.tensor(self.robot_context.get_joint_pose(), dtype=self._ops_dtype, device=self._device)
+            self.q_js.joint_names = self.robot_context.get_joint_name()
+
             self.segment_and_publish()
 
     def segment_and_publish(self):
@@ -161,7 +161,7 @@ class RobotSegmentation(Node):
 
         msg = PointCloud2()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "base_link"
+        msg.header.frame_id = self.point_cloud_frame_id
         msg.height = 1
         msg.width = points.shape[0]
         msg.is_bigendian = False
@@ -186,7 +186,7 @@ class RobotSegmentation(Node):
         marker_array = MarkerArray()
         for i, sphere in enumerate(robot_spheres):
             marker = Marker()
-            marker.header.frame_id = 'base_link'
+            marker.header.frame_id = self.get_parameter('robot_base_frame').get_parameter_value().string_value
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
             marker.id = i

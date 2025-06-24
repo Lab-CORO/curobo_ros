@@ -25,7 +25,7 @@ class DoosanControl(JointCommandStrategy):
         self.pub_speed_command = node.create_publisher(SpeedjRtStream, '/dsr01/speedj_rt_stream', 10)
         self.pub_trajectory = node.create_publisher(JointTrajectory, '/leeloo/execute_trajectory', 10)
         self.sub_trajectory_state = node.create_subscription(Float32, "/leeloo/trajectory_state", self.callback_trajectory_state, 10, callback_group = MutuallyExclusiveCallbackGroup())
-        self.sub_trajectory_state = node.create_subscription(JointState, "/dsr01/joint_states", self.callback_joint_pose, 10, callback_group = MutuallyExclusiveCallbackGroup())
+        self.sub_joint_state = node.create_subscription(JointState, "/dsr01/joint_states", self.callback_joint_pose, 10, callback_group = MutuallyExclusiveCallbackGroup())
         self.node = node
         self.dt = 0.02 #dt is defined by curobo 
         
@@ -35,6 +35,7 @@ class DoosanControl(JointCommandStrategy):
         self.robot_state = RobotState.IDLE
         self.trajectory_progression = 0.0
         self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.joint_name = []
 
     def send_trajectrory(self, data):
         self.robot_state = RobotState.RUNNING
@@ -78,6 +79,9 @@ class DoosanControl(JointCommandStrategy):
     
     def get_joint_pose(self):
         return self.joint_pose
+    
+    def get_joint_name(self):
+        return self.joint_name
 
     def stop_robot(self):
         # set var to 0
@@ -101,6 +105,13 @@ class DoosanControl(JointCommandStrategy):
         joint_pose_msg.position[2],
         joint_pose_msg.position[3], 
         joint_pose_msg.position[5]] # Stupidities from doosan cf joint_states msg
+
+        self.joint_name = [joint_pose_msg.name[0], 
+        joint_pose_msg.name[1], 
+        joint_pose_msg.name[4],
+        joint_pose_msg.name[2],
+        joint_pose_msg.name[3], 
+        joint_pose_msg.name[5]]
     
 
     def get_progression(self):

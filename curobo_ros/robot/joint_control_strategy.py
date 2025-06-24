@@ -41,7 +41,11 @@ class JointCommandStrategy:
     @abstractmethod
     def get_joint_pose(self):
         pass 
-    
+
+    @abstractmethod
+    def get_joint_name(self):
+        pass 
+        
     @abstractmethod
     def stop_robot(self):
         pass
