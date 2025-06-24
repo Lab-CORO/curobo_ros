@@ -1,11 +1,13 @@
 # Package architecture
 
 ## TODO class diagramm
+```mermaid
+
 ---
 config:
   theme: mc
-  look: classic
-  layout: elk
+  look: neo
+  layout: dagre
 ---
 classDiagram
     class ConfigWrapperIK
@@ -28,5 +30,5 @@ classDiagram
     CuRoboTrajectoryMaker --> ConfigWrapperMotion
     ConfigWrapper<--ConfigWrapperMotion
     CuRoboTrajectoryMaker --> MarkerPublisher
-
+```
 ## TODO ros node interface diageram
