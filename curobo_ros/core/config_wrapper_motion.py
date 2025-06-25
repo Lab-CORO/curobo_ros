@@ -114,7 +114,6 @@ class ConfigWrapperMotion(ConfigWrapper):
     def update_world_config(self, node):
         node.motion_gen.world_coll_checker.clear_cache()
         node.motion_gen.update_world(self.world_cfg)
-        node.debug_voxel()
 
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
