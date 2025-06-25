@@ -70,14 +70,6 @@ def generate_launch_description():
             }.items()
         ),
 
-        # Run curobo_fk node
-        Node(
-            package='curobo_ros',
-            executable='curobo_fk',
-            name='curobo_fk',
-            output='screen'
-        ),
-
         # Run curobo_gen_traj node
         Node(
             package='curobo_ros',
