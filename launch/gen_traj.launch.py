@@ -85,14 +85,6 @@ def generate_launch_description():
             output='screen'
         ),
 
-        # Run curobo_int_mark node
-        # Node(
-        #     package='curobo_ros',
-        #     executable='curobo_int_mark',
-        #     name='curobo_int_mark',
-        #     output='screen'
-        # ),
-
         # Include the trajectory_preview launch file
         IncludeLaunchDescription(
             XMLLaunchDescriptionSource(

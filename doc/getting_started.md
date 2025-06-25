@@ -67,6 +67,12 @@ docker exec -it curobo_x86 bash   # terminal #2
 ## 8. Next steps
 
 * **Tutorials** – hands-on guides for IK/FK services, custom robots, and more.
+  - [Exemple with doosan M1013](doc/tutorials/doosan_example.md)
+  - [Object management](doc/tutorials/adding_collision_objects.md)
+  - [Inverse and forward kinenatics](doc/tutorials/ik_fk_services.md)
+  - [TODO Using camera](doc/tutorials/trajectory_generation_camera.md)
 * **Concepts** – learn how curobo’s GPU core interfaces with ROS 2.
-* **Troubleshooting** – common CUDA/X-server issues and their fixes.
-
+   - [Todo Architecture](doc/concepts/architecture.md)
+   - [Ros interfaces](doc/concepts/ros_interfaces.md)
+   - [Todo Rviz plugin](doc/concepts/rviz_plugin.md)
+* [**Troubleshooting**](doc/troubleshooting.md) – common CUDA/X-server issues and their fixes.

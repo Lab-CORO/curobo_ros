@@ -117,7 +117,7 @@ class CuRoboTrajectoryMaker(Node):
 
         except Exception as e:
             response.success = False
-            response.message = "Error The trajectory could not be generated"
+            response.message = f"Error The trajectory could not be generated: {result}"
             self.get_logger().error(
                 f"An error occurred during trajectory generation: {result}")
         return response

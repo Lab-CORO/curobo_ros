@@ -10,10 +10,8 @@ A collection of quick fixes for the most common hiccups when running **curobo_ro
 You launch the Realsense D405 (or any vision node) and get:
 
 ```
-
 AttributeError: module 'cv2.dnn' has no attribute 'DictValue'
-
-````
+```
 
 **Cause**  
 Some OpenCV Python wheels ship an outdated `typing` stub that still references
@@ -24,8 +22,8 @@ the deprecated `DictValue` symbol.
 1. Open the offending file **inside the container**:
 
 ```bash
-   nano /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
-````
+nano /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+```
 
 2. Comment out **line 171** (the import of `DictValue`) or remove the entire
    line.
