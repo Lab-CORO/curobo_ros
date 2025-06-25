@@ -23,7 +23,7 @@ Once the node is running, interact with it using the `/curobo_gen_traj/generate_
     * `voxel_size`: Collision grid cell resolution.
     * `collision_activation_distance`: Distance threshold to activate collision checking.
   
-To execute the tragectory generated, an action server is available. To execute a trajectory, it have to be generated first with the service `/curobo_gen_traj/generate_trajectory`. The action send the trajector to the robot and wait for the end with a feedback message, the percentage of completion [0 , 1]. This execution depend n the implementation of your robot strategie. Currently, only the doosan m1013 strategie have been implemented. In next mounths, the Ur5e should be implemented.   
+To execute the tragectory generated, an action server is available. To execute a trajectory, it have to be generated first with the service `/curobo_gen_traj/generate_trajectory`. The action send the trajector to the robot and wait for the end with a feedback message, the percentage of completion [0 , 1]. This execution depend on the implementation of your robot strategie (you can see the implementation for doosan m1013 [here](https://github.com/Lab-CORO/leeloo/blob/main/leeloo/src/execute_trajectory.cpp). Currently, only the doosan m1013 strategie have been implemented. In next mounths, the Ur5e should be implemented.   
 
 ---
 
