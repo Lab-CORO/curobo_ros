@@ -5,6 +5,7 @@ import std_msgs.msg
 from sensor_msgs.msg import JointState
 from rclpy.node import Node
 
+
 # Third Party
 import torch
 
@@ -16,6 +17,8 @@ from curobo.types.math import Pose
 
 # msg ik
 from .config_wrapper_motion import ConfigWrapperIK
+from curobo_ros.robot.robot_context import RobotContext
+
 
 
 
@@ -38,7 +41,8 @@ class IK(Node):
         self.tensor_args = TensorDeviceType()
 
         self.size_init = 5500
-        self.config_wrapper = ConfigWrapperIK(self)
+        self.robot_context = RobotContext(self, 0.03)
+        self.config_wrapper = ConfigWrapperIK(self, self.robot_context)
         # self.config_wrapper.set_ik_gen_config(self, None, None)
         # self.ik_init()
 
