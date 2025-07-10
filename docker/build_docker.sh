@@ -70,4 +70,4 @@ fi
 # 
 echo "${dockerfile}"
 
-docker build  --build-arg ISAAC_SIM_VERSION=${isaac_sim_version} -t curobo_docker:${image_tag} -f ${dockerfile} . 
+docker build  --build-arg ISAAC_SIM_VERSION=${isaac_sim_version} -t curobo_docker:a100 -f ${dockerfile} . 

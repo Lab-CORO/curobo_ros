@@ -79,7 +79,7 @@ RUN apt-get update && apt-get install --reinstall -y \
 ENV PATH="${PATH}:/opt/hpcx/ompi/bin"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/opt/hpcx/ompi/lib"
 
-ENV TORCH_CUDA_ARCH_LIST="6.1 7.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST="8.0+PTX"
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 
 # Add cache date to avoid using cached layers older than this
