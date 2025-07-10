@@ -7,6 +7,7 @@ from functools import partial
 # cuRobo
 from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.types.base import TensorDeviceType
+from curobo.types.robot import JointState
 from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 from curobo_msgs.srv import GetCollisionDistance
@@ -118,7 +119,7 @@ class ConfigWrapperMotion(ConfigWrapper):
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
         q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
-                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+                               joint_names=self.robot.get_joint_name())
         kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
         # arg for fct
@@ -193,7 +194,7 @@ class ConfigWrapperIK(ConfigWrapper):
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
         q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
-                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+                               joint_names=self.robot.get_joint_name())
         kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
         # arg for fct
