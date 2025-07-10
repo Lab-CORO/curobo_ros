@@ -5,6 +5,7 @@ import std_msgs.msg
 from sensor_msgs.msg import JointState
 from rclpy.node import Node
 
+
 # Third Party
 import torch
 
@@ -16,6 +17,8 @@ from curobo.types.math import Pose
 
 # msg ik
 from .config_wrapper_motion import ConfigWrapperIK
+from curobo_ros.robot.robot_context import RobotContext
+
 
 
 
@@ -38,12 +41,8 @@ class IK(Node):
         self.tensor_args = TensorDeviceType()
 
         self.size_init = 5500
-        self.config_wrapper = ConfigWrapperIK(self)
-        # self.config_wrapper.set_ik_gen_config(self, None, None)
-        # self.ik_init()
-
-        # service for list of poses to calculate the inverse kinematics
-        
+        self.robot_context = RobotContext(self, 0.03)
+        self.config_wrapper = ConfigWrapperIK(self, self.robot_context)
 
     def ik_callback(self, request, response):
         if len(request.poses) == 0:
@@ -55,18 +54,7 @@ class IK(Node):
             # print("new size")
             self.tensor_args = TensorDeviceType()
             self.config_wrapper.set_ik_gen_config(self, None, None)
-            # ik_config = IKSolverConfig.load_from_robot_config(
-            #     self.robot_cfg,
-            #     self.world_cfg,
-            #     rotation_threshold=0.05,
-            #     position_threshold=0.005,
-            #     num_seeds=20,
-            #     self_collision_check=True,
-            #     self_collision_opt=True,
-            #     tensor_args=self.tensor_args,
-            #     use_cuda_graph=True,
-            # )
-            # self.ik_solver = IKSolver(ik_config)
+
             self.size_init = len(request.poses)
             try:
                 self.ik_init()
@@ -77,7 +65,6 @@ class IK(Node):
                 return response
         # get the poses
         poses = request.poses
-        # print(poses[0])
 
         positions = []
         orientations = []
@@ -93,8 +80,7 @@ class IK(Node):
         orientation_tensor = torch.tensor(orientations)
 
         goal = Pose(position_tensor, orientation_tensor)
-        # print(goal.position)
-        # ca pete ici
+
         try:
             result = self.ik_solver.solve_batch(goal)
         except:
@@ -112,24 +98,19 @@ class IK(Node):
         for index, j in enumerate(result.solution.cpu().numpy()):
             joint = JointState()
             joint.position = j[0].tolist()
-            # joints_results.append(joint)
 
             # joint state valide to Bool list
             res = std_msgs.msg.Bool()
             res.data = bool(result.success.cpu().numpy()[index][0])
-            # print(res)
 
             response.joint_states_valid.append(res)
             response.joint_states.append(joint)
             response.success = True
-        # response.joint_states_valid = result.success.cpu().numpy()[:,0]
 
-        # response.joint_angles = result.joint_angles.cpu().numpy().tolist()
         return response
 
     def ik_init(self):
         q_sample = self.ik_solver.sample_configs(self.size_init)
-        # print(q_sample)
         kin_state = self.ik_solver.fk(q_sample)
         goal = Pose(kin_state.ee_position, kin_state.ee_quaternion)
 
