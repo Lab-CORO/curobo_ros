@@ -14,7 +14,7 @@ from curobo_msgs.srv import GetCollisionDistance
 # ros
 import rclpy
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import Ik
+from curobo_msgs.srv import Ik, IkBatch
 
 
 class ConfigWrapperMotion(ConfigWrapper):
@@ -155,8 +155,11 @@ class ConfigWrapperIK(ConfigWrapper):
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_ik_gen_config, self))
 
+        self.srv_ik_batch = node.create_service(
+            IkBatch,  node.get_name() +'/ik_batch_poses', node.ik_batch_callback)
+
         self.srv_ik = node.create_service(
-            Ik,  node.get_name() +'/ik_batch_poses', node.ik_callback)
+            Ik,  node.get_name() +'/ik_pose', node.ik_callback)
 
 
     def set_ik_gen_config(self, node, _, response):

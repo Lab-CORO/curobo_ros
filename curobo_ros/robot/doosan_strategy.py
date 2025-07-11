@@ -32,7 +32,7 @@ class DoosanControl(JointCommandStrategy):
         self.robot_state = RobotState.IDLE
         self.trajectory_progression = 0.0
         self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.joint_name = []
+        self.joint_name = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
 
     def send_trajectrory(self):
         self.robot_state = RobotState.RUNNING
