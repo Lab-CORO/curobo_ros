@@ -245,8 +245,7 @@ WORKDIR /home/ros2_ws
 RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 
 # update ucx path: https://github.com/openucx/ucc/issues/476
-RUN export LD_LIBRARY_PATH=/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH
-
+ENV LD_LIBRARY_PATH=/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH
 COPY branch_switch_entrypoint.sh /home/
 
 
