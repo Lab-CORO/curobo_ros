@@ -304,12 +304,12 @@ class ConfigWrapper:
             min_x, min_y, min_z = np.minimum([min_x, min_y, min_z], cuboid_min)
             max_x, max_y, max_z = np.maximum([max_x, max_y, max_z], cuboid_max)
 
-        max_x = 2.6
-        max_y = 2.6
-        max_z = 2.6
-        min_x = -2.6
-        min_y = -2.6
-        min_z = -2.6
+        max_x = 1.5
+        max_y = 1.5
+        max_z = 1.5
+        min_x = -1.5
+        min_y = -1.5
+        min_z = -1.5
         grid_size_x = int(np.ceil((max_x - min_x) / voxel_size))
         grid_size_y = int(np.ceil((max_y - min_y) / voxel_size))
         grid_size_z = int(np.ceil((max_z - min_z) / voxel_size))

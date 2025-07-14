@@ -14,7 +14,7 @@ from curobo_msgs.srv import GetCollisionDistance
 # ros
 import rclpy
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import Ik
+from curobo_msgs.srv import Ik, IkBatch
 
 
 class ConfigWrapperMotion(ConfigWrapper):
@@ -119,7 +119,7 @@ class ConfigWrapperMotion(ConfigWrapper):
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
         q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
-                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+                               joint_names=self.robot.get_joint_name())
         kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
         # arg for fct
@@ -155,8 +155,11 @@ class ConfigWrapperIK(ConfigWrapper):
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_ik_gen_config, self))
 
+        self.srv_ik_batch = node.create_service(
+            IkBatch,  node.get_name() +'/ik_batch_poses', node.ik_batch_callback)
+
         self.srv_ik = node.create_service(
-            Ik,  node.get_name() +'/ik_batch_poses', node.ik_callback)
+            Ik,  node.get_name() +'/ik_pose', node.ik_callback)
 
 
     def set_ik_gen_config(self, node, _, response):
@@ -194,7 +197,7 @@ class ConfigWrapperIK(ConfigWrapper):
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
         q_js =JointState(position=torch.tensor(self.robot.get_joint_pose(), dtype=self._ops_dtype, device=self._device),
-                               joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+                               joint_names=self.robot.get_joint_name())
         kinematics_state = self.kin_model.get_state(q_js.position)
         robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
         # arg for fct
