@@ -244,6 +244,8 @@ WORKDIR /home/ros2_ws
 # Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
 RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 
+# update ucx path: https://github.com/openucx/ucc/issues/476
+ENV LD_LIBRARY_PATH=/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH
 COPY branch_switch_entrypoint.sh /home/
 
 
