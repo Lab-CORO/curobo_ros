@@ -7,6 +7,7 @@ from functools import partial
 # cuRobo
 from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 from curobo.types.base import TensorDeviceType
+from curobo.types.robot import JointState
 from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 from curobo_msgs.srv import GetCollisionDistance
