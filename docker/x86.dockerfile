@@ -55,18 +55,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 
-# Téléchargez le fichier tar.gz depuis le site de JetBrains
-RUN wget https://download.jetbrains.com/python/pycharm-community-2023.1.2.tar.gz
-
-# Décompressez le fichier
-RUN tar -xzf pycharm-community-2023.1.2.tar.gz
-
-# Déplacez le dossier décompressé
-RUN mv pycharm-community-2023.1.2 /opt/pycharm-community
-
-# Ajoutez un lien symbolique pour faciliter l'exécution
-RUN ln -s /opt/pycharm-community/bin/pycharm.sh /usr/local/bin/pycharm
-
 # push defaults to bashrc:
 RUN apt-get update && apt-get install --reinstall -y \
     hwloc-nox \
@@ -79,7 +67,8 @@ RUN apt-get update && apt-get install --reinstall -y \
 ENV PATH="${PATH}:/opt/hpcx/ompi/bin"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/opt/hpcx/ompi/lib"
 
-ENV TORCH_CUDA_ARCH_LIST="6.1 7.0+PTX"
+ARG TORCH_CUDA_ARCH_LIST="6.1 7.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 
 # Add cache date to avoid using cached layers older than this
