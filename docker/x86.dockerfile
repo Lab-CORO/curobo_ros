@@ -248,6 +248,8 @@ RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 ENV LD_LIBRARY_PATH=/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH
 COPY branch_switch_entrypoint.sh /home/
 
+RUN  apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp ros-humble-cyclonedds
 
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 # Not needed anymore ENTRYPOINT [ "/home/branch_switch_entrypoint.sh" ]
 
