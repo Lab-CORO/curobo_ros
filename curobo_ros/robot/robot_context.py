@@ -10,7 +10,7 @@ class RobotContext:
     robot_strategy: JointCommandStrategy
 
     def __init__(self, node, dt):
-        node.declare_parameter('robot_type', "doosan_m1013")
+        node.declare_parameter('robot_type', "simulator")
         self.robot_strategy = self.select_strategy(node, dt)
         self.ghost_strategy = GhostStrategy(node, dt)
 
@@ -28,8 +28,9 @@ class RobotContext:
             case "ur5e":
                 robot_strategy = None
                 print("ur5e")
-            case "emulator":
-                robot_strategy = None
+            case "simulator":
+                from curobo_ros.robot.simulator_strategy import SimulatorControl
+                robot_strategy = SimulatorControl(node, time_dilation_factor)
             case _:
                 robot_strategy = None
 
