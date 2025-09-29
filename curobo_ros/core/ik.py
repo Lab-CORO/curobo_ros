@@ -36,6 +36,9 @@ class IK(Node):
         self.declare_parameter('voxel_size', 0.5)
         voxel_size = self.get_parameter(
                 'voxel_size').get_parameter_value().double_value
+        self.declare_parameter('init_btch_size', 1000)
+        voxel_size = self.get_parameter(
+                'init_btch_size').get_parameter_value().double_value
         
         # curobo args
         self.tensor_args = TensorDeviceType()
@@ -74,18 +77,19 @@ class IK(Node):
             # self.get_logger().info(len(request.poses))
             return False, []
         # check limit of poses 1000 poses
-        if len(poses) != self.size_init:
-            # print("new size")
-            self.tensor_args = TensorDeviceType()
-            self.config_wrapper.set_ik_gen_config(self, None, None)
+        try:
+            if len(poses) != self.size_init:
+                # print("new size")
+                self.tensor_args = TensorDeviceType()
+                self.config_wrapper.set_ik_gen_config(self, None, None)
 
-            self.size_init = len(poses)
-            try:
-                self.ik_init()
-            except:
-                # response.error_msg = "May be in collision"
-                self.size_init = 0 # Init could not be done also the size is set to 0.
-                return False, []
+                self.size_init = len(poses)
+            
+            self.ik_init()
+        except:
+            # response.error_msg = "May be in collision"
+            self.size_init = 0 # Init could not be done also the size is set to 0.
+            return False, []
         # get the poses
 
         positions = []
