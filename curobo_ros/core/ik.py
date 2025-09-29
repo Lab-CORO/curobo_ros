@@ -36,14 +36,16 @@ class IK(Node):
         self.declare_parameter('voxel_size', 0.5)
         voxel_size = self.get_parameter(
                 'voxel_size').get_parameter_value().double_value
-        self.declare_parameter('init_btch_size', 1000)
-        voxel_size = self.get_parameter(
-                'init_btch_size').get_parameter_value().double_value
+        self.declare_parameter('init_batch_size', 1000)
+        init_batch_size = self.get_parameter(
+                'init_batch_size').get_parameter_value().integer_value
         
         # curobo args
         self.tensor_args = TensorDeviceType()
 
-        self.size_init = 5500
+        self.size_init = init_batch_size
+        print("size init:")
+        print(self.size_init)
         self.robot_context = RobotContext(self, 0.03)
         self.config_wrapper = ConfigWrapperIK(self, self.robot_context)
 
@@ -85,7 +87,7 @@ class IK(Node):
 
                 self.size_init = len(poses)
             
-            self.ik_init()
+                self.ik_init()
         except:
             # response.error_msg = "May be in collision"
             self.size_init = 0 # Init could not be done also the size is set to 0.
