@@ -15,8 +15,9 @@ setup(
         (os.path.join('share', package_name, 'launch'),                                      glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
         (os.path.join('share', package_name, 'curobo_doosan/src/m1013'),                           glob(os.path.join('curobo_doosan/src/m1013', '*.*'))),
         (os.path.join('share', package_name, 'curobo_doosan/src/m1013/meshes', 'm1013_white'),     glob(os.path.join('curobo_doosan/src/m1013/meshes/m1013_white', '*.dae*'))),
-        (os.path.join('share', package_name, 'curobo_doosan/src/m1013/meshes', 'm1013_collision'), glob(os.path.join('curobo_doosan/src/m1013/meshes/m1013_collision', '*.dae*'))),
+        (os.path.join('share', package_name, 'curobo_doosan/src/m1013/meshes', 'm1013_collision'), glob(os.path.join('curobo_doosan/src/m1013/meshes/m1013_collision', '*.dae*'))), #TODO faire une packages ros2 pour la config doosan
         (os.path.join('share', package_name, 'rviz'),                                        glob('rviz/*.rviz')),
+        (os.path.join('share', package_name, 'config'),                                        glob('config/*.*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -35,6 +36,7 @@ setup(
             'curobo_int_mark = curobo_ros.interfaces.simple_arrow:main',
             'viz_voxel_grid = curobo_ros.interfaces.show_voxel_grid:main',
             'robot_segmentation = curobo_ros.core.robot_segmentation:main',
+            'test_pointcloud_camera = curobo_ros.core.test_pointcloud_camera:main',
         ],
     },
 )

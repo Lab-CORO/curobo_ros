@@ -211,7 +211,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Install Open3D from the PyPI repositories
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir --upgrade open3d
-
+RUN python3 -m pip install --no-cache-dir --force-reinstall --no-deps \
+    pandas scikit-learn pyarrow
 # # # Set the workspace directory
 WORKDIR /home/ros2_ws/src
 

@@ -1,0 +1,7 @@
+cameras:
+  - name: point_cloud
+    type: point_cloud
+    topic: /masked_pointcloud
+    frame_id: rgb_camera_link
+    intrinsics: []
+    extrinsics: []
