@@ -346,7 +346,7 @@ class ConfigWrapper:
         """
         # response.success = True
 
-        voxel_size = self.world_cfg.blox[0].voxel_size
+        voxel_size = node.get_parameter('voxel_size').get_parameter_value().double_value
         min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
         max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
 

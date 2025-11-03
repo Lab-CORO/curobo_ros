@@ -13,7 +13,7 @@ class CameraStrategy(ABC):
     Each strategy implements how to obtain camera observations for cuRobo collision checking.
     """
 
-    def __init__(self, node, topic, camera_info, frame_id):
+    def __init__(self, node, camera_name, topic, camera_info, frame_id):
         """
         Initialize the camera strategy.
 
@@ -21,6 +21,7 @@ class CameraStrategy(ABC):
             node: ROS2 node for creating subscriptions and logging
         """
         self.node = node
+        self.name = camera_name
         self._device = torch.device('cuda')
         self._dtype = torch.float32
         self._topic = topic

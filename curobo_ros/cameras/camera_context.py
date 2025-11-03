@@ -5,7 +5,7 @@ import torch
 from curobo.types.camera import CameraObservation
 from curobo_ros.cameras.camera_strategy import CameraStrategy
 from curobo_ros.cameras.pointcloud_camera_strategy import PointCloudCameraStrategy
-from curobo_ros.cameras.camera_simulation_strategy import RealsenseStrategy
+from curobo_ros.cameras.camera_depth_map_strategy import DepthMapCameraStrategy
 
 
 class CameraContext:
@@ -47,6 +47,7 @@ class CameraContext:
             bounds = kwargs.get('bounds', None)
             camera_strategy = PointCloudCameraStrategy(
                 node=self.node,
+                name=camera_name,
                 topic=topic,
                 camera_info=camera_info,
                 frame_id=frame_id,
@@ -58,8 +59,9 @@ class CameraContext:
             # For depth cameras (RealSense, etc.)
             camera_info_topic = kwargs.get('camera_info_topic', topic.replace('/image', '/camera_info'))
             camera_pose = kwargs.get('camera_pose', None)
-            camera_strategy = RealsenseStrategy(
+            camera_strategy = DepthMapCameraStrategy(
                 node=self.node,
+                name=camera_name,
                 depth_topic=topic,
                 camera_info_topic=camera_info_topic,
                 camera_pose=camera_pose

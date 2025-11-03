@@ -3,6 +3,8 @@
 from curobo_ros.cameras.camera_strategy import CameraStrategy
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
+from curobo.geom.types import WorldConfig, BloxMap, VoxelGrid
+
 
 from sensor_msgs.msg import PointCloud2, Image, CameraInfo
 from std_msgs.msg import Header
@@ -10,6 +12,17 @@ import ros2_numpy
 import torch
 import numpy as np
 import math
+import time
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from sensor_msgs.msg import PointCloud2
+import numpy as np
+import torch
+import ros2_numpy as rnp
+from curobo.geom.types import WorldConfig
+from scipy.ndimage import distance_transform_edt
+
 
 
 class PointCloudCameraStrategy(CameraStrategy):
@@ -24,7 +37,7 @@ class PointCloudCameraStrategy(CameraStrategy):
     depth represents the Z-coordinate of points.
     """
 
-    def __init__(self, node, topic='', camera_info=[], frame_id='', pixel_size=0.01, bounds=None):
+    def __init__(self, node, name, topic='', camera_info=[], frame_id='', pixel_size=0.01, bounds=None):
         """
         Initialize the PointCloud to orthographic depth image strategy.
 
@@ -37,287 +50,463 @@ class PointCloudCameraStrategy(CameraStrategy):
             bounds: Workspace bounds as [min_x, max_x, min_y, max_y, min_z, max_z]
                    If None, uses default [-1.5, 1.5, -1.5, 1.5, -1.5, 1.5]
         """
-        super().__init__(node, topic, camera_info, frame_id)
+        super().__init__(node, name, topic, camera_info, frame_id)
 
-        # Point cloud data
-        # self._obstacle_counter = 0  # Counter for unique obstacle names
+        # Paramètres
+        # self.node.declare_parameter('voxel_size', 0.02)
+        self.node.declare_parameter('grid_size', [102, 102, 102])  # 2.02m x 2.02m x 2.02m (102 pour correspondre au cache cuRobo)
+        self.node.declare_parameter('origin', [-1.0, -1.0, -1.0])
+        self.node.declare_parameter('use_gpu', False)  # GPU ou CPU
 
-        # Orthographic projection parameters
-        self.pixel_size = pixel_size
-        if bounds is None:
-            bounds = [-1.5, 1.5, -1.5, 1.5, -1.5, 1.5]
-        self.bounds = bounds
-
-        # Calculate image dimensions from workspace bounds
-        self.image_width = int((bounds[1] - bounds[0]) / pixel_size)
-        self.image_height = int((bounds[3] - bounds[2]) / pixel_size)
-
-        # Camera pose: positioned above the workspace, looking straight down
-        cam_x = (bounds[0] + bounds[1]) / 2
-        cam_y = (bounds[2] + bounds[3]) / 2
-        cam_z = bounds[5] + 0.5  # 0.5m above the workspace
+        voxel_size = 0.02 #self.node.get_parameter('voxel_size').value
+        grid_size = tuple(self.node.get_parameter('grid_size').value)
+        origin = tuple(self.node.get_parameter('origin').value)
+        use_gpu = self.node.get_parameter('use_gpu').value
         
-        # Quaternion for looking straight down (rotate -90° around X-axis)
-        angle = -math.pi / 2
-        qw = math.cos(angle / 2)
-        qx = math.sin(angle / 2)
-        qy = 0.0
-        qz = 0.0
+        # Choisir builder (GPU ou CPU)
+        if use_gpu:
+            self.builder = FastBloxMapBuilderGPU(
+                voxel_size=voxel_size,
+                grid_size=grid_size,
+                origin=origin
+            )
+            self.node.get_logger().info('🚀 Mode GPU activé')
+        else:
+            self.builder = FastBloxMapBuilder(
+                voxel_size=voxel_size,
+                grid_size=grid_size,
+                origin=origin
+            )
+            self.node.get_logger().info('🚀 Mode CPU vectorisé activé')
+        
+        self.current_bloxmap = None
+
+        # QoS
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        
+        # Subscriber
+        self.subscription = self.node.create_subscription(
+            PointCloud2,
+            topic,
+            self.pointcloud_callback,
+            qos
+        )
+
 
         # TODO Get the camera pose from frame_id
         self.camera_pose = Pose(
-                        position=self.tensor_args.to_device([cam_x, cam_y, cam_z]),
-                        quaternion=self.tensor_args.to_device([qw, qx, qy, qz]),
+                        position=self.tensor_args.to_device([0, 0, 0]),
+                        quaternion=self.tensor_args.to_device([1, 0, 0, 0]),
                     )
-        # Orthographic "intrinsics" (simplified for orthographic projection)
-        # fx, fy control the scale: 1 pixel = pixel_size meters
-        fx = 1.0 / pixel_size
-        fy = 1.0 / pixel_size
-        cx = self.image_width / 2.0
-        cy = self.image_height / 2.0
 
-        self.intrinsics = torch.tensor([
-            [fx, 0.0, cx],
-            [0.0, fy, cy],
-            [0.0, 0.0, 1.0]
-        ], dtype=self._dtype, device=self._device)
 
-        # Subscribe to point cloud topic
-        self.pointcloud_sub = node.create_subscription(
-            PointCloud2,
-            self._topic,
-            self._update_callback,
-            1
-        )
+        
+        self.node.get_logger().info(f'✅ Nœud démarré')
+        self.node.get_logger().info(f'   Topic: {topic}')
+        self.node.get_logger().info(f'   Grille fixe: {grid_size}')
 
-        # Publisher for the depth map visualization
-        self.depth_map_pub = node.create_publisher(
-            Image,
-            '/curobo/depth_map',
-            10
-        )
 
-        # Publisher for the camera info (intrinsics)
-        self.camera_info_pub = node.create_publisher(
-            CameraInfo,
-            '/curobo/depth_map/camera_info',
-            10
-        )
 
-        node.get_logger().info(
-            f"PointCloudCameraStrategy: {self.image_width}x{self.image_height} @ {pixel_size}m/px, "
-            f"camera at ({cam_x:.2f}, {cam_y:.2f}, {cam_z:.2f}) looking down"
-        )
-        node.get_logger().info("Publishing depth map to /curobo/depth_map")
-        node.get_logger().info("Publishing camera info to /curobo/depth_map/camera_info")
-
-    def _update_callback(self, msg: PointCloud2):
+    def pointcloud_callback(self, msg: PointCloud2):
         """
         Callback for receiving point cloud data.
 
         Args:
             msg: PointCloud2 message
         """
+      
+        t_start = time.perf_counter()
+        
         try:
-            # Convert PointCloud2 to numpy array
-            cloud_points = ros2_numpy.point_cloud2.pointcloud2_to_array(msg)
-            xyz = ros2_numpy.point_cloud2.get_xyz_points(cloud_points, remove_nans=True)
+            # 1. Conversion ROS2→NumPy (rapide avec ros2_numpy)
+            cloud_array = rnp.numpify(msg)
+            
+            # 2. Extraction XYZ vectorisée (pas de boucle)
+            points = np.stack([
+                cloud_array['x'],
+                cloud_array['y'],
+                cloud_array['z']
+            ], axis=1).astype(np.float32)
+            
+            # 3. Filtrage NaN vectorisé
+            valid_mask = np.all(np.isfinite(points), axis=1)
+            points_clean = points[valid_mask]
+            
+            if len(points_clean) == 0:
+                self.node.get_logger().warn('Point cloud vide')
+                return
+            
+            # 4. Créer BloxMap (100% vectorisé)
+            self.current_bloxmap = self.builder.pointcloud_to_bloxmap(points_clean)
+            
+            # Update world config
+            self.update_world_config(self.current_bloxmap, self.name)
 
-            # Convert to torch tensor on GPU
-            self.pointcloud = torch.tensor(xyz, dtype=self._dtype, device=self._device)
-            self.pointcloud_frame_id = msg.header.frame_id
-            self.last_update_time = msg.header.stamp
-
-            # Create the depth image
-            depth_image = self._create_orthographic_depth_image()
-
-            # Publish the depth map and camera info
-            self._publish_depth_map(depth_image)
-            self._publish_camera_info()
-
-            # Update curobo world and sync 
-            data_camera = CameraObservation(  # rgb_image = data["rgba_nvblox"],
-                            depth_image=depth_image , intrinsics=self.intrinsics, pose=self.camera_pose
-                        ).to(device=self.tensor_args.device)
-
-            self.node.world_model.add_camera_frame(data_camera, "world")
-            self.node.world_model.process_camera_frames('world', False)
-            torch.cuda.synchronize()
-            self.node.world_model.update_blox_hashes()
-
+            t_end = time.perf_counter()
+            elapsed_ms = (t_end - t_start) * 1000
+            fps = 1000.0 / elapsed_ms
+            
+            self.node.get_logger().info(
+                f'{elapsed_ms:.1f}ms ({fps:.0f} Hz)',
+                throttle_duration_sec=2.0
+            )
+            
+            
         except Exception as e:
-            self.node.get_logger().error(f"Error processing point cloud: {e}")
-
-    def _create_orthographic_depth_image(self) -> torch.Tensor:
+            self.node.get_logger().error(f'Erreur: {e}')
+     
+    def update_world_config(self, bloxmap, name):
         """
-        Create an orthographic depth image from the point cloud.
-
-        This projects the 3D point cloud onto a 2D grid viewed from above,
-        where each pixel's depth value represents the maximum Z-coordinate
-        of points falling within that pixel.
-
-        Returns:
-            torch.Tensor: Depth image of shape (image_height, image_width)
-        """
-        # Initialize depth image
-        depth_image = torch.zeros(
-            (self.image_height, self.image_width),
-            dtype=self._dtype,
-            device=self._device
-        )
-
-        if self.pointcloud is None or self.pointcloud.shape[0] == 0:
-            return depth_image
-
-        # Filter points within bounds
-        bounds_tensor = torch.tensor(self.bounds, dtype=self._dtype, device=self._device)
-        valid_x = (self.pointcloud[:, 0] >= bounds_tensor[0]) & (self.pointcloud[:, 0] < bounds_tensor[1])
-        valid_y = (self.pointcloud[:, 1] >= bounds_tensor[2]) & (self.pointcloud[:, 1] < bounds_tensor[3])
-        valid_z = (self.pointcloud[:, 2] >= bounds_tensor[4]) & (self.pointcloud[:, 2] < bounds_tensor[5])
-        valid_mask = valid_x & valid_y & valid_z
-
-        points_valid = self.pointcloud[valid_mask]
-
-        if points_valid.shape[0] == 0:
-            return depth_image
-
-        # Convert world coordinates (x, y) to pixel indices
-        # pixel_x = floor((x - min_x) / pixel_size)
-        # pixel_y = floor((y - min_y) / pixel_size)
-        pixel_x = torch.floor((points_valid[:, 0] - bounds_tensor[0]) / self.pixel_size).long()
-        pixel_y = torch.floor((points_valid[:, 1] - bounds_tensor[2]) / self.pixel_size).long()
-
-        # Clamp to image bounds
-        pixel_x = torch.clamp(pixel_x, 0, self.image_width - 1)
-        pixel_y = torch.clamp(pixel_y, 0, self.image_height - 1)
-
-        # For each pixel, we want the MAXIMUM z value (closest to camera looking down)
-        # Calculate distance from camera to each point
-        cam_z = self.bounds[5] + 0.5
-        depths = cam_z - points_valid[:, 2]  # Distance from camera to point
-
-        # Flatten indices
-        flat_indices = pixel_y * self.image_width + pixel_x
-
-        # Use scatter_reduce with 'amin' to keep the minimum depth (closest point)
-        depth_image_flat = depth_image.flatten()
-
-        # Initialize with large values for minimum operation
-        depth_image_flat.fill_(float('inf'))
-
-        # For each pixel, keep the minimum depth (closest point to camera)
-        depth_image_flat.scatter_reduce_(0, flat_indices, depths, reduce='amin', include_self=False)
-
-        # Replace inf with 0 (no data)
-        depth_image_flat[depth_image_flat == float('inf')] = 0.0
-
-        depth_image = depth_image_flat.view(self.image_height, self.image_width)
-
-        return depth_image
-
-
-    def _publish_depth_map(self, depth_image: torch.Tensor):
-        """
-        Publish the depth map as a ROS Image message for visualization.
+        Update world configuration with a VoxelGrid object.
+        Converts the dictionary bloxmap from FastBloxMapBuilder to a proper VoxelGrid.
 
         Args:
-            depth_image: Depth image tensor (height, width) on GPU
+            bloxmap: Dictionary containing bloxmap data from FastBloxMapBuilder
+                    with keys: 'pose', 'dims', 'voxel_size', 'feature_tensor', 'feature_dtype'
+            name: Name identifier for this voxel grid
         """
         try:
-            # Convert to numpy on CPU
-            depth_np = depth_image.cpu().numpy()
+            # Calculer les dimensions physiques de la grille à partir du nombre de voxels
+            grid_dims_voxels = bloxmap['dims']  # [nx, ny, nz] en nombre de voxels
+            voxel_size = bloxmap['voxel_size']
 
-            # Normalize for visualization (0-255 range)
-            # Non-zero values are mapped to 0-255, zero values stay black
-            depth_viz = np.zeros_like(depth_np, dtype=np.uint8)
-            mask = depth_np > 0
-            if np.any(mask):
-                depth_min = depth_np[mask].min()
-                depth_max = depth_np[mask].max()
-                if depth_max > depth_min:
-                    depth_viz[mask] = ((depth_np[mask] - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
-                else:
-                    depth_viz[mask] = 128
+            # Dimensions physiques en mètres
+            # IMPORTANT: cuRobo ajoute +1 voxel via get_grid_shape()
+            # Donc pour obtenir N voxels, il faut dims = (N-1) * voxel_size
+            dims_meters = [
+                (grid_dims_voxels[0] - 1) * voxel_size,
+                (grid_dims_voxels[1] - 1) * voxel_size,
+                (grid_dims_voxels[2] - 1) * voxel_size
+            ]
 
-            # Create ROS Image message
-            msg = Image()
-            msg.header = Header()
-            msg.header.stamp = self.node.get_clock().now().to_msg()
-            msg.header.frame_id = self.pointcloud_frame_id if self.pointcloud_frame_id else "base_0"
-            msg.height = self.image_height
-            msg.width = self.image_width
-            msg.encoding = "mono8"
-            msg.is_bigendian = False
-            msg.step = self.image_width
-            msg.data = depth_viz.tobytes()
+            # Créer un VoxelGrid avec le feature_tensor ESDF
+            voxel_grid = VoxelGrid(
+                name=name,
+                pose=bloxmap['pose'],
+                dims=dims_meters,
+                voxel_size=voxel_size,
+                feature_tensor=bloxmap['feature_tensor'].flatten(),  # Flatten en 1D
+                feature_dtype=bloxmap['feature_dtype']
+            )
 
-            # Publish
-            self.depth_map_pub.publish(msg)
+            # IMPORTANT: Créer le xyzr_tensor pour que get_occupied_voxels() fonctionne
+            voxel_grid.xyzr_tensor = voxel_grid.create_xyzr_tensor(
+                transform_to_origin=True,
+                tensor_args=self.tensor_args
+            )
+
+            # Mettre à jour ou ajouter le voxel grid dans world_config
+            updated = False
+            for index, voxel in enumerate(self.node.world_model.world_model.voxel):
+                if voxel.name == name:
+                    self.node.world_model.world_model.voxel[index] = voxel_grid
+                    updated = True
+                    break
+
+            # Si le voxel grid n'existe pas encore, l'ajouter
+            if not updated:
+                self.node.world_model.world_model.voxel.append(voxel_grid)
+
+            # Recharger le modèle de collision avec la configuration mise à jour
+            self.node.world_model.load_collision_model(self.node.world_model.world_model)
+
+            # IMPORTANT: Mettre à jour les feature_tensor dans le cache de collision
+            # load_collision_model() ne copie PAS automatiquement les features
+            self.node.world_model.update_voxel_data(voxel_grid, env_idx=0)
+
+            self.node.get_logger().info(
+                f'✅ VoxelGrid "{name}" ajouté: dims={dims_meters}, voxel_size={voxel_size}',
+                throttle_duration_sec=2.0
+            )
 
         except Exception as e:
-            self.node.get_logger().error(f"Error publishing depth map: {e}")
+            self.node.get_logger().error(f'Erreur dans update_world_config: {e}')
+            import traceback
+            self.node.get_logger().error(traceback.format_exc())
 
-    def _publish_camera_info(self):
+        
+
+
+
+
+class FastBloxMapBuilder:
+    """
+    Constructeur BloxMap ultra-rapide avec grille fixe.
+    Toutes les opérations sont vectorisées (pas de boucles Python).
+    """
+    
+    def __init__(
+        self,
+        voxel_size: float = 0.02,
+        grid_size: tuple = (100, 100, 100),  # Grille fixe 2m x 2m x 2m
+        origin: tuple = (-1.0, -1.0, -1.0),   # Centré sur robot
+        device: str = "cuda"
+    ):
+        self.voxel_size = voxel_size
+        self.device = device
+        self.grid_size = np.array(grid_size, dtype=np.int32)
+        self.origin = np.array(origin, dtype=np.float32)
+        
+        # Pré-calculer les limites du volume
+        self.volume_extent = self.grid_size * voxel_size
+        self.volume_max = self.origin + self.volume_extent
+        
+        # Pré-allouer grille (réutilisée à chaque frame)
+        self.occupancy_grid = np.zeros(grid_size, dtype=bool)
+        
+        # Pré-calculer facteur de conversion point→voxel
+        self.inv_voxel_size = 1.0 / voxel_size
+        
+        print(f"✅ FastBloxMap initialisé:")
+        print(f"   Grille: {grid_size} voxels")
+        print(f"   Volume: {self.volume_extent} m")
+        print(f"   Origine: {self.origin}")
+        print(f"   Voxel: {voxel_size}m")
+    
+    def pointcloud_to_bloxmap(self, points: np.ndarray):
         """
-        Publish the camera intrinsics as a CameraInfo message.
-        This provides the calibration parameters for the orthographic depth map.
+        Convertit point cloud → BloxMap (100% vectorisé, ZÉRO boucle).
+
+        Args:
+            points: Array (N, 3)
+
+        Returns:
+            dict BloxMap pour cuRobo
         """
-        try:
-            # Create CameraInfo message
-            msg = CameraInfo()
-            msg.header = Header()
-            msg.header.stamp = self.node.get_clock().now().to_msg()
-            msg.header.frame_id = self.pointcloud_frame_id if hasattr(self, 'pointcloud_frame_id') and self.pointcloud_frame_id else "base_0"
+        # 1. Vectorisation TOTALE : points → indices voxels (1 opération)
+        voxel_indices = self._points_to_voxels_vectorized(points)
 
-            # Image dimensions
-            msg.width = self.image_width
-            msg.height = self.image_height
+        # 2. Remplir grille par masque (pas de boucle)
+        self._fill_grid_vectorized(voxel_indices)
 
-            # Distortion model (none for orthographic projection)
-            msg.distortion_model = "plumb_bob"
-            msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]  # No distortion
+        # DEBUG: Vérifier combien de voxels sont occupés
+        num_occupied = np.sum(self.occupancy_grid)
+        print(f"DEBUG: {len(points)} points → {len(voxel_indices)} voxels valides → {num_occupied} voxels occupés")
 
-            # Camera intrinsic matrix K (3x3)
-            # [fx  0  cx]
-            # [ 0 fy  cy]
-            # [ 0  0   1]
-            intrinsics_np = self.intrinsics.cpu().numpy()
-            msg.k = [
-                float(intrinsics_np[0, 0]), 0.0, float(intrinsics_np[0, 2]),
-                0.0, float(intrinsics_np[1, 1]), float(intrinsics_np[1, 2]),
-                0.0, 0.0, 1.0
-            ]
+        # 3. ESDF (déjà vectorisé dans scipy)
+        esdf_grid = self._compute_esdf_fast()
 
-            # Rectification matrix R (identity for orthographic)
-            msg.r = [
-                1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0
-            ]
+        # DEBUG: Vérifier les valeurs ESDF min/max
+        print(f"DEBUG ESDF: min={esdf_grid.min():.4f}, max={esdf_grid.max():.4f}, "
+              f"positifs={np.sum(esdf_grid > 0)}, négatifs={np.sum(esdf_grid < 0)}")
 
-            # Projection matrix P (3x4)
-            # [fx  0  cx  0]
-            # [ 0 fy  cy  0]
-            # [ 0  0   1  0]
-            msg.p = [
-                float(intrinsics_np[0, 0]), 0.0, float(intrinsics_np[0, 2]), 0.0,
-                0.0, float(intrinsics_np[1, 1]), float(intrinsics_np[1, 2]), 0.0,
-                0.0, 0.0, 1.0, 0.0
-            ]
+        # 4. GPU transfer (1 opération)
+        esdf_tensor = torch.from_numpy(esdf_grid).float().to(self.device)
 
-            # Binning (no binning)
-            msg.binning_x = 0
-            msg.binning_y = 0
+        # 5. BloxMap dict
+        bloxmap = {
+            'pose': [*self.origin.tolist(), 1, 0, 0, 0],
+            'dims': self.grid_size.tolist(),
+            'voxel_size': self.voxel_size,
+            'feature_dtype': torch.float32,
+            'feature_tensor': esdf_tensor,
+        }
 
-            # ROI (region of interest - full image)
-            msg.roi.x_offset = 0
-            msg.roi.y_offset = 0
-            msg.roi.height = 0
-            msg.roi.width = 0
-            msg.roi.do_rectify = False
+        return bloxmap
+    
+    def _points_to_voxels_vectorized(self, points: np.ndarray) -> np.ndarray:
+        """
+        Conversion vectorisée complète : (N, 3) → (M, 3) en 1 ligne.
+        Pas de boucle, pas d'itération.
+        """
+        # Opération vectorisée pure : (N, 3) → (N, 3)
+        voxel_indices = ((points - self.origin) * self.inv_voxel_size).astype(np.int32)
+        
+        # Filtrage par masque vectorisé (pas de boucle)
+        valid_mask = (
+            (voxel_indices[:, 0] >= 0) & (voxel_indices[:, 0] < self.grid_size[0]) &
+            (voxel_indices[:, 1] >= 0) & (voxel_indices[:, 1] < self.grid_size[1]) &
+            (voxel_indices[:, 2] >= 0) & (voxel_indices[:, 2] < self.grid_size[2])
+        )
+        
+        return voxel_indices[valid_mask]
+    
+    def _fill_grid_vectorized(self, voxel_indices: np.ndarray):
+        """
+        Remplissage grille SANS boucle via indexing avancé NumPy.
+        """
+        # Réinitialiser grille (rapide car pré-allouée)
+        self.occupancy_grid.fill(False)
+        
+        if len(voxel_indices) == 0:
+            return
+        
+        # Indexation avancée : 1 opération vectorisée
+        # Équivalent à grid[i, j, k] = True pour tous les indices
+        self.occupancy_grid[
+            voxel_indices[:, 0],
+            voxel_indices[:, 1],
+            voxel_indices[:, 2]
+        ] = True
+    
+    def _compute_esdf_fast(self) -> np.ndarray:
+        """
+        ESDF optimisé (déjà vectorisé dans scipy).
+        Convention ESDF cuRobo: positif = intérieur obstacle, négatif = extérieur (espace libre)
 
-            # Publish
-            self.camera_info_pub.publish(msg)
+        Pour un point cloud (obstacles de surface), on donne:
+        - Une valeur constante positive (ex: +voxel_size) aux voxels occupés
+        - La distance négative à l'obstacle le plus proche pour l'espace libre
+        """
+        # Distance à l'obstacle le plus proche (pour l'espace libre)
+        esdf_outside = distance_transform_edt(~self.occupancy_grid) * self.voxel_size
 
-        except Exception as e:
-            self.node.get_logger().error(f"Error publishing camera info: {e}")
+        # Pour les voxels occupés, donner une valeur constante positive
+        # Utiliser voxel_size comme valeur par défaut (assez pour être détecté)
+        esdf = np.where(self.occupancy_grid, self.voxel_size, -esdf_outside)
+
+        return esdf.astype(np.float32)
+
+
+class FastBloxMapBuilderGPU:
+    """
+    Version 100% GPU avec PyTorch (encore plus rapide).
+    Élimine même le CPU bottleneck du distance transform.
+    """
+    
+    def __init__(
+        self,
+        voxel_size: float = 0.02,
+        grid_size: tuple = (100, 100, 100),
+        origin: tuple = (-1.0, -1.0, -1.0),
+        device: str = "cuda"
+    ):
+        self.voxel_size = voxel_size
+        self.device = torch.device(device)
+        self.grid_size = torch.tensor(grid_size, dtype=torch.int32, device=self.device)
+        self.origin = torch.tensor(origin, dtype=torch.float32, device=self.device)
+        
+        self.inv_voxel_size = 1.0 / voxel_size
+        
+        # Pré-allouer sur GPU
+        self.occupancy_grid = torch.zeros(
+            grid_size,
+            dtype=torch.bool,
+            device=self.device
+        )
+        
+        print(f"✅ FastBloxMapGPU initialisé:")
+        print(f"   Device: {device}")
+        print(f"   Grille: {grid_size} voxels")
+    
+    def pointcloud_to_bloxmap(self, points: np.ndarray):
+        """
+        Pipeline 100% GPU (ultra-rapide).
+        """
+        # 1. CPU→GPU (1 transfert)
+        points_gpu = torch.from_numpy(points).float().to(self.device)
+        
+        # 2. Conversion vectorisée GPU
+        voxel_indices = self._points_to_voxels_gpu(points_gpu)
+        
+        # 3. Remplir grille GPU
+        self._fill_grid_gpu(voxel_indices)
+        
+        # 4. ESDF GPU (approximatif mais très rapide)
+        esdf_tensor = self._compute_esdf_gpu()
+        
+        # 5. BloxMap
+        bloxmap = {
+            'pose': [*self.origin.cpu().tolist(), 1, 0, 0, 0],
+            'dims': self.grid_size.cpu().tolist(),
+            'voxel_size': self.voxel_size,
+            'feature_dtype': torch.float32,
+            'feature_tensor': esdf_tensor,
+        }
+        
+        return bloxmap
+    
+    def _points_to_voxels_gpu(self, points: torch.Tensor) -> torch.Tensor:
+        """
+        Conversion GPU pure (parallèle massif).
+        """
+        # Vectorisé GPU : (N, 3) → (N, 3)
+        voxel_indices = ((points - self.origin) * self.inv_voxel_size).long()
+        
+        # Masque de validité (parallèle GPU)
+        valid_mask = (
+            (voxel_indices[:, 0] >= 0) & (voxel_indices[:, 0] < self.grid_size[0]) &
+            (voxel_indices[:, 1] >= 0) & (voxel_indices[:, 1] < self.grid_size[1]) &
+            (voxel_indices[:, 2] >= 0) & (voxel_indices[:, 2] < self.grid_size[2])
+        )
+        
+        return voxel_indices[valid_mask]
+    
+    def _fill_grid_gpu(self, voxel_indices: torch.Tensor):
+        """
+        Remplissage grille GPU (scatter atomique).
+        """
+        # Reset
+        self.occupancy_grid.fill_(False)
+        
+        if len(voxel_indices) == 0:
+            return
+        
+        # Indexation GPU (optimisée par PyTorch)
+        self.occupancy_grid[
+            voxel_indices[:, 0],
+            voxel_indices[:, 1],
+            voxel_indices[:, 2]
+        ] = True
+    
+    def _compute_esdf_gpu(self) -> torch.Tensor:
+        """
+        ESDF approximatif GPU via convolutions.
+        Plus rapide mais moins précis que distance_transform_edt.
+        """
+        # Option 1 : Distance transform GPU approximatif (convolutions)
+        # Plus rapide mais approximatif
+        esdf = self._fast_distance_transform_gpu(self.occupancy_grid)
+        
+        return esdf
+    
+    def _fast_distance_transform_gpu(self, occupancy: torch.Tensor) -> torch.Tensor:
+        """
+        Distance transform GPU approximatif via max pooling itératif.
+        Compromis vitesse/précision.
+        Convention ESDF cuRobo: positif = intérieur obstacle, négatif = extérieur (espace libre)
+        """
+        import torch.nn.functional as F
+
+        # Convertir bool → float
+        grid = occupancy.float()
+
+        # Distance extérieure (dilations successives)
+        grid_inv = 1.0 - grid
+
+        # Itérations de max pooling (simule propagation distance)
+        # Plus d'itérations = plus précis mais plus lent
+        for _ in range(5):
+            grid_inv = F.max_pool3d(
+                grid_inv.unsqueeze(0).unsqueeze(0),
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ).squeeze()
+
+        esdf_outside = grid_inv * self.voxel_size * 5  # Facteur d'échelle
+
+        # Distance intérieure (érosions)
+        for _ in range(5):
+            grid = F.max_pool3d(
+                grid.unsqueeze(0).unsqueeze(0),
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ).squeeze()
+
+        esdf_inside = grid * self.voxel_size * 5
+
+        # IMPORTANT: Inverser le signe pour respecter la convention cuRobo
+        # Positif à l'intérieur des obstacles, négatif à l'extérieur
+        esdf = esdf_inside - esdf_outside
+
+        return esdf
+
+
+
+
