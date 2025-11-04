@@ -1,7 +1,8 @@
 cameras:
-  - name: point_cloud
-    type: point_cloud
-    topic: /masked_pointcloud
+  - name: depth_map_test
+    type: depth_camera
+    topic: /depth_to_rgb/image_raw
     frame_id: rgb_camera_link
+    camera_info: /depth_to_rgb/camera_info
     intrinsics: []
     extrinsics: []

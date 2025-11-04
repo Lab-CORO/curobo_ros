@@ -65,21 +65,21 @@ class PointCloudCameraStrategy(CameraStrategy):
         
         # Choisir builder (GPU ou CPU)
         if use_gpu:
-            self.builder = FastBloxMapBuilderGPU(
+            self.builder = FastVoxelGridBuilderGPU(
                 voxel_size=voxel_size,
                 grid_size=grid_size,
                 origin=origin
             )
             self.node.get_logger().info('🚀 Mode GPU activé')
         else:
-            self.builder = FastBloxMapBuilder(
+            self.builder = FastVoxelGridBuilder(
                 voxel_size=voxel_size,
                 grid_size=grid_size,
                 origin=origin
             )
             self.node.get_logger().info('🚀 Mode CPU vectorisé activé')
-        
-        self.current_bloxmap = None
+
+        self.current_voxelgrid = None
 
         # QoS
         qos = QoSProfile(
@@ -140,11 +140,11 @@ class PointCloudCameraStrategy(CameraStrategy):
                 self.node.get_logger().warn('Point cloud vide')
                 return
             
-            # 4. Créer BloxMap (100% vectorisé)
-            self.current_bloxmap = self.builder.pointcloud_to_bloxmap(points_clean)
-            
+            # 4. Créer VoxelGrid (100% vectorisé)
+            self.current_voxelgrid = self.builder.pointcloud_to_voxelgrid(points_clean)
+
             # Update world config
-            self.update_world_config(self.current_bloxmap, self.name)
+            self.update_world_config(self.current_voxelgrid, self.name)
 
             t_end = time.perf_counter()
             elapsed_ms = (t_end - t_start) * 1000
@@ -159,20 +159,20 @@ class PointCloudCameraStrategy(CameraStrategy):
         except Exception as e:
             self.node.get_logger().error(f'Erreur: {e}')
      
-    def update_world_config(self, bloxmap, name):
+    def update_world_config(self, voxelgrid_dict, name):
         """
         Update world configuration with a VoxelGrid object.
-        Converts the dictionary bloxmap from FastBloxMapBuilder to a proper VoxelGrid.
+        Converts the dictionary from FastVoxelGridBuilder to a proper VoxelGrid.
 
         Args:
-            bloxmap: Dictionary containing bloxmap data from FastBloxMapBuilder
+            voxelgrid_dict: Dictionary containing voxel grid data
                     with keys: 'pose', 'dims', 'voxel_size', 'feature_tensor', 'feature_dtype'
             name: Name identifier for this voxel grid
         """
         try:
             # Calculer les dimensions physiques de la grille à partir du nombre de voxels
-            grid_dims_voxels = bloxmap['dims']  # [nx, ny, nz] en nombre de voxels
-            voxel_size = bloxmap['voxel_size']
+            grid_dims_voxels = voxelgrid_dict['dims']  # [nx, ny, nz] en nombre de voxels
+            voxel_size = voxelgrid_dict['voxel_size']
 
             # Dimensions physiques en mètres
             # IMPORTANT: cuRobo ajoute +1 voxel via get_grid_shape()
@@ -186,11 +186,11 @@ class PointCloudCameraStrategy(CameraStrategy):
             # Créer un VoxelGrid avec le feature_tensor ESDF
             voxel_grid = VoxelGrid(
                 name=name,
-                pose=bloxmap['pose'],
+                pose=voxelgrid_dict['pose'],
                 dims=dims_meters,
                 voxel_size=voxel_size,
-                feature_tensor=bloxmap['feature_tensor'].flatten(),  # Flatten en 1D
-                feature_dtype=bloxmap['feature_dtype']
+                feature_tensor=voxelgrid_dict['feature_tensor'].flatten(),  # Flatten en 1D
+                feature_dtype=voxelgrid_dict['feature_dtype']
             )
 
             # IMPORTANT: Créer le xyzr_tensor pour que get_occupied_voxels() fonctionne
@@ -233,9 +233,9 @@ class PointCloudCameraStrategy(CameraStrategy):
 
 
 
-class FastBloxMapBuilder:
+class FastVoxelGridBuilder:
     """
-    Constructeur BloxMap ultra-rapide avec grille fixe.
+    Constructeur VoxelGrid ultra-rapide avec grille fixe.
     Toutes les opérations sont vectorisées (pas de boucles Python).
     """
     
@@ -260,22 +260,22 @@ class FastBloxMapBuilder:
         
         # Pré-calculer facteur de conversion point→voxel
         self.inv_voxel_size = 1.0 / voxel_size
-        
-        print(f"✅ FastBloxMap initialisé:")
+
+        print(f"✅ FastVoxelGrid initialisé:")
         print(f"   Grille: {grid_size} voxels")
         print(f"   Volume: {self.volume_extent} m")
         print(f"   Origine: {self.origin}")
         print(f"   Voxel: {voxel_size}m")
     
-    def pointcloud_to_bloxmap(self, points: np.ndarray):
+    def pointcloud_to_voxelgrid(self, points: np.ndarray):
         """
-        Convertit point cloud → BloxMap (100% vectorisé, ZÉRO boucle).
+        Convertit point cloud → VoxelGrid (100% vectorisé, ZÉRO boucle).
 
         Args:
             points: Array (N, 3)
 
         Returns:
-            dict BloxMap pour cuRobo
+            dict VoxelGrid pour cuRobo
         """
         # 1. Vectorisation TOTALE : points → indices voxels (1 opération)
         voxel_indices = self._points_to_voxels_vectorized(points)
@@ -297,8 +297,8 @@ class FastBloxMapBuilder:
         # 4. GPU transfer (1 opération)
         esdf_tensor = torch.from_numpy(esdf_grid).float().to(self.device)
 
-        # 5. BloxMap dict
-        bloxmap = {
+        # 5. VoxelGrid dict
+        voxelgrid_dict = {
             'pose': [*self.origin.tolist(), 1, 0, 0, 0],
             'dims': self.grid_size.tolist(),
             'voxel_size': self.voxel_size,
@@ -306,7 +306,7 @@ class FastBloxMapBuilder:
             'feature_tensor': esdf_tensor,
         }
 
-        return bloxmap
+        return voxelgrid_dict
     
     def _points_to_voxels_vectorized(self, points: np.ndarray) -> np.ndarray:
         """
@@ -362,7 +362,7 @@ class FastBloxMapBuilder:
         return esdf.astype(np.float32)
 
 
-class FastBloxMapBuilderGPU:
+class FastVoxelGridBuilderGPU:
     """
     Version 100% GPU avec PyTorch (encore plus rapide).
     Élimine même le CPU bottleneck du distance transform.
@@ -388,37 +388,37 @@ class FastBloxMapBuilderGPU:
             dtype=torch.bool,
             device=self.device
         )
-        
-        print(f"✅ FastBloxMapGPU initialisé:")
+
+        print(f"✅ FastVoxelGridGPU initialisé:")
         print(f"   Device: {device}")
         print(f"   Grille: {grid_size} voxels")
     
-    def pointcloud_to_bloxmap(self, points: np.ndarray):
+    def pointcloud_to_voxelgrid(self, points: np.ndarray):
         """
         Pipeline 100% GPU (ultra-rapide).
         """
         # 1. CPU→GPU (1 transfert)
         points_gpu = torch.from_numpy(points).float().to(self.device)
-        
+
         # 2. Conversion vectorisée GPU
         voxel_indices = self._points_to_voxels_gpu(points_gpu)
-        
+
         # 3. Remplir grille GPU
         self._fill_grid_gpu(voxel_indices)
-        
+
         # 4. ESDF GPU (approximatif mais très rapide)
         esdf_tensor = self._compute_esdf_gpu()
-        
-        # 5. BloxMap
-        bloxmap = {
+
+        # 5. VoxelGrid dict
+        voxelgrid_dict = {
             'pose': [*self.origin.cpu().tolist(), 1, 0, 0, 0],
             'dims': self.grid_size.cpu().tolist(),
             'voxel_size': self.voxel_size,
             'feature_dtype': torch.float32,
             'feature_tensor': esdf_tensor,
         }
-        
-        return bloxmap
+
+        return voxelgrid_dict
     
     def _points_to_voxels_gpu(self, points: torch.Tensor) -> torch.Tensor:
         """

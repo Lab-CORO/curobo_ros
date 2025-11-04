@@ -57,14 +57,15 @@ class CameraContext:
 
         elif camera_type == 'depth_camera':
             # For depth cameras (RealSense, etc.)
-            camera_info_topic = kwargs.get('camera_info_topic', topic.replace('/image', '/camera_info'))
+            # Use camera_info parameter from config or fallback to topic-based guess
+            camera_info_topic = camera_info if camera_info else topic.replace('/image', '/camera_info')
             camera_pose = kwargs.get('camera_pose', None)
             camera_strategy = DepthMapCameraStrategy(
                 node=self.node,
-                name=camera_name,
-                depth_topic=topic,
+                camera_name=camera_name,
+                topic=topic,
                 camera_info_topic=camera_info_topic,
-                camera_pose=camera_pose
+                frame_id=frame_id                
             )
 
         else:

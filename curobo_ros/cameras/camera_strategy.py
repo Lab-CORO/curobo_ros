@@ -2,9 +2,15 @@
 
 from abc import ABC, abstractmethod
 import torch
+import numpy as np
+import rclpy
+
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
 from curobo.types.base import TensorDeviceType
+
+from tf2_ros import Buffer, TransformListener, TransformException
+import ros2_numpy
 
 
 class CameraStrategy(ABC):
@@ -28,6 +34,11 @@ class CameraStrategy(ABC):
         self._camera_info = camera_info
         self._frame_id = frame_id
         self.tensor_args = TensorDeviceType()
+
+        # Get camera pose from TF
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, node)
+
 
 
 

@@ -121,7 +121,7 @@ RUN git clone https://github.com/opencv/opencv.git /pkgs/opencv
 WORKDIR /pkgs/opencv
 RUN mkdir -p build
 
-RUN python -m pip install opencv-python-headless \
+RUN python -m pip install \
     pyrealsense2 \
     transforms3d
 
