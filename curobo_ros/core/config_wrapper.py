@@ -69,10 +69,6 @@ class ConfigWrapper:
         self.robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
         urdf_file = self.robot_cfg.kinematics.generator_config.urdf_path
 
-        if not os.path.isabs(urdf_file):
-            urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
-            self.robot_cfg.kinematics.generator_config.urdf_path = urdf_file
-            print(self.robot_cfg)
         self.kin_model = CudaRobotModel(self.robot_cfg.kinematics)
 
         # Interface with robot information
@@ -105,7 +101,7 @@ class ConfigWrapper:
                         camera_type = camera.get("type", "point_cloud")  # Default to point_cloud
                         camera_topic = camera.get("topic", "")
                         camera_frame_id = camera.get("frame_id", "")
-                        camera_intrinsics = camera.get("intrinsics", [])
+                        camera_info = camera.get("camera_info", '')
 
                         # Get pixel_size parameter if available (for point cloud cameras)
                         pixel_size = 0.01  # Default
@@ -117,7 +113,7 @@ class ConfigWrapper:
                             camera_name=camera_name,
                             camera_type=camera_type,
                             topic=camera_topic,
-                            camera_info=camera_intrinsics,
+                            camera_info=camera_info,
                             frame_id=camera_frame_id,
                             pixel_size=pixel_size
                         )
