@@ -181,6 +181,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /home/ros2_ws/src
 
 RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
+RUN git clone https://github.com/Lab-CORO/curobo_msgs.git
 
 # Construire les packages un par un pour résoudre les dépendances
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select curobo_msgs"
@@ -194,7 +195,7 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
 RUN git clone https://github.com/swri-robotics/trajectory_preview.git
 
 # Setup for curobo_rviz
-# RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
+RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
 
 # Add tools for pcd_fuse
 RUN apt remove python3-blinker -y
