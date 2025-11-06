@@ -18,7 +18,7 @@ class EmulatorStrategy(JointCommandStrategy):
         # Publisher for joint states (standard ROS topic for robot visualization)
         self.pub_joint_states = node.create_publisher(
             JointState,
-            '/joint_states',
+            '/emulator/joint_states',
             10
         )
 

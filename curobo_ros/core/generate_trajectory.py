@@ -81,16 +81,6 @@ class CuRoboTrajectoryMaker(Node):
         '''
         This method generate a trajectory to the goal pose.
         '''
-        # Check if warmup is complete
-        if not self.config_wrapper.node_is_available:
-            self.get_logger().warn("Warmup not complete yet, waiting...")
-
-            # Wait for warmup with timeout
-            if not self.config_wrapper.wait_for_warmup(timeout=60.0):
-                response.success = False
-                response.message = "Warmup timeout - motion generator not ready. Please try again later."
-                return response
-
         # Get Robot pose
         self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose()]).to(device=self.tensor_args.device))
 

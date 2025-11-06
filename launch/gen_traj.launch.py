@@ -94,7 +94,9 @@ def launch_setup(context, *args, **kwargs):
             executable='joint_state_publisher',
             name='joint_state_publisher',
             output='screen',
-            parameters=[{'use_gui': gui_enabled}]
+            parameters=[{'use_gui': gui_enabled,
+                        'source_list': ['/emulator/joint_states']
+                        }]
         ),
 
         # Run curobo_gen_traj node
