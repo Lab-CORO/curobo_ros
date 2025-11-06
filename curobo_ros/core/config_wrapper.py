@@ -14,7 +14,7 @@ from ament_index_python.packages import get_package_share_directory
 import ros2_numpy as rnp
 import numpy as np
 
-from functools import partial
+from functools import partial, wraps
 import torch
 
 
@@ -23,6 +23,40 @@ from std_srvs.srv import Trigger
 from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance
 from curobo.geom.types import Cuboid
 from visualization_msgs.msg import MarkerArray, Marker
+
+
+def require_warmup_complete(service_callback):
+    '''
+    Decorator to ensure that a service cannot be called until warmup is complete.
+    If warmup is not complete, the service will wait up to 60 seconds for it to finish.
+    '''
+    @wraps(service_callback)
+    def wrapper(self, node, request, response):
+        # Check if warmup is complete
+        if not self.node_is_available:
+            node.get_logger().warn(
+                f"Service called but warmup not complete. Waiting for warmup to finish..."
+            )
+
+            # Wait for warmup with timeout
+            if hasattr(self, 'wait_for_warmup'):
+                if not self.wait_for_warmup(timeout=60.0):
+                    # Warmup timeout
+                    response.success = False
+                    response.message = "Service unavailable: warmup timeout. Please try again later."
+                    node.get_logger().error("Warmup timeout while processing service request")
+                    return response
+            else:
+                # Fallback if wait_for_warmup is not available
+                response.success = False
+                response.message = "Service unavailable: node is still warming up. Please try again later."
+                node.get_logger().error("Service called before warmup complete")
+                return response
+
+        # Warmup is complete, proceed with the service
+        return service_callback(self, node, request, response)
+
+    return wrapper
 
 
 class ConfigWrapper:
@@ -112,6 +146,7 @@ class ConfigWrapper:
         # Add timer 
         self.publish_collision_spheres_timer = node.create_timer(0.5, partial(self.publish_collision_spheres, node))
 
+    @require_warmup_complete
     def callback_add_object(self, node, request: AddObject, response):
         '''
         This function is called by the service callback created in the node.
@@ -223,6 +258,7 @@ class ConfigWrapper:
         response.success = self.node_is_available
         return response
 
+    @require_warmup_complete
     def callback_remove_object(self, node, request: RemoveObject, response):
         '''
         This function is called by the service callback created in the node.
@@ -259,6 +295,7 @@ class ConfigWrapper:
 
         return response
 
+    @require_warmup_complete
     def callback_remove_all_objects(self, node, _, response):
         '''
         This function is called by the service callback created in the node.
@@ -279,6 +316,7 @@ class ConfigWrapper:
         response.message = 'All objects removed successfully'
         return response
 
+    @require_warmup_complete
     def callback_get_voxel_grid(self, node, request: GetVoxelGrid, response):
         """
         Get the worldConfig VoxelGrid and send it as message.
