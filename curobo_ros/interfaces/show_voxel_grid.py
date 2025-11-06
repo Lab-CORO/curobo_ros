@@ -47,7 +47,7 @@ class VoxelGridVisualizer(Node):
             Marker: Marker message for RViz2 visualization.
         """
         marker = Marker()
-        marker.header.frame_id = "base_0"  # Adjust as needed
+        marker.header.frame_id = "base_link"  # Adjust as needed
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "voxel_grid"
         marker.id = 0

@@ -17,6 +17,8 @@ import numpy as np
 from functools import partial, wraps
 import torch
 
+from curobo_ros.cameras.camera_context import CameraContext
+from curobo_ros.cameras.pointcloud_camera_strategy import PointCloudCameraStrategy
 
 
 from std_srvs.srv import Trigger
@@ -71,6 +73,7 @@ class ConfigWrapper:
        
         # World config parameters
         self.world_cfg = None
+        self.node = node
         self.world_pose = [0, 0, 0, 1, 0, 0, 0]
         self.world_integrator_type = "occupancy"
 
@@ -92,18 +95,14 @@ class ConfigWrapper:
 
         # Get the path to your curobo_ros package
         package_share_directory = get_package_share_directory('curobo_ros')
-        node.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
-        robot_config_file = node.get_parameter('robot_config_file').get_parameter_value().string_value
+        self.node.declare_parameter('robot_config_file',  os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
+        robot_config_file = self.node.get_parameter('robot_config_file').get_parameter_value().string_value
         config_file = load_yaml(robot_config_file)
         robot_cfg_dict = config_file["robot_cfg"]
         robot_cfg_dict.pop('cspace', None)
         self.robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
         urdf_file = self.robot_cfg.kinematics.generator_config.urdf_path
 
-        if not os.path.isabs(urdf_file):
-            urdf_file = os.path.join(package_share_directory, 'curobo_doosan', 'src', 'm1013', urdf_file)
-            self.robot_cfg.kinematics.generator_config.urdf_path = urdf_file
-            print(self.robot_cfg)
         self.kin_model = CudaRobotModel(self.robot_cfg.kinematics)
 
         # Interface with robot information
@@ -114,37 +113,83 @@ class ConfigWrapper:
 
         # State information
         self.node_is_available = False
-        node.declare_parameter('node_is_available', False)
+        self.node.declare_parameter('node_is_available', False)
+
+        # Camera configuration file parameter
+        self.node.declare_parameter('cameras_config_file', '')  # Path to YAML file containing camera configuration
+        cameras_config_file = self.node.get_parameter('cameras_config_file').get_parameter_value().string_value
+
+        if cameras_config_file:
+            self.node.get_logger().info(f"Loading camera configuration from: {cameras_config_file}")
+            try:
+                # Load the YAML file
+                camera_config = load_yaml(cameras_config_file)
+
+                # Check if the configuration contains cameras
+                if 'cameras' in camera_config and len(camera_config['cameras']) > 0:
+                    self.camera_context = CameraContext(self.node)
+                    print(camera_config)
+                    # Add each camera from the configuration
+                    for camera in camera_config['cameras']:
+                        camera_name = camera.get("name", "unknown")
+                        camera_type = camera.get("type", "point_cloud")  # Default to point_cloud
+                        camera_topic = camera.get("topic", "")
+                        camera_frame_id = camera.get("frame_id", "")
+                        camera_info = camera.get("camera_info", '')
+
+                        # Get pixel_size parameter if available (for point cloud cameras)
+                        pixel_size = 0.01  # Default
+                        if self.node.has_parameter('pixel_size'):
+                            pixel_size = self.node.get_parameter('pixel_size').get_parameter_value().double_value
+
+                        # Add camera with appropriate type
+                        self.camera_context.add_camera(
+                            camera_name=camera_name,
+                            camera_type=camera_type,
+                            topic=camera_topic,
+                            camera_info=camera_info,
+                            frame_id=camera_frame_id,
+                            pixel_size=pixel_size
+                        )
+
+                    self.node.get_logger().info(f"Successfully loaded {len(camera_config['cameras'])} camera(s)")
+                else:
+                    self.node.get_logger().warn("Camera config file found but no cameras defined")
+
+            except Exception as e:
+                self.node.get_logger().error(f"Failed to load camera configuration from {cameras_config_file}: {e}")
+        else:
+            self.node.get_logger().info("No camera configuration file specified")
 
     def init_services(self, node):
          # Add all services
 
-        self.add_object_srv = node.create_service(
-            AddObject, node.get_name() + '/add_object', partial(self.callback_add_object, node))
+        self.add_object_srv = self.node.create_service(
+            AddObject, self.node.get_name() + '/add_object', partial(self.callback_add_object, self.node))
 
-        self.add_object_srv = node.create_service(
-            RemoveObject, node.get_name() + '/remove_object', partial(self.callback_remove_object, node))
+        self.add_object_srv = self.node.create_service(
+            RemoveObject, self.node.get_name() + '/remove_object', partial(self.callback_remove_object, self.node))
 
-        self.add_object_srv = node.create_service(
-            Trigger, node.get_name() + '/get_obstacles', partial(self.callback_get_obstacles, node))
+        self.add_object_srv = self.node.create_service(
+            Trigger, self.node.get_name() + '/get_obstacles', partial(self.callback_get_obstacles, self.node))
 
-        self.node_available_srv = node.create_service(
-            Trigger, node.get_name() + '/is_available', partial(self.callback_is_available, node))
+        self.node_available_srv = self.node.create_service(
+            Trigger, self.node.get_name() + '/is_available', partial(self.callback_is_available, self.node))
 
-        self.remove_all_objects_srv = node.create_service(
-            Trigger, node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, node))
+        self.remove_all_objects_srv = self.node.create_service(
+            Trigger, self.node.get_name() + '/remove_all_objects', partial(self.callback_remove_all_objects, self.node))
 
-        self.get_voxel_map_srv = node.create_service(
-            GetVoxelGrid, node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, node))
+        self.get_voxel_map_srv = self.node.create_service(
+            GetVoxelGrid, self.node.get_name() + '/get_voxel_grid', partial(self.callback_get_voxel_grid, self.node))
 
-        self.get_collision_distance_srv = node.create_service(
-            GetCollisionDistance, node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, node))
+        self.get_collision_distance_srv = self.node.create_service(
+            GetCollisionDistance, self.node.get_name() + '/get_collision_distance', partial(self.callback_get_collision_distance, self.node))
 
         # Add publisher
-        self.publish_collision_spheres_pub = node.create_publisher(MarkerArray, node.get_name() + '/collision_spheres', 1)
+        self.publish_collision_spheres_pub = self.node.create_publisher(MarkerArray, self.node.get_name() + '/collision_spheres', 1)
 
         # Add timer 
-        self.publish_collision_spheres_timer = node.create_timer(0.5, partial(self.publish_collision_spheres, node))
+        self.publish_collision_spheres_timer = self.node.create_timer(0.5, partial(self.publish_collision_spheres, self.node))
 
     @require_warmup_complete
     def callback_add_object(self, node, request: AddObject, response):
@@ -244,7 +289,7 @@ class ConfigWrapper:
 
         if response.success:
             self.world_cfg.add_obstacle(obstacle)
-            self.update_world_config(node)
+            self.update_world_config(self.node)
             response.message = 'Object ' + request.name + ' added successfully'
 
         return response
@@ -282,7 +327,7 @@ class ConfigWrapper:
             self.world_cfg.remove_obstacle(request.name)
             self.world_cfg.cuboid = list(
                 filter(lambda obj: obj.name != request.name, self.world_cfg.cuboid))
-            self.update_world_config(node)
+            self.update_world_config(self.node)
 
         except Exception as e:
             response.success = False
@@ -310,7 +355,7 @@ class ConfigWrapper:
         # Empty the list of cuboids that lingers in the world config
         self.world_cfg.cuboid = []
 
-        self.update_world_config(node)
+        self.update_world_config(self.node)
 
         response.success = True
         response.message = 'All objects removed successfully'
@@ -331,7 +376,7 @@ class ConfigWrapper:
         """
         # response.success = True
 
-        voxel_size = self.world_cfg.blox[0].voxel_size
+        voxel_size = node.get_parameter('voxel_size').get_parameter_value().double_value
         min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
         max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
 
@@ -353,19 +398,35 @@ class ConfigWrapper:
         grid_size_z = int(np.ceil((max_z - min_z) / voxel_size))
 
         voxel_grid = np.zeros((grid_size_x, grid_size_y, grid_size_z), dtype=np.uint32)
+        
+        bounding = Cuboid("t", dims=[10, 10, 10.0], pose=[0, 0, 0, 1, 0, 0, 0])
+        voxels = self.node.world_model.get_voxels_in_bounding_box(bounding, voxel_size)
+        # Add voxels from world model to the voxel grid
+        if voxels is not None and len(voxels) > 0:
+            # Convert voxels tensor to numpy
+            if torch.is_tensor(voxels):
+                voxels_np = voxels.cpu().numpy()
+            else:
+                voxels_np = np.array(voxels)
 
-        for cuboid in self.world_cfg.cuboid:
-            cuboid_min = np.array(cuboid.pose[:3]) - np.array(cuboid.dims) / 2
-            cuboid_max = np.array(cuboid.pose[:3]) + np.array(cuboid.dims) / 2
+            # Each voxel should have xyz coordinates
+            # Convert world coordinates to grid indices
+            for voxel in voxels_np:
+                if len(voxel) >= 3:
+                    voxel_x, voxel_y, voxel_z = voxel[:3]
 
-            min_voxel_idx = np.floor((cuboid_min - [min_x, min_y, min_z]) / voxel_size).astype(int)
-            max_voxel_idx = np.ceil((cuboid_max - [min_x, min_y, min_z]) / voxel_size).astype(int)
+                    # Convert to grid indices
+                    grid_x = int(np.floor((voxel_x - min_x) / voxel_size))
+                    grid_y = int(np.floor((voxel_y - min_y) / voxel_size))
+                    grid_z = int(np.floor((voxel_z - min_z) / voxel_size))
 
-            voxel_grid[
-                min_voxel_idx[0]:max_voxel_idx[0],
-                min_voxel_idx[1]:max_voxel_idx[1],
-                min_voxel_idx[2]:max_voxel_idx[2]
-            ] = 1  # Mark as occupied
+                    # Check bounds and mark as occupied
+                    if (0 <= grid_x < grid_size_x and
+                        0 <= grid_y < grid_size_y and
+                        0 <= grid_z < grid_size_z):
+                        voxel_grid[grid_x, grid_y, grid_z] = 1
+
+            self.node.get_logger().info(f"Added {len(voxels_np)} voxels from world model to voxel grid")
 
         response.voxel_grid.resolutions = rnp.msgify(Vector3, np.array([voxel_size, voxel_size, voxel_size]))
         response.voxel_grid.size_x = grid_size_x
@@ -389,6 +450,7 @@ class ConfigWrapper:
     @abstractmethod
     def update_world_config(self, node):
         raise NotImplementedError
+
 
 
     def publish_collision_spheres(self, node):
