@@ -58,12 +58,6 @@ Visualization Manager:
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
       Value: true
-    - Class: curobo_rviz/ArrowInteractionDisplay
-      Enabled: true
-      Name: Target Pose Marker
-      Reference Frame: base_0
-      Value: true
-      Visible: true
     - Class: rviz_default_plugins/InteractiveMarkers
       Enable Transparency: true
       Enabled: true
@@ -73,6 +67,12 @@ Visualization Manager:
       Show Descriptions: true
       Show Visual Aids: false
       Value: true
+    - Class: curobo_rviz/ArrowInteractionDisplay
+      Enabled: true
+      Name: ArrowInteractionDisplay
+      Reference Frame: base_0
+      Value: true
+      Visible: true
     - Alpha: 0.5
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false

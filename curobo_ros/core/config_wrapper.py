@@ -37,12 +37,16 @@ class ConfigWrapper:
 
     def __init__(self, node, robot):
 
-       
+
         # World config parameters
         self.world_cfg = None
         self.node = node
         self.world_pose = [0, 0, 0, 1, 0, 0, 0]
         self.world_integrator_type = "occupancy"
+
+        # Get base_link from ROS parameter, default to 'base_0'
+        self.base_link = self.node.get_parameter('base_link').get_parameter_value().string_value if self.node.has_parameter('base_link') else 'base_0'
+        self.node.get_logger().info(f'ConfigWrapper using base_link: {self.base_link}')
 
         # Set the world configuration
         self.world_cfg = WorldConfig.from_dict(
@@ -429,7 +433,7 @@ class ConfigWrapper:
         marker_array = MarkerArray()
         for i, sphere in enumerate(robot_spheres):
             marker = Marker()
-            marker.header.frame_id = 'base_0'
+            marker.header.frame_id = self.base_link
             marker.type = Marker.SPHERE
             marker.action = Marker.ADD
             marker.id = i

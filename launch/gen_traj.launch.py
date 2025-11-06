@@ -30,6 +30,24 @@ def get_urdf_path_from_config(config_file_path, default_urdf_path):
     return default_urdf_path
 
 
+def get_base_link_from_config(config_file_path, default_base_link):
+    """
+    Charge le paramètre base_link depuis le fichier YAML de configuration.
+    Si le fichier ou le paramètre n'existe pas, retourne le frame par défaut.
+    """
+    try:
+        with open(config_file_path, 'r') as file:
+            config = yaml.safe_load(file)
+            base_link = config.get('robot_cfg', {}).get('kinematics', {}).get('base_link')
+            if base_link:
+                return base_link
+    except (FileNotFoundError, yaml.YAMLError, KeyError, AttributeError) as e:
+        print(f"Warning: Could not load base_link from config file: {e}")
+        print(f"Using default base_link: {default_base_link}")
+
+    return default_base_link
+
+
 def launch_setup(context, *args, **kwargs):
     """
     Fonction appelée lors de l'exécution du launch pour résoudre les LaunchConfiguration
@@ -53,6 +71,11 @@ def launch_setup(context, *args, **kwargs):
     else:
         urdf_path_resolved = urdf_path_arg
         print(f"[gen_traj.launch] Using provided urdf_path: {urdf_path_resolved}")
+
+    # Extraire le base_link depuis le fichier de configuration
+    default_base_link = "base_0"
+    base_link = get_base_link_from_config(robot_config_file, default_base_link)
+    print(f"[gen_traj.launch] Using base_link: {base_link}")
 
     # Lire le contenu URDF depuis le fichier
     try:
@@ -86,7 +109,10 @@ def launch_setup(context, *args, **kwargs):
             executable='robot_state_publisher',
             name='robot_state_publisher',
             output='screen',
-            parameters=[{'robot_description': urdf_content}]
+            parameters=[{
+                'robot_description': urdf_content,
+                'base_link': base_link
+            }]
         ),
 
         RosNode(
@@ -94,9 +120,11 @@ def launch_setup(context, *args, **kwargs):
             executable='joint_state_publisher',
             name='joint_state_publisher',
             output='screen',
-            parameters=[{'use_gui': gui_enabled,
-                        'source_list': ['/emulator/joint_states']
-                        }]
+            parameters=[{
+                'use_gui': gui_enabled,
+                'source_list': ['/emulator/joint_states'],
+                'base_link': base_link
+            }]
         ),
 
         # Run curobo_gen_traj node
@@ -105,7 +133,8 @@ def launch_setup(context, *args, **kwargs):
             executable='curobo_gen_traj',
             output='screen',
             parameters=[{
-                'robot_config_file': LaunchConfiguration('robot_config_file')
+                'robot_config_file': LaunchConfiguration('robot_config_file'),
+                'base_link': base_link
             }]
         ),
 
@@ -115,7 +144,8 @@ def launch_setup(context, *args, **kwargs):
             executable='joint_state_publisher',
             namespace='preview',
             parameters=[{
-                'source_list': ['/trajectory/joint_states']
+                'source_list': ['/trajectory/joint_states'],
+                'base_link': base_link
             }]
         ),
 
@@ -125,7 +155,8 @@ def launch_setup(context, *args, **kwargs):
             namespace='preview',
             parameters=[{
                 'robot_description': urdf_content,
-                'frame_prefix': 'preview/'
+                'frame_prefix': 'preview/',
+                'base_link': base_link
             }]
         ),
 
@@ -148,6 +179,7 @@ def launch_setup(context, *args, **kwargs):
             PythonLaunchDescriptionSource(
                 os.path.join(curobo_ros_launch_dir, 'rviz_visualization.launch.py')
             ),
+            launch_arguments={'base_link': base_link}.items(),
             condition=IfCondition(LaunchConfiguration('gui'))
         )
     )
