@@ -11,6 +11,35 @@
 ##
 
 # Check if the branch argument is empty
+echo "Choose your GPU card model :"
+echo "1) RTX 30XX"
+echo "2) RTX 40XX"
+echo "3) A100"
+read -p "Enter the number corresponding to your model: " choice
+
+# Définir TORCH_CUDA_ARCH_LIST en fonction du choix de l'utilisateur
+case $choice in
+    1)
+        TORCH_CUDA_ARCH_LIST="8.0 8.6"  # Pour RTX 30XX
+        image_tag="rtx30xxx"
+        ;;
+    2)
+        TORCH_CUDA_ARCH_LIST="8.9 9.0"  # Pour RTX 40XX
+        image_tag="rtx40xxx"
+        ;;
+    3)
+        TORCH_CUDA_ARCH_LIST="8.0"      # Pour A100
+        image_tag="A100"
+        ;;
+    *)
+        echo "Choix invalide, utilisant la valeur par défaut pour RTX 30XX"
+        TORCH_CUDA_ARCH_LIST="8.0 8.6"
+        image_tag="rtx30xxx"
+        ;;
+esac
+
+
+
 if [ -z "$1" ]; then
     echo "Branch argument empty, sending default branch: main"
     branch_arg="main"
@@ -36,7 +65,7 @@ if ! [[ "$OSTYPE" == "msys" ]]; then
         -v $PWD../../../curobo_ros:/home/ros2_ws/src/curobo_ros\
         -v $PWD../../../curobo_rviz:/home/ros2_ws/src/curobo_rviz\
         -v $PWD../../../curobo_msgs:/home/ros2_ws/src/curobo_msgs\
-        curobo_docker:x86
+        curobo_docker:${image_tag}
 else
     echo "Detected OS is msys, make sure to have an X server running on your host machine"
     # Exécutez seulement le conteneur Docker avec les options appropriées
@@ -50,5 +79,5 @@ else
         --network host \
         -e DISPLAY=$DISPLAY \
         -v /tmp/.X11-unix:/tmp/.X11-unix \
-        curobo_docker:x86 
+        curobo_docker:${image_tag}
 fi

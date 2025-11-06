@@ -16,6 +16,9 @@ import rclpy
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import Ik, IkBatch
 
+# Camera management
+from curobo_ros.cameras import CameraContext, PointCloudCameraStrategy
+
 
 class ConfigWrapperMotion(ConfigWrapper):
 
@@ -24,10 +27,10 @@ class ConfigWrapperMotion(ConfigWrapper):
         # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
-        self.collision_cache = {"obb": 100} # TODO: make this configurable as ros param
+        self.collision_cache = {'obb': 100, 'blox': 10} # TODO: make this configurable as ros param
         self.collision_checker_type = CollisionCheckerType.BLOX
         self.use_cuda_graph = True
-        self.num_trajopt_seeds = 12
+        self.num_trajopt_seeds = 12 
         self.num_graph_seeds = 12
         self.interpolation_dt = 0.03
         self.acceleration_scale = 1.0
@@ -38,10 +41,14 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.finetune_trajopt_iters = 300
         self.minimize_jerk = True
 
-
+        # Declare parameters for camera configuration
+        node.declare_parameter('use_pointcloud_camera', True)
+        node.declare_parameter('pointcloud_topic', '/masked_pointcloud')
+        node.declare_parameter('pixel_size', 0.01)  # 1cm pixels for orthographic projection
 
         self.motion_gen_srv = node.create_service(
             Trigger, node.get_name() + '/update_motion_gen_config', partial(self.set_motion_gen_config, node))
+
         self.init_services(node)
 
     def set_motion_gen_config(self, node, _, response):
@@ -115,6 +122,8 @@ class ConfigWrapperMotion(ConfigWrapper):
     def update_world_config(self, node):
         node.motion_gen.world_coll_checker.clear_cache()
         node.motion_gen.update_world(self.world_cfg)
+
+    
 
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         # get robot spheres poses
