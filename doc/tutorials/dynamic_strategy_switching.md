@@ -10,10 +10,10 @@ Le système `RobotContext` permet de **changer dynamiquement** la stratégie de 
 
 | Stratégie | Description | Status |
 |-----------|-------------|--------|
-| **`doosan_m1013`** | Contrôle du robot Doosan M1013 | ✅ Implémenté |
+| **`doosan_m1013`** | Contrôle du robot Doosan M1013 réel | ✅ Implémenté |
+| **`emulator`** | Émulateur de robot (publie sur `/joint_states` pour RViz) | ✅ Implémenté |
 | **`ur5e`** | Contrôle du robot Universal Robots UR5e | ⚠️ À implémenter |
-| **`emulator`** | Émulateur de robot (simulation) | ⚠️ À implémenter |
-| **`ghost`** | Mode visualisation uniquement (RViz) | ✅ Disponible |
+| **`ghost`** | Mode visualisation trajectoire uniquement (topic `/trajectory`) | ✅ Disponible |
 
 ---
 
@@ -319,6 +319,87 @@ message: "Strategy 'ur5e' is not implemented yet"
 ### Mode Ghost
 
 Le mode `ghost` est **toujours actif** en parallèle pour la visualisation RViz, quelle que soit la stratégie de contrôle réel.
+
+### Stratégie Emulator
+
+La stratégie **`emulator`** est un émulateur de robot complet qui permet de tester et visualiser les trajectoires **sans robot physique**.
+
+#### Fonctionnement
+
+L'émulateur :
+1. ✅ **Publie sur `/joint_states`** - Topic standard ROS pour l'état des joints
+2. ✅ **Simule l'exécution de trajectoires** - Thread dédié pour progression temporelle
+3. ✅ **Compatible RViz** - Le robot apparaît et bouge dans RViz
+4. ✅ **Pas de matériel requis** - Fonctionne entièrement en logiciel
+
+#### Configuration RViz
+
+Pour voir l'émulateur dans RViz, assurez-vous que :
+
+```yaml
+# Dans votre fichier .rviz
+RobotModel:
+  Description Topic: /robot_description
+
+TF:
+  Enabled: true
+  Frame Timeout: 15
+```
+
+Le robot sera visible et bougera selon les trajectoires générées.
+
+#### Utilisation typique
+
+```bash
+# 1. Démarrer avec émulateur
+ros2 param set /curobo_gen_traj robot_type "emulator"
+ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+
+# 2. Générer une trajectoire
+ros2 service call /curobo_gen_traj/generate_trajectory ...
+
+# 3. Exécuter (le robot bouge dans RViz)
+ros2 action send_goal /curobo_gen_traj/send_trajectrory curobo_msgs/action/SendTrajectory "{}"
+
+# 4. Observer dans RViz
+rviz2
+```
+
+#### Topics publiés
+
+| Topic | Type | Fréquence | Description |
+|-------|------|-----------|-------------|
+| `/joint_states` | `sensor_msgs/JointState` | Variable (selon `dt`) | État des joints simulés |
+
+#### Logs de l'émulateur
+
+```
+[INFO] [curobo_gen_traj]: ✅ Emulator strategy initialized - Publishing to /joint_states
+[INFO] [curobo_gen_traj]: 🚀 Emulator: Starting trajectory execution (250 points)
+[INFO] [curobo_gen_traj]: Emulator: 20.0% complete (50/250) - 1.00s
+[INFO] [curobo_gen_traj]: Emulator: 40.0% complete (100/250) - 2.00s
+[INFO] [curobo_gen_traj]: Emulator: 60.0% complete (150/250) - 3.00s
+[INFO] [curobo_gen_traj]: Emulator: 80.0% complete (200/250) - 4.00s
+[INFO] [curobo_gen_traj]: ✅ Emulator: Trajectory completed in 5.00s
+```
+
+#### Avantages de l'émulateur
+
+- ✅ **Tests sécurisés** - Pas de risque pour le matériel
+- ✅ **Développement rapide** - Pas besoin d'accès au robot
+- ✅ **Démonstrations** - Montrer le système sans robot
+- ✅ **CI/CD** - Intégration dans pipelines automatisés
+- ✅ **Formation** - Apprendre sans robot physique
+
+#### Différences avec Ghost
+
+| Aspect | Emulator | Ghost |
+|--------|----------|-------|
+| **Topic** | `/joint_states` | `/trajectory` |
+| **But** | Simuler le robot | Visualiser la trajectoire |
+| **Exécution** | Progressive dans le temps | Instantanée |
+| **Visible RViz** | Robot principal | Robot fantôme (preview) |
+| **Utilisation** | Test sans robot | Preview de trajectoire |
 
 ---
 

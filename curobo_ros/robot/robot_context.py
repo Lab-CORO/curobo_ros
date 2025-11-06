@@ -48,22 +48,25 @@ class RobotContext:
 
     def select_strategy(self, node, time_dilation_factor):
         '''
-        This method select the robot strategy based on the ros2 param robot_type. 
+        This method select the robot strategy based on the ros2 param robot_type.
         And instanciate the robot strategy.
         '''
         robot_type = node.get_parameter('robot_type').get_parameter_value().string_value
         match robot_type:
             case "doosan_m1013":
-                # The robot lib are loaded here to avoid import error if this robot is not use. 
+                # The robot lib are loaded here to avoid import error if this robot is not use.
                 from curobo_ros.robot.doosan_strategy import DoosanControl
                 robot_strategy = DoosanControl(node, time_dilation_factor)
             case "ur5e":
                 robot_strategy = None
-                print("ur5e")
+                node.get_logger().warn("UR5e strategy not yet implemented")
             case "emulator":
-                robot_strategy = None
+                # Robot emulator for testing and visualization
+                from curobo_ros.robot.emulator_strategy import EmulatorStrategy
+                robot_strategy = EmulatorStrategy(node, time_dilation_factor)
             case _:
                 robot_strategy = None
+                node.get_logger().warn(f"Unknown robot type: {robot_type}")
 
         return robot_strategy
 
@@ -108,7 +111,7 @@ class RobotContext:
                 # Create new strategy
                 new_strategy = self.select_strategy(node, self.dt)
 
-                if new_strategy is None and new_strategy_name not in ["ghost", "emulator"]:
+                if new_strategy is None and new_strategy_name not in ["ghost"]:
                     response.success = False
                     response.message = f"Strategy '{new_strategy_name}' is not implemented yet"
                     node.get_logger().error(response.message)
