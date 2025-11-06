@@ -45,7 +45,8 @@ class ConfigWrapper:
         self.world_integrator_type = "occupancy"
 
         # Get base_link from ROS parameter, default to 'base_0'
-        self.base_link = self.node.get_parameter('base_link').get_parameter_value().string_value if self.node.has_parameter('base_link') else 'base_0'
+        self.node.declare_parameter('base_link',  'base_0')
+        self.base_link = self.node.get_parameter('base_link').get_parameter_value().string_value 
         self.node.get_logger().info(f'ConfigWrapper using base_link: {self.base_link}')
 
         # Set the world configuration
