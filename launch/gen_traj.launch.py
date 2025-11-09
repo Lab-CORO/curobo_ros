@@ -30,6 +30,7 @@ def get_urdf_path_from_config(config_file_path, default_urdf_path):
     return default_urdf_path
 
 
+
 def get_base_link_from_config(config_file_path, default_base_link):
     """
     Charge le paramètre base_link depuis le fichier YAML de configuration.
@@ -54,6 +55,7 @@ def launch_setup(context, *args, **kwargs):
     """
     # Récupérer les valeurs résolues des arguments
     robot_config_file = LaunchConfiguration('robot_config_file').perform(context)
+    cameras_config_file = LaunchConfiguration('cameras_config_file').perform(context)
     urdf_path_arg = LaunchConfiguration('urdf_path').perform(context)
 
     # Chemin par défaut pour urdf_path
@@ -90,8 +92,6 @@ def launch_setup(context, *args, **kwargs):
 
     include_realsense_launch = LaunchConfiguration('include_realsense_launch', default='false')
 
-    from launch_ros.actions import Node as RosNode
-    from launch.actions import DeclareLaunchArgument
 
     gui_enabled = LaunchConfiguration('gui', default='true')
 
@@ -104,7 +104,7 @@ def launch_setup(context, *args, **kwargs):
 
         # Lancer les nœuds directement au lieu d'inclure launch_rviz2.launch.py
         # afin d'utiliser le bon URDF
-        RosNode(
+        Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
             name='robot_state_publisher',
@@ -115,7 +115,7 @@ def launch_setup(context, *args, **kwargs):
             }]
         ),
 
-        RosNode(
+        Node(
             package='joint_state_publisher',
             executable='joint_state_publisher',
             name='joint_state_publisher',
@@ -134,12 +134,13 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
             parameters=[{
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
-                'base_link': base_link
+                'base_link': base_link,
+                'cameras_config_file': LaunchConfiguration('cameras_config_file'),
             }]
         ),
 
         # Nodes pour la prévisualisation des trajectoires (remplace le fichier XML problématique)
-        RosNode(
+        Node(
             package='joint_state_publisher',
             executable='joint_state_publisher',
             namespace='preview',
@@ -149,7 +150,7 @@ def launch_setup(context, *args, **kwargs):
             }]
         ),
 
-        RosNode(
+        Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
             namespace='preview',
@@ -160,7 +161,7 @@ def launch_setup(context, *args, **kwargs):
             }]
         ),
 
-        RosNode(
+        Node(
             package='tf2_ros',
             executable='static_transform_publisher',
             namespace='preview',
@@ -205,6 +206,12 @@ def generate_launch_description():
         default_value='',
         description='Chemin vers le fichier URDF du robot (si vide, chargé depuis robot_config_file)'
     )
+    
+    declare_camera_config = DeclareLaunchArgument(
+        'cameras_config_file',
+        default_value='',
+        description='Chemin vers le fichier URDF du robot (si vide, chargé depuis robot_config_file)'
+    )
 
     # Déclaration de l'argument robot_config_file
     declare_robot_config_file = DeclareLaunchArgument(
@@ -228,6 +235,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Définition des arguments de lancement
         declare_urdf_path,
+        declare_camera_config,
         declare_robot_config_file,
         declare_include_realsense_launch,
         declare_gui,
