@@ -6,11 +6,27 @@ Everything runs inside a ready-made Docker image, so your host OS stays clean.
 
 ---
 
+## Choose Your Workflow
+
+curobo_ros offers **two Docker workflows**:
+
+| Workflow | Best For | Image Size | Setup |
+|----------|----------|------------|-------|
+| **DEV Mode** | Modifying curobo_ros internals | ~25-30 GB | Import dependencies with vcs |
+| **PROD Mode** | Using curobo_ros in your projects | ~15-20 GB | Use pre-installed curobo_ros |
+
+**Choose DEV if**: You want to contribute to or modify curobo_ros source code.  
+**Choose PROD if**: You want to use curobo_ros as a dependency in your robot project.
+
+**This guide covers DEV mode.** For PROD mode, see [Docker Workflow Guide](concepts/docker_workflow.md#workflow-prod-mode).
+
+---
+
 ## Before You Begin
 
 **New to ROS or Docker?** We recommend reading these guides first:
 - [Introduction to curobo_ros](concepts/introduction.md) - Explains ROS, Docker, and cuRobo
-- [Docker Workflow Guide](concepts/docker_workflow.md) - Learn to work efficiently with Docker
+- [Docker Workflow Guide](concepts/docker_workflow.md) - DEV vs PROD modes explained
 
 ---
 
@@ -37,7 +53,9 @@ docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
 ---
 
-## 2. Clone the Repository
+## 2. Clone the Repository (DEV Mode Only)
+
+**Note**: Skip this step if using PROD mode (see [Docker Workflow Guide](concepts/docker_workflow.md)).
 
 ```bash
 # Create ROS 2 workspace
@@ -48,9 +66,9 @@ cd ~/ros2_ws/src
 git clone https://github.com/Lab-CORO/curobo_ros.git --recurse-submodules
 ```
 
-### Import Additional Dependencies
+### Import Additional Dependencies (DEV Mode)
 
-To set up the development environment, you need additional ROS packages:
+DEV mode requires additional packages mounted from the host:
 
 ```bash
 cd ~/ros2_ws/src
@@ -65,9 +83,17 @@ vcs import < curobo_ros/my.repos
 This imports:
 - `curobo_msgs` - Custom message definitions
 - `curobo_rviz` - RViz plugin for motion planning
-- Other required packages
 
-**Note**: This package is designed for development, so all packages are included in the Docker container through volume sharing (your changes on the host are immediately visible inside the container).
+**Your workspace structure**:
+```
+~/ros2_ws/
+└── src/
+    ├── curobo_ros/    # Cloned from GitHub
+    ├── curobo_msgs/   # Imported by vcs
+    └── curobo_rviz/   # Imported by vcs
+```
+
+These will be mounted as volumes in the container for live editing.
 
 ---
 
@@ -77,42 +103,57 @@ This imports:
 
 ```bash
 cd ~/ros2_ws/src/curobo_ros/docker
-bash build_docker.sh x86
+bash build_docker.sh
 ```
+
+**Interactive prompts**:
+
+**Step 1/2: Choose GPU architecture**
+```
+1) Ampere (RTX 30XX series: 3060, 3070, 3080, 3090, A100)
+2) Ada Lovelace (RTX 40XX series: 4060, 4070, 4080, 4090)
+3) Turing (RTX 20XX series: 2060, 2070, 2080)
+4) Volta (Titan V, V100)
+```
+Select the number matching your GPU.
+
+**Step 2/2: Choose build mode**
+```
+1) DEV  - Development mode (for modifying curobo_ros internals)
+2) PROD - Production mode (for using curobo_ros)
+```
+Select `1` for DEV mode (this guide).
 
 **What happens during build:**
 1. Downloads base Docker images (Ubuntu 22.04 + CUDA 12)
 2. Installs ROS 2 Humble
-3. Installs PyTorch with CUDA support
+3. Installs PyTorch with GPU support
 4. Builds cuRobo from source
 5. Installs all Python dependencies
+6. Configures for your GPU architecture
 
-**GPU Selection**: The script will ask you to choose your GPU:
-```
-Choose your GPU card model:
-1) RTX 30XX
-2) RTX 40XX
-3) A100
-```
-
-This optimizes CUDA compilation for your specific GPU architecture.
-
-**Result**: An image named `curobo_docker:rtx30xxx` (or `rtx40xxx` or `A100`) depending on your choice.
+**Result**: Image named `curobo_ros:ampere-dev` (or your GPU + mode).
 
 ---
 
 ## 4. Start the Container
 
-**⚠️ Important**: Only run this script **once** to create the container. After that, use `docker start x86docker` (see [Docker Workflow Guide](concepts/docker_workflow.md)).
+**⚠️ Important**: Run this script to **create** the container. After creation, use `docker start` + `docker exec` (see [Docker Workflow Guide](concepts/docker_workflow.md)).
 
 ```bash
 cd ~/ros2_ws/src/curobo_ros/docker
 bash start_docker_x86.sh
 ```
 
+**Interactive prompts**:
+
+**Step 1/3: Choose GPU** - Select same GPU as build  
+**Step 2/3: Choose mode** - Select `1` for DEV mode  
+**Step 3/3: Confirm mount** - Press Enter to mount curobo packages from host
+
 **What happens:**
-1. Creates a container named `x86docker`
-2. Mounts your workspace directories as volumes:
+1. Creates container named `curobo_ampere_dev` (or your GPU)
+2. Mounts workspace directories as volumes:
    - `~/ros2_ws/src/curobo_ros` → `/home/ros2_ws/src/curobo_ros`
    - `~/ros2_ws/src/curobo_rviz` → `/home/ros2_ws/src/curobo_rviz`
    - `~/ros2_ws/src/curobo_msgs` → `/home/ros2_ws/src/curobo_msgs`
@@ -134,19 +175,18 @@ You'll often need multiple terminals (one for the node, one for calling services
 **Option 2: Using docker exec**
 ```bash
 # In a new terminal on your host
-docker exec -it x86docker bash
+docker exec -it curobo_ampere_dev bash  # Use your actual container name
 ```
 
 See the [Docker Workflow Guide](concepts/docker_workflow.md) for details.
 
 ---
 
-## 5. Build the ROS Workspace
+## 5. Build the Workspace
 
-The workspace is **already compiled** in the Docker image, but you should rebuild if you make changes:
+**All commands in this section run INSIDE the Docker container.**
 
 ```bash
-# Inside the container
 cd /home/ros2_ws
 
 # Build all packages

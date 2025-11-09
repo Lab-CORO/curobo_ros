@@ -1,6 +1,31 @@
 # Docker Workflow Guide
 
-This guide teaches you how to work efficiently with Docker containers for curobo_ros development. If you're new to Docker, don't worry - we'll cover everything step by step!
+This guide teaches you how to work efficiently with Docker containers for curobo_ros. If you're new to Docker, don't worry - we'll cover everything step by step!
+
+---
+
+## Two Workflows: DEV vs PROD
+
+curobo_ros offers two Docker workflows to match your needs:
+
+| Aspect | DEV Mode | PROD Mode |
+|--------|----------|-----------|
+| **Purpose** | Develop and modify curobo_ros internals | Use curobo_ros in your projects |
+| **Image Size** | ~25-30 GB | ~15-20 GB (smaller) |
+| **curobo_ros** | Mounted from host (live editing) | Pre-installed in container |
+| **Your Workspace** | Shared from host ros2_ws | Mount your own workspace |
+| **Use Case** | Contributing to curobo_ros | Using curobo_ros as a dependency |
+| **Build Time** | ~25-30 minutes | ~20-25 minutes |
+
+**Choose DEV if**:
+- You want to modify curobo_ros source code
+- You're contributing features or fixes
+- You need development tools (debugging, profiling)
+
+**Choose PROD if**:
+- You want to use curobo_ros in your robot project
+- You don't need to modify curobo_ros internals
+- You want a smaller, optimized image
 
 ---
 
@@ -15,7 +40,7 @@ The curobo_ros project requires many dependencies:
 
 Installing all of this manually would take hours and often fails. Docker provides a **pre-configured environment** where everything works out of the box.
 
-**Important**: The Docker image is **large (~30 GB)**, so make sure you have enough disk space!
+**Important**: Docker images are **large (15-30 GB)**, so make sure you have enough disk space!
 
 ---
 
@@ -23,167 +48,233 @@ Installing all of this manually would take hours and often fails. Docker provide
 
 | Concept | What It Means | Example |
 |---------|---------------|---------|
-| **Image** | A snapshot of a configured environment | `curobo_docker:rtx30xxx` |
-| **Container** | A running instance of an image | `x86docker` |
-| **Volume** | A folder shared between host and container | Your code folder mounted in container |
-| **Build** | Creating an image from a Dockerfile | `bash build_docker.sh x86` |
+| **Image** | A snapshot of a configured environment | `curobo_ros:ampere-dev` |
+| **Container** | A running instance of an image | `curobo_ampere_dev` |
+| **Volume** | A folder shared between host and container | Your workspace mounted in container |
+| **Build** | Creating an image from a Dockerfile | `bash build_docker.sh` |
 | **Start** | Running a container | `bash start_docker_x86.sh` |
-| **Exec** | Running a command in an existing container | `docker exec -it x86docker bash` |
+| **Exec** | Running a command in an existing container | `docker exec -it container_name bash` |
 
 ---
 
-## The Recommended Workflow
+## Workflow: DEV Mode
 
-Here's how to work efficiently with Docker:
+Use this workflow if you want to **modify curobo_ros** source code.
 
-### 1. Build the Image (Once)
+### Prerequisites
 
-You only need to do this **once** (or when dependencies change):
+```bash
+# Create ROS workspace
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws/src
+
+# Clone curobo_ros
+git clone https://github.com/Lab-CORO/curobo_ros.git --recurse-submodules
+
+# Import dependencies using vcs
+sudo apt install python3-vcstool
+vcs import < curobo_ros/my.repos
+```
+
+This imports `curobo_msgs` and `curobo_rviz` into your workspace.
+
+### 1. Build DEV Image
 
 ```bash
 cd ~/ros2_ws/src/curobo_ros/docker
-bash build_docker.sh x86
+bash build_docker.sh
 ```
 
-This will:
-- Download base images
-- Install ROS 2, CUDA, PyTorch
-- Build cuRobo from source
-- **Take 20-30 minutes**
+**Interactive prompts**:
+1. **GPU**: Choose your GPU architecture (Ampere, Ada Lovelace, etc.)
+2. **Mode**: Choose `1` for DEV mode
 
-The script will ask you to choose your GPU model:
-```
-Choose your GPU card model:
-1) RTX 30XX
-2) RTX 40XX
-3) A100
-```
+**Build time**: ~25-30 minutes
 
-Pick the one that matches your GPU (check with `nvidia-smi`).
+**Result**: Image `curobo_ros:ampere-dev` (or your GPU architecture)
 
-### 2. Start the Container (First Time)
+### 2. Start DEV Container
 
 ```bash
-cd ~/ros2_ws/src/curobo_ros/docker
 bash start_docker_x86.sh
 ```
 
-This:
-- Creates and starts a container named `x86docker`
-- Mounts your workspace as volumes (your code is shared!)
-- Enables GPU access
-- Enables X11 forwarding (for RViz/GUIs)
-- Drops you into a shell **inside the container**
+**Interactive prompts**:
+1. **GPU**: Choose same GPU as build
+2. **Mode**: Choose `1` for DEV mode
 
-**Important**: After running this script once, **DO NOT run it again** while the container exists! Use the workflow below instead.
+**What gets mounted**:
+- `~/ros2_ws/src/curobo_ros` → `/home/ros2_ws/src/curobo_ros`
+- `~/ros2_ws/src/curobo_rviz` → `/home/ros2_ws/src/curobo_rviz`
+- `~/ros2_ws/src/curobo_msgs` → `/home/ros2_ws/src/curobo_msgs`
 
----
-
-## Daily Workflow: Using VSCode
-
-The best way to work with Docker containers is using **Visual Studio Code** with the **Dev Containers** extension.
-
-### Setup (One Time)
-
-1. **Install VSCode**: Download from [code.visualstudio.com](https://code.visualstudio.com/)
-
-2. **Install the Dev Containers extension**:
-   - Open VSCode
-   - Go to Extensions (Ctrl+Shift+X)
-   - Search for "Dev Containers" (by Microsoft)
-   - Click Install
-
-3. **Alternative**: Install "Docker" extension by Microsoft for container management UI
-
-### Daily Usage
-
-#### Option A: Attach to Running Container (Recommended)
-
-**Step 1**: Start the container in a terminal (if not already running)
+**Inside the container**:
 ```bash
-# Check if container is running
-docker ps
-
-# If not running, start it
-docker start x86docker
-
-# Optional: attach to it in terminal
-docker exec -it x86docker bash
-```
-
-**Step 2**: Attach VSCode to the container
-1. Open VSCode
-2. Click the blue/green icon in the bottom-left corner (><)
-3. Select "Attach to Running Container..."
-4. Choose `x86docker`
-
-**That's it!** VSCode is now running inside the container. Your integrated terminal is inside the container, and you can edit files directly.
-
-#### Option B: Use Remote-Containers
-
-1. Open the workspace folder in VSCode
-2. VSCode may prompt "Reopen in Container" - click it
-3. Or manually: Press F1 → "Dev Containers: Reopen in Container"
-
-### Working in VSCode
-
-Once attached:
-
-```bash
-# Your terminal is already inside the container!
-# No need for docker exec
-
-# Build your workspace
+# Build workspace
 cd /home/ros2_ws
 colcon build --symlink-install
 
-# Source the environment
+# Source environment
 source install/setup.bash
 
-# Launch the system
+# Launch
 ros2 launch curobo_ros gen_traj.launch.py
 ```
 
-**Pro Tip**: Open multiple terminals in VSCode (Terminal → New Terminal) - they all run inside the container!
+### 3. Edit Code on Host
+
+**Key Advantage**: Edit files on your host machine with your favorite IDE. Changes are immediately visible in the container!
+
+**Example workflow**:
+1. Edit `~/ros2_ws/src/curobo_ros/curobo_ros/trajectory_generator.py` on host
+2. Inside container: `colcon build --symlink-install --packages-select curobo_ros`
+3. Test your changes immediately
+
+---
+
+## Workflow: PROD Mode
+
+Use this workflow if you want to **use curobo_ros** in your projects without modifying it.
+
+### Prerequisites
+
+```bash
+# Create your own ROS workspace
+mkdir -p ~/my_robot_ws/src
+cd ~/my_robot_ws/src
+
+# Add your packages here
+# curobo_ros is already installed in the container!
+```
+
+### 1. Build PROD Image
+
+```bash
+cd ~/ros2_ws/src/curobo_ros/docker
+bash build_docker.sh
+```
+
+**Interactive prompts**:
+1. **GPU**: Choose your GPU architecture
+2. **Mode**: Choose `2` for PROD mode
+
+**Build time**: ~20-25 minutes
+
+**Result**: Smaller image `curobo_ros:ampere-prod` with curobo_ros pre-installed
+
+### 2. Start PROD Container
+
+```bash
+bash start_docker_x86.sh
+```
+
+**Interactive prompts**:
+1. **GPU**: Choose same GPU as build
+2. **Mode**: Choose `2` for PROD mode
+3. **Workspace path**: Enter your workspace path (e.g., `/home/username/my_robot_ws`)
+
+**What gets mounted**:
+- Your entire workspace → `/home/ros2_ws`
+
+**Inside the container**:
+```bash
+# curobo_ros is already available!
+ros2 pkg list | grep curobo  # Should show curobo packages
+
+# Build your own packages
+cd /home/ros2_ws
+colcon build
+
+# Use curobo_ros in your code
+ros2 launch curobo_ros gen_traj.launch.py
+```
+
+### 3. Use curobo_ros in Your Package
+
+**Example `package.xml`**:
+```xml
+<depend>curobo_msgs</depend>
+<depend>curobo_ros</depend>
+```
+
+**Example Python node**:
+```python
+from curobo_msgs.srv import TrajectoryGeneration
+
+# Use curobo_ros services...
+```
+
+---
+
+## Daily Workflow with VSCode
+
+The best way to work with Docker containers is using **Visual Studio Code**.
+
+### Setup (One Time)
+
+1. **Install VSCode**: [code.visualstudio.com](https://code.visualstudio.com/)
+2. **Install Dev Containers extension**: Search for "Dev Containers" by Microsoft
+3. **Install Docker extension** (optional): For container management UI
+
+### Attach to Running Container
+
+**Step 1**: Start container in terminal
+```bash
+# Check if running
+docker ps
+
+# Start if stopped (use your actual container name)
+docker start curobo_ampere_dev  # or curobo_ampere_prod
+
+# Optional: attach in terminal
+docker exec -it curobo_ampere_dev bash
+```
+
+**Step 2**: Attach VSCode
+1. Open VSCode
+2. Click blue/green icon in bottom-left corner (><)
+3. Select "Attach to Running Container..."
+4. Choose your container (e.g., `curobo_ampere_dev`)
+
+**You're in!** Your terminal is now inside the container. Edit files, run commands, open multiple terminals - all inside the container.
+
+### Working in VSCode
+
+```bash
+# All terminals are inside the container automatically!
+
+# Build workspace
+cd /home/ros2_ws
+colcon build --symlink-install
+
+# Source environment
+source install/setup.bash
+
+# Launch
+ros2 launch curobo_ros gen_traj.launch.py
+```
+
+**Pro Tip**: Open multiple terminals (Terminal → New Terminal) - they all run inside the container!
 
 ---
 
 ## Opening Additional Terminals
 
-Sometimes you need multiple terminals (one for the node, one for calling services, etc.).
+### Method 1: VSCode (Easiest)
 
-### Method 1: VSCode Integrated Terminal (Easiest)
+If using VSCode attached to container:
+1. Terminal → New Terminal
+2. Done! Already inside container.
 
-If you're using VSCode attached to the container:
-1. Click "Terminal" → "New Terminal"
-2. Done! The new terminal is already inside the container.
+### Method 2: Docker Exec
 
-### Method 2: Docker Exec (Without VSCode)
-
-Open a new terminal on your **host machine** and run:
-
+Open new terminal on **host** and run:
 ```bash
-docker exec -it x86docker bash
-```
+docker exec -it curobo_ampere_dev bash  # Replace with your container name
 
-This opens a new shell **inside the running container**.
-
-**Example workflow**:
-```bash
-# Terminal 1 (start container and launch node)
-cd ~/ros2_ws/src/curobo_ros/docker
-bash start_docker_x86.sh
-# You're now inside the container
-cd /home/ros2_ws
-source install/setup.bash
-ros2 launch curobo_ros gen_traj.launch.py
-
-# Terminal 2 (new terminal window on host)
-docker exec -it x86docker bash
-# You're now inside the container in a second shell
-cd /home/ros2_ws
-source install/setup.bash
-ros2 service call /curobo_gen_traj/generate_trajectory ...
+# Inside container, source environment
+source /opt/ros/humble/setup.bash
+source /home/ros2_ws/install/setup.bash
 ```
 
 ---
@@ -193,38 +284,43 @@ ros2 service call /curobo_gen_traj/generate_trajectory ...
 ### Starting and Stopping
 
 ```bash
-# Check if container is running
+# Check running containers
 docker ps
 
 # Check all containers (including stopped)
 docker ps -a
 
 # Start a stopped container
-docker start x86docker
+docker start curobo_ampere_dev
 
 # Stop a running container
-docker stop x86docker
+docker stop curobo_ampere_dev
 
-# Restart a container
-docker restart x86docker
+# Restart
+docker restart curobo_ampere_dev
 ```
 
 ### Important Notes
 
-- **Your code is safe**: Files in mounted volumes (`/home/ros2_ws/src`) persist even if you stop the container
-- **Installed packages**: If you install something with `apt` inside the container, it **will be lost** when you remove the container
-- **Built packages**: Your ROS workspace builds persist (in mounted volume)
+**What persists**:
+- ✅ Files in mounted volumes (your code)
+- ✅ Built packages in mounted workspace
 
-### When to Rebuild the Container
+**What doesn't persist**:
+- ❌ Packages installed with `apt` inside container (unless you rebuild image)
+- ❌ Files outside mounted volumes
 
-You need to **rebuild the image** if:
+### When to Rebuild
+
+Rebuild the image when:
 - cuRobo dependencies change
 - ROS 2 packages need updates
-- System-level packages need updates
+- You want to switch GPU architecture
+- You want to switch DEV/PROD mode
 
-You do **NOT** need to rebuild if:
-- You modify your code (it's in a shared volume)
-- You build ROS packages (it's in a shared volume)
+You do **NOT** need to rebuild for:
+- Modifying your code (it's in mounted volume)
+- Building ROS packages (builds are in mounted volume)
 
 ---
 
@@ -239,140 +335,133 @@ docker ps
 # List all containers
 docker ps -a
 
-# Start a container
-docker start x86docker
+# Start container
+docker start <container_name>
 
-# Stop a container
-docker stop x86docker
+# Stop container
+docker stop <container_name>
 
-# Remove a container (loses non-volume data!)
-docker rm x86docker
+# Remove container
+docker rm <container_name>
 
-# View container logs
-docker logs x86docker
+# View logs
+docker logs <container_name>
 
-# View resource usage
-docker stats x86docker
+# Resource usage
+docker stats <container_name>
 ```
 
 ### Image Management
 
 ```bash
-# List all images
+# List images
 docker images
 
-# Remove an image (must remove containers first)
-docker rmi curobo_docker:rtx30xxx
+# Remove image (must remove containers first)
+docker rmi curobo_ros:ampere-dev
 
 # Check disk usage
 docker system df
 
-# Clean up unused images/containers/volumes
+# Clean up unused resources
 docker system prune
 ```
 
-### Debugging
+### GPU Access
 
 ```bash
-# Check if container can access GPU
-docker exec -it x86docker nvidia-smi
+# Check GPU inside container
+docker exec -it <container_name> nvidia-smi
 
-# Check ROS environment
-docker exec -it x86docker bash -c "source /home/ros2_ws/install/setup.bash && ros2 node list"
-
-# View container details
-docker inspect x86docker
+# Should show your GPU and CUDA version
 ```
 
 ---
 
-## File Sharing Between Host and Container
+## Comparing DEV vs PROD Workflows
 
-Your workspace is **automatically shared** via Docker volumes:
+### DEV Mode Example Session
 
-| Host Path | Container Path | Purpose |
-|-----------|----------------|---------|
-| `~/ros2_ws/src/curobo_ros` | `/home/ros2_ws/src/curobo_ros` | Main package |
-| `~/ros2_ws/src/curobo_rviz` | `/home/ros2_ws/src/curobo_rviz` | RViz plugin |
-| `~/ros2_ws/src/curobo_msgs` | `/home/ros2_ws/src/curobo_msgs` | Message definitions |
+```bash
+# Build DEV image (once)
+bash build_docker.sh  # Choose GPU, then DEV mode
 
-**This means**:
-- Edit files on your host (with your favorite editor)
-- Changes are **immediately visible** inside the container
-- Build inside the container
-- Built files are visible on the host
+# Start DEV container
+bash start_docker_x86.sh  # Choose GPU, then DEV mode
+
+# Inside container: Edit code on host, build in container
+cd /home/ros2_ws
+colcon build --symlink-install --packages-select curobo_ros
+source install/setup.bash
+ros2 launch curobo_ros gen_traj.launch.py
+
+# Edit files on host machine
+# vim ~/ros2_ws/src/curobo_ros/curobo_ros/my_file.py
+
+# Rebuild changed package
+colcon build --symlink-install --packages-select curobo_ros
+```
+
+### PROD Mode Example Session
+
+```bash
+# Build PROD image (once)
+bash build_docker.sh  # Choose GPU, then PROD mode
+
+# Create your workspace on host
+mkdir -p ~/my_robot_ws/src
+cd ~/my_robot_ws/src
+# Add your packages here
+
+# Start PROD container
+bash start_docker_x86.sh  # Choose GPU, PROD mode, enter workspace path
+
+# Inside container: curobo_ros is already installed!
+cd /home/ros2_ws
+colcon build  # Build YOUR packages
+source install/setup.bash
+
+# Use curobo_ros
+ros2 launch curobo_ros gen_traj.launch.py
+```
 
 ---
 
-## Troubleshooting Docker Issues
+## Troubleshooting
 
-### "Container already exists"
+### Container Name Already Exists
 
-**Error**: `docker: Error response from daemon: Conflict. The container name "/x86docker" is already in use`
-
-**Solution**:
 ```bash
-# Option 1: Start the existing container instead
-docker start x86docker
-docker exec -it x86docker bash
+# Option 1: Start existing
+docker start <container_name>
+docker exec -it <container_name> bash
 
-# Option 2: Remove the old container (careful!)
-docker stop x86docker
-docker rm x86docker
-# Now run start_docker_x86.sh again
+# Option 2: Remove and recreate
+docker stop <container_name>
+docker rm <container_name>
+bash start_docker_x86.sh
 ```
 
-### "Cannot connect to Docker daemon"
+### GPU Not Accessible
 
-**Error**: `Cannot connect to the Docker daemon at unix:///var/run/docker.sock`
-
-**Solution**:
 ```bash
-# Start Docker service
-sudo systemctl start docker
+# Check NVIDIA Container Toolkit installed
+docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
-# Check status
-sudo systemctl status docker
-
-# Enable Docker to start on boot
-sudo systemctl enable docker
+# If fails, install toolkit (see troubleshooting.md)
 ```
 
-### "No space left on device"
+### Out of Disk Space
 
-**Error**: Docker build fails with disk space error
-
-**Solution**:
 ```bash
-# Check Docker disk usage
+# Check Docker space
 docker system df
 
-# Clean up (removes stopped containers, unused networks, dangling images)
-docker system prune -a
-
-# Remove specific images
-docker images  # list images
-docker rmi <IMAGE_ID>
+# Clean up
+docker system prune -a --volumes  # ⚠️ Removes unused images/containers
 ```
 
-### RViz/GUI Windows Don't Appear
-
-**On Linux**:
-```bash
-# Allow Docker to access X server
-xhost +local:docker
-
-# If that doesn't work, try
-xhost +
-```
-
-**On Windows (WSL2)**:
-1. Install VcXsrv: [https://sourceforge.net/projects/vcxsrv/](https://sourceforge.net/projects/vcxsrv/)
-2. Launch XLaunch with "Disable access control" enabled
-3. Set DISPLAY variable:
-```bash
-export DISPLAY=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}'):0
-```
+See full troubleshooting guide: [troubleshooting.md](../troubleshooting.md)
 
 ---
 
@@ -380,88 +469,53 @@ export DISPLAY=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}'):0
 
 ### DO ✅
 
-- **Use VSCode Dev Containers** for the best development experience
-- **Source your workspace** in every new terminal: `source /home/ros2_ws/install/setup.bash`
-- **Keep your code in the mounted volumes** (everything in `/home/ros2_ws/src`)
-- **Stop containers when not using them** to free resources: `docker stop x86docker`
-- **Regularly clean up** unused Docker resources: `docker system prune`
+- **Use VSCode Dev Containers** for best experience
+- **DEV mode**: Edit code on host, build in container
+- **PROD mode**: Keep your code in your workspace, use curobo_ros as dependency
+- **Source workspace** in every new terminal
+- **Stop containers** when not using: `docker stop <container_name>`
+- **Clean up regularly**: `docker system prune`
 
 ### DON'T ❌
 
-- **Don't run `start_docker_x86.sh` multiple times** - use `docker start` + `docker exec` instead
-- **Don't install critical packages with `apt` inside container** - they'll be lost when container is removed
-- **Don't store important files outside `/home/ros2_ws/src`** - they won't persist
-- **Don't forget to source the workspace** - ROS commands won't work otherwise
-
----
-
-## Typical Development Cycle
-
-Here's a complete example of a typical development session:
-
-```bash
-# ========== FIRST TIME SETUP (once) ==========
-# On host machine
-cd ~/ros2_ws/src/curobo_ros/docker
-bash build_docker.sh x86  # Takes 20-30 minutes
-bash start_docker_x86.sh  # Creates container and enters shell
-
-# ========== DAILY WORKFLOW ==========
-
-# --- Day 1: Start working ---
-# On host machine
-docker start x86docker
-
-# Open VSCode and attach to container (Dev Containers extension)
-# Or use terminal:
-docker exec -it x86docker bash
-
-# Inside container
-cd /home/ros2_ws
-source install/setup.bash
-ros2 launch curobo_ros gen_traj.launch.py
-
-# Open another terminal (VSCode or docker exec)
-ros2 service call /curobo_gen_traj/generate_trajectory ...
-
-# --- End of day ---
-# Stop container to free resources
-docker stop x86docker
-
-# --- Day 2: Continue working ---
-docker start x86docker
-# Attach VSCode or docker exec again
-# Your code and builds are still there!
-```
+- **Don't mix modes** - stick with DEV or PROD for a project
+- **Don't run start script multiple times** - use `docker start` + `docker exec`
+- **Don't install with apt inside container** (won't persist unless you rebuild image)
+- **Don't store important data outside mounted volumes**
+- **Don't forget to source**: `source install/setup.bash`
 
 ---
 
 ## Summary
 
-**Key Takeaways**:
+### Quick Reference
 
-1. Build the Docker image **once**: `bash build_docker.sh x86`
-2. Start the container **once**: `bash start_docker_x86.sh`
-3. After that, use:
-   - `docker start x86docker` to start
-   - VSCode Dev Containers to work inside
-   - `docker exec -it x86docker bash` for additional terminals
-   - `docker stop x86docker` when done
-4. Your code in `/home/ros2_ws/src` is **always preserved**
-5. Need **~30 GB** disk space for the complete image
+| Task | DEV Mode | PROD Mode |
+|------|----------|-----------|
+| **Build image** | `bash build_docker.sh` → GPU → DEV | `bash build_docker.sh` → GPU → PROD |
+| **Start container** | `bash start_docker_x86.sh` → GPU → DEV | `bash start_docker_x86.sh` → GPU → PROD → path |
+| **Edit curobo_ros** | Edit on host, rebuild in container | Not recommended (pre-installed) |
+| **Your packages** | Add to ~/ros2_ws/src | Add to your workspace |
+| **Rebuild** | `colcon build` in container | `colcon build` in container |
+
+### Key Differences
+
+- **DEV**: curobo_ros source mounted from host → live editing
+- **PROD**: curobo_ros pre-installed → smaller image, use as dependency
 
 ---
 
 ## Next Steps
 
-Now that you understand Docker, let's set up the project:
-
-→ **[Getting Started Guide](../getting_started.md)** - Build, start, and run your first trajectory
+- **[Getting Started](../getting_started.md)** - Complete setup walkthrough
+- **[Your First Trajectory](../tutorials/1_first_trajectory.md)** - Try the system
+- **[Adding Your Robot](../tutorials/2_adding_your_robot.md)** - Integrate your robot
+- **[Troubleshooting](../troubleshooting.md)** - Common issues
 
 ---
 
 ## Additional Resources
 
-- **Docker Documentation**: [docs.docker.com](https://docs.docker.com/)
+- **Docker**: [docs.docker.com](https://docs.docker.com/)
 - **VSCode Dev Containers**: [code.visualstudio.com/docs/devcontainers/containers](https://code.visualstudio.com/docs/devcontainers/containers)
 - **NVIDIA Container Toolkit**: [github.com/NVIDIA/nvidia-docker](https://github.com/NVIDIA/nvidia-docker)
