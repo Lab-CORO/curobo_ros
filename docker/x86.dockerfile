@@ -196,6 +196,7 @@ RUN git clone https://github.com/swri-robotics/trajectory_preview.git
 
 # Setup for curobo_rviz
 RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
+RUN git clone https://github.com/Lab-CORO/curobo_ros.git
 
 # Add tools for pcd_fuse
 RUN apt remove python3-blinker -y

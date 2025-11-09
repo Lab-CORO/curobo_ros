@@ -62,10 +62,7 @@ if ! [[ "$OSTYPE" == "msys" ]]; then
         --network host \
         -e DISPLAY=$DISPLAY \
         -v /tmp/.X11-unix:/tmp/.X11-unix \
-        -v $PWD../../../curobo_ros:/home/ros2_ws/src/curobo_ros\
-        -v $PWD../../../curobo_rviz:/home/ros2_ws/src/curobo_rviz\
-        -v $PWD../../../curobo_msgs:/home/ros2_ws/src/curobo_msgs\
-        curobo_docker:${image_tag}
+        curobo-ros:optimized-v2-ultra
 else
     echo "Detected OS is msys, make sure to have an X server running on your host machine"
     # Exécutez seulement le conteneur Docker avec les options appropriées
