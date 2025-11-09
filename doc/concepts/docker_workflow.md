@@ -178,16 +178,21 @@ bash start_docker_x86.sh
 
 **Inside the container**:
 ```bash
-# curobo_ros is already available!
+# curobo_ros is pre-installed in /home/curobo_ws and auto-sourced!
 ros2 pkg list | grep curobo  # Should show curobo packages
 
 # Build your own packages
 cd /home/ros2_ws
 colcon build
 
+# Source your workspace (curobo_ws is already sourced automatically)
+source install/setup.bash
+
 # Use curobo_ros in your code
 ros2 launch curobo_ros gen_traj.launch.py
 ```
+
+**Note**: curobo_ros is installed in `/home/curobo_ws` (separate from your workspace) and is automatically sourced on container startup via `.bashrc`.
 
 ### 3. Use curobo_ros in Your Package
 

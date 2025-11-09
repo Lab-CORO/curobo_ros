@@ -118,19 +118,20 @@ RUN apt-get update && apt-get install -y \
 RUN sudo rosdep init && rosdep update
 
 # Install curobo_ros, curobo_msgs, and curobo_rviz from Git
-WORKDIR /opt/curobo_workspace/src
+# Using /home/curobo_ws to discourage users from modifying this workspace
+WORKDIR /home/curobo_ws/src
 RUN git clone https://github.com/Lab-CORO/curobo_ros.git --recurse-submodules && \
     git clone https://github.com/Lab-CORO/curobo_msgs.git && \
     git clone https://github.com/Lab-CORO/curobo_rviz.git
 
 # Build the packages
-WORKDIR /opt/curobo_workspace
+WORKDIR /home/curobo_ws
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
-# Setup environment
+# Setup environment - auto-source on every terminal/container startup
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc && \
-    echo "source /opt/curobo_workspace/install/setup.bash" >> ~/.bashrc
+    echo "source /home/curobo_ws/install/setup.bash" >> ~/.bashrc
 
 # Set Cyclone DDS as RMW
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
