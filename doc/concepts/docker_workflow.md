@@ -139,6 +139,10 @@ Use this workflow if you want to **use curobo_ros** in your projects without mod
 ### Prerequisites
 
 ```bash
+# Clone curobo_ros
+cd ~
+git clone https://github.com/Lab-CORO/curobo_ros.git --recurse-submodules
+
 # Create your own ROS workspace
 mkdir -p ~/my_robot_ws/src
 cd ~/my_robot_ws/src
@@ -150,7 +154,7 @@ cd ~/my_robot_ws/src
 ### 1. Build PROD Image
 
 ```bash
-cd ~/ros2_ws/src/curobo_ros/docker
+cd ~/curobo_ros/docker
 bash build_docker.sh
 ```
 
