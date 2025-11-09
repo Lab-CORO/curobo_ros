@@ -23,7 +23,7 @@ from curobo_ros.robot.robot_context import RobotContext
 from curobo.types.base import TensorDeviceType
 from curobo.types.math import Pose
 from curobo.types.robot import JointState
-from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig, PoseCostMetric
 from .marker_publisher import MarkerPublisher
 
 
@@ -79,19 +79,10 @@ class CuRoboTrajectoryMaker(Node):
 
     def generate_trajectrory_callback(self,  request: TrajectoryGeneration, response):
         '''
-        This method generate a trajectory to the goal pose.
+        This method generates a trajectory to the goal pose(s).
+        Supports both single and batch trajectory generation with optional constraints.
+        All trajectories are processed as batches internally.
         '''
-        # Get Robot pose
-        self.start_state = JointState.from_position(torch.Tensor([self.robot_context.get_joint_pose()]).to(device=self.tensor_args.device))
-
-        # Get goal pose
-        self.goal_pose = Pose.from_list([
-            request.target_pose.position.x, request.target_pose.position.y, request.target_pose.position.z,
-            request.target_pose.orientation.x, request.target_pose.orientation.y,
-            request.target_pose.orientation.z, request.target_pose.orientation.w
-        ])
-
-        # get goal pose and generate traj
         try:
             max_attempts = self.get_parameter(
                 'max_attempts').get_parameter_value().integer_value
@@ -100,26 +91,156 @@ class CuRoboTrajectoryMaker(Node):
             time_dilation_factor = self.get_parameter(
                 'time_dilation_factor').get_parameter_value().double_value
 
-            result = self.motion_gen.plan_single(
-                self.start_state,
-                self.goal_pose,
-                MotionGenPlanConfig(
-                    max_attempts=max_attempts,
-                    timeout=timeout,
-                    time_dilation_factor=time_dilation_factor,
-                ),
+            # Create plan config
+            plan_config = MotionGenPlanConfig(
+                max_attempts=max_attempts,
+                timeout=timeout,
+                time_dilation_factor=time_dilation_factor,
             )
-            traj = result.get_interpolated_plan()
-            # send command to strategies:
-            self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
-            response.success = True
-            response.message = "Trajectory generated"
+
+            # Add constraints if provided
+            if request.hold_partial_pose and len(request.hold_vec_weight) == 7:
+                # Convert hold_vec_weight to tensor [qw, qx, qy, qz, px, py, pz]
+                hold_vec = self.tensor_args.to_device(request.hold_vec_weight)
+                pose_cost_metric = PoseCostMetric(
+                    hold_partial_pose=True,
+                    hold_vec_weight=hold_vec,
+                )
+                plan_config.pose_cost_metric = pose_cost_metric
+                self.get_logger().info(f"Using pose constraints: {request.hold_vec_weight}")
+
+            # Build target list: use batch_targets if provided, otherwise use single target_pose
+            targets = request.batch_targets if len(request.batch_targets) > 0 else [request.target_pose]
+
+            num_requested = len(targets)
+
+            self.get_logger().info(f"Planning for {num_requested} target(s)")
+
+            # Get the warmup batch_size
+            warmup_batch_size = self.warmup_batch_size
+
+            # Check if requested batch size exceeds warmup batch size
+            if num_requested > warmup_batch_size:
+                error_msg = (f"Requested {num_requested} targets but motion_gen was warmed up with batch_size={warmup_batch_size}. "
+                            f"Please set 'batch_size' parameter to at least {num_requested} and call "
+                            f"'/curobo_gen_traj/update_motion_gen_config' service to rewarmup.")
+                self.get_logger().error(error_msg)
+                response.success = False
+                response.message = error_msg
+                response.success_indices = []
+                return response
+
+            # Build goal_poses_list
+            goal_poses_list = []
+            for target in targets:
+                pose = [
+                    target.position.x, target.position.y, target.position.z,
+                    target.orientation.w, target.orientation.x,
+                    target.orientation.y, target.orientation.z
+                ]
+                goal_poses_list.append(pose)
+
+            # Pad goal_poses_list to match warmup_batch_size by repeating last pose
+            if num_requested < warmup_batch_size:
+                self.get_logger().info(f"Padding batch from {num_requested} to {warmup_batch_size} (repeating last pose)")
+                last_pose = goal_poses_list[-1]
+                for _ in range(warmup_batch_size - num_requested):
+                    goal_poses_list.append(last_pose)
+
+            batch_size = len(goal_poses_list)  # Should equal warmup_batch_size
+
+            # Get Robot pose
+            current_joint_pose = self.robot_context.get_joint_pose()
+
+            # Always use the planning method that matches warmup
+            if warmup_batch_size == 1:
+                # Single mode - use plan_single (warmed up for single)
+                self.start_state = JointState.from_position(
+                    torch.Tensor([current_joint_pose]).to(device=self.tensor_args.device)
+                )
+                self.goal_pose = Pose.from_list(goal_poses_list[0], tensor_args=self.tensor_args)
+
+                result = self.motion_gen.plan_single(
+                    self.start_state,
+                    self.goal_pose,
+                    plan_config,
+                )
+            else:
+                # Batch mode - use plan_batch with exact warmup_batch_size (with padding if needed)
+                start_positions = torch.Tensor([current_joint_pose for _ in range(batch_size)]).to(device=self.tensor_args.device)
+                self.start_state = JointState.from_position(start_positions)
+
+                # Stack poses into batch
+                self.goal_pose = Pose.from_batch_list(goal_poses_list, tensor_args=self.tensor_args)
+                
+                # Plan batch trajectories
+                result = self.motion_gen.plan_goalset(
+                    self.start_state,
+                    self.goal_pose,
+                    plan_config,
+                )
+                self.get_logger().info("TEST")
+            # Check which trajectories succeeded (only consider requested ones, not padded)
+            if warmup_batch_size == 1:
+                # Single mode - result.success is a scalar boolean
+                success = result.success.item() if hasattr(result.success, 'item') else result.success
+                success_indices = [0] if success else []
+            else:
+                # Batch mode - result.success is a tensor of booleans
+                success_mask = result.success
+                all_success_indices = torch.nonzero(success_mask).squeeze(-1).cpu().tolist()
+                # Handle case where success_indices is a single int
+                if isinstance(all_success_indices, int):
+                    all_success_indices = [all_success_indices]
+                # Only keep indices that correspond to requested targets (not padded ones)
+                success_indices = [idx for idx in all_success_indices if idx < num_requested]
+
+            response.success_indices = success_indices
+
+            if len(success_indices) > 0:
+                # Get the trajectory
+               
+                self.get_logger().info("coucou")
+                # Extract the successful trajectory
+                if warmup_batch_size > 1:
+                    traj_single = result.get_successful_paths() #.get_interpolated_plan()
+                    self.get_logger().info(traj_single)
+                    # Get specific trajectory from batch
+                    # first_success_idx = success_indices[0]
+                    # traj_single = JointState(
+                    #     position=traj.position[first_success_idx],
+                    #     velocity=traj.velocity[first_success_idx],
+                    #     acceleration=traj.acceleration[first_success_idx],
+                    #     joint_names=traj.joint_names
+                    # )
+                else:
+                    traj = result.get_interpolated_plan()
+                    # Single trajectory - already in correct format from plan_single
+                    traj_single = traj
+
+                # Send command to robot context
+                self.robot_context.set_command(
+                    traj_single.joint_names,
+                    traj_single.velocity.tolist(),
+                    traj_single.acceleration.tolist(),
+                    traj_single.position.tolist()
+                )
+                response.success = True
+                response.message = f"Trajectory generated. {len(success_indices)}/{num_requested} requested succeeded"
+                self.get_logger().info(response.message)
+            else:
+                response.success = False
+                response.message = f"No trajectories succeeded (requested: {num_requested}, warmup_batch_size: {warmup_batch_size})"
+                self.get_logger().error(response.message)
 
         except Exception as e:
             response.success = False
-            response.message = f"Error The trajectory could not be generated: {result}"
-            self.get_logger().error(
-                f"An error occurred during trajectory generation: {result}")
+            response.message = f"Error during trajectory generation: {str(e)}"
+            response.success_indices = []
+            self.get_logger().error(f"Exception during trajectory generation: {str(e)}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+
         return response
         
     def execute_callback(self, goal_handle):

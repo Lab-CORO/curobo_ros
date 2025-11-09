@@ -34,7 +34,7 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.collision_cache = {'obb': 100, 'blox': 10} # TODO: make this configurable as ros param
         self.collision_checker_type = CollisionCheckerType.BLOX
         self.use_cuda_graph = True
-        self.num_trajopt_seeds = 12 
+        self.num_trajopt_seeds = 12
         self.num_graph_seeds = 12
         self.interpolation_dt = 0.03
         self.acceleration_scale = 1.0
@@ -45,6 +45,11 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.finetune_trajopt_iters = 300
         self.minimize_jerk = True
 
+        # Batch processing parameters
+        # batch_size: Maximum number of goals to plan simultaneously
+        # Default is 1 (single mode). Change to higher value for batch planning.
+        # NOTE: Changing this parameter requires calling update_motion_gen_config service
+        node.declare_parameter('batch_size', 1)
 
         # Declare parameters for camera configuration
         node.declare_parameter('use_pointcloud_camera', True)
@@ -71,6 +76,19 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.world_cfg.blox[0].voxel_size = node.get_parameter(
             'voxel_size').get_parameter_value().double_value
 
+        # Get batch_size parameter to adapt num_graph_seeds
+        batch_size = node.get_parameter('batch_size').get_parameter_value().integer_value
+
+        # Adapt num_graph_seeds based on batch_size
+        # Batch mode with CUDA graphs requires num_graph_seeds=1
+        if batch_size > 1 and self.use_cuda_graph:
+            num_graph_seeds_to_use = 1
+            num_trajopt_seeds_to_use = 1
+            node.get_logger().info(f"Batch mode (batch_size={batch_size}) with CUDA graphs: setting num_graph_seeds=1")
+        else:
+            num_graph_seeds_to_use = self.num_graph_seeds
+            num_trajopt_seeds_to_use = self.num_trajopt_seeds
+
         # Set the motion generation configuration with the values stored in this wrapper and the node
         motion_gen_config = MotionGenConfig.load_from_robot_config(
             self.robot_cfg,
@@ -81,8 +99,8 @@ class ConfigWrapperMotion(ConfigWrapper):
             collision_cache=self.collision_cache,
             collision_checker_type=self.collision_checker_type,
             use_cuda_graph=self.use_cuda_graph,
-            num_trajopt_seeds=self.num_trajopt_seeds,
-            num_graph_seeds=self.num_graph_seeds,
+            num_trajopt_seeds=num_trajopt_seeds_to_use,
+            num_graph_seeds=num_graph_seeds_to_use,
             interpolation_steps = 10000,
             # interpolation_dt=node.get_parameter(
                 # 'time_dilation_factor').get_parameter_value().double_value,
@@ -101,13 +119,21 @@ class ConfigWrapperMotion(ConfigWrapper):
         # Set the motion generation configuration in the node and warmup the motion generation
         node.motion_gen = MotionGen(motion_gen_config)
 
-        node.get_logger().info("warming up..")
+        node.get_logger().info(f"Warming up motion_gen with batch_size={batch_size}...")
 
         self.node_is_available = False
         node_is_available_param = rclpy.parameter.Parameter('node_is_available',rclpy.Parameter.Type.BOOL, False)
         node.set_parameters([node_is_available_param])
 
-        node.motion_gen.warmup()
+        # Warmup with specific batch size
+        # batch_size=1 uses plan_single, batch_size>1 uses plan_batch
+        if batch_size == 1:
+            node.motion_gen.warmup(warmup_js_trajopt=False)
+        else:
+            node.motion_gen.warmup(batch=batch_size, batch_env_mode=False, warmup_js_trajopt=False)
+
+        # Store batch_size in node for later use
+        node.warmup_batch_size = batch_size
 
         node_is_available_param = rclpy.parameter.Parameter('node_is_available',rclpy.Parameter.Type.BOOL, True)
         node.set_parameters([node_is_available_param])
@@ -116,7 +142,7 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         node.world_model = node.motion_gen.world_collision
 
-        node.get_logger().info("Motion generation config set")
+        node.get_logger().info(f"Motion generation config set with batch_size={batch_size}")
 
         # Set the response message when this function is called through the service
         if response is not None:
