@@ -82,6 +82,9 @@ RUN git clone https://github.com/Lab-CORO/nvblox_torch.git && \
     sh install.sh $(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)') && \
     python3 -m pip install -e .
 
+# Remove python3-blinker to avoid conflicts with pip packages
+RUN apt remove python3-blinker -y
+
 # Install essential Python packages
 RUN python -m pip install \
     pyrealsense2 \
