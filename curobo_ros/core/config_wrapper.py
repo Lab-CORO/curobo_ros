@@ -246,12 +246,52 @@ class ConfigWrapper:
                 ).get_cuboid()
 
             case request.MESH:
-                obstacle = Mesh(
-                    name=request.name,
-                    pose=extracted_pose,
-                    file_path=request.mesh_file_path,
-                    scale=extracted_dimensions
-                ).get_cuboid()
+                # Validate mesh file path
+                if not request.mesh_file_path:
+                    response.success = False
+                    response.message = 'Mesh file path is required for MESH type'
+                    return response
+
+                # Check if file exists
+                if not os.path.isfile(request.mesh_file_path):
+                    response.success = False
+                    response.message = f'Mesh file not found: {request.mesh_file_path}'
+                    return response
+
+                # Validate file extension
+                valid_extensions = ['.stl', '.obj', '.STL', '.OBJ']
+                if not any(request.mesh_file_path.endswith(ext) for ext in valid_extensions):
+                    response.success = False
+                    response.message = f'Invalid mesh file format. Supported formats: .stl, .obj'
+                    return response
+
+                try:
+                    # Create mesh and convert to cuboid
+                    mesh_obj = Mesh(
+                        name=request.name,
+                        pose=extracted_pose,
+                        file_path=request.mesh_file_path,
+                        scale=extracted_dimensions
+                    )
+                    obstacle = mesh_obj.get_cuboid()
+
+                    # Validate that cuboid conversion succeeded
+                    if obstacle is None:
+                        response.success = False
+                        response.message = f'Failed to convert mesh to collision object: {request.mesh_file_path}'
+                        return response
+
+                    node.get_logger().info(
+                        f'Successfully loaded mesh "{request.name}" from {request.mesh_file_path} '
+                        f'(scale: {extracted_dimensions})')
+
+                except Exception as e:
+                    response.success = False
+                    response.message = f'Error loading mesh file: {str(e)}'
+                    node.get_logger().error(f'Mesh loading error for {request.mesh_file_path}: {e}')
+                    import traceback
+                    node.get_logger().error(traceback.format_exc())
+                    return response
 
             case _:  # default
                 response.success = False
@@ -259,6 +299,12 @@ class ConfigWrapper:
                     str(request.type) + '" not recognized'
 
         if response.success:
+            # Additional validation before adding obstacle
+            if obstacle is None:
+                response.success = False
+                response.message = f'Failed to create obstacle "{request.name}": obstacle is None'
+                return response
+
             self.world_cfg.add_obstacle(obstacle)
             self.update_world_config(self.node)
             response.message = 'Object ' + request.name + ' added successfully'
