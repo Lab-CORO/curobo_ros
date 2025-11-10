@@ -310,67 +310,146 @@ If you see this, **everything is working!** 🎉
 
 ---
 
-## 9. Generate Your First Trajectory
 
-Now let's plan a trajectory to a target position!
-
+## 9. Choose Your Planner
+ 
+curobo_ros now supports **multiple planning strategies** through the Unified Planner architecture:
+ 
+| Planner | Mode | Best For |
+|---------|------|----------|
+| **Classic** | Open-loop | Static environments, pre-computed paths |
+| **MPC** | Closed-loop | Dynamic obstacles, real-time adaptation |
+| **Batch** | Open-loop | Multiple trajectory alternatives |
+| **Constrained** | Open-loop | Custom constraints (orientation, velocity) |
+ 
+**Launch with default (Classic) planner:**
 ```bash
-# In the second terminal (make sure workspace is sourced)
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0, x: 0.0, y: 0.0, z: 0.0}}}"
+ros2 run curobo_ros unified_planner
 ```
-
-**What happens:**
-1. cuRobo solves IK to find joint angles for the target pose
-2. Plans a smooth, collision-free trajectory
-3. Publishes the trajectory to `/trajectory` topic
-4. **RViz shows a preview** of the robot following the path
-
-**In RViz**, you should see:
-- The main robot (current position)
-- A "ghost" robot (preview) showing the trajectory
-
-**Response:**
-```yaml
-success: True
-message: "Trajectory generated successfully"
+ 
+**Switch to MPC planner:**
+```bash
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 ```
-
-**Trajectory not generated?**
-- The target might be unreachable (out of workspace)
-- Try a different position
-- Check the logs in terminal 1 for error messages
-
+ 
+See [Unified Planner Concepts](concepts/unified_planner.md) for details.
+ 
 ---
-
-## 10. Next Steps
-
-**Congratulations!** You've successfully:
-- ✅ Set up the Docker environment
-- ✅ Built and launched curobo_ros
-- ✅ Generated your first trajectory
-
-**What's next?**
-
-### Essential Tutorials
-1. **[Your First Trajectory](tutorials/1_first_trajectory.md)** - Learn more about trajectory generation
-2. **[Adding Your Robot](tutorials/2_adding_your_robot.md)** - Integrate your own robot (Doosan M1013 example)
-3. **[Managing Obstacles](tutorials/3_adding_obstacles.md)** - Add collision objects to the environment
-
-### Advanced Tutorials
-4. **[Dynamic Strategy Switching](tutorials/4_dynamic_strategy_switching.md)** - Switch between real robot, emulator, and simulation
-5. **[Camera Integration](tutorials/5_camera_pointcloud.md)** - Use depth cameras for obstacle detection
-6. **[IK/FK Services](tutorials/6_ik_fk_services.md)** - Use inverse and forward kinematics
-
-### Concepts
-- **[Parameters Guide](concepts/parameters.md)** - Understand `voxel_size`, `time_dilation_factor`, and other important parameters
-- **[ROS Interfaces](concepts/ros_interfaces.md)** - Complete reference of all services, topics, and actions
-- **[Architecture](concepts/architecture.md)** - How curobo_ros is structured internally
-
-### Reference
-- **[Troubleshooting](troubleshooting.md)** - Solutions to common problems
-- **[Doosan Example](tutorials/doosan_example.md)** - Complete example with Doosan M1013
-
+ 
+## 10. Generate Your First Trajectory
+ 
+**Using ROS 2 service:**
+```bash
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+  "{
+    goal_pose: {
+      position: {x: 0.5, y: 0.3, z: 0.4},
+      orientation: {w: 1.0}
+    },
+    use_current_state: true
+  }"
+```
+ 
+**Execute the trajectory:**
+```bash
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}"
+```
+ 
 ---
+ 
+## 11. Visualize in RViz
+ 
+Launch RViz to see your trajectory:
+```bash
+ros2 launch curobo_ros rviz.launch.py
+```
+ 
+You should see:
+- **Robot model** in current position
+- **Ghost robot** showing planned trajectory
+- **Collision spheres** for obstacle avoidance
+- **Voxel grid** for environment representation
+ 
+---
+ 
+## 12. Next Steps
+ 
+### Tutorials – Hands-on Guides
+ 
+**Getting Started:**
+- [First Trajectory](tutorials/1_first_trajectory.md) - Detailed first trajectory walkthrough
+- [Adding Your Robot](tutorials/2_adding_your_robot.md) - Integrate custom robots
+ 
+**Working with Obstacles:**
+- [Collision Objects](tutorials/adding_collision_objects.md) - Static obstacle management
+- [Point Cloud Detection](tutorials/pointcloud_obstacle_detection.md) - Camera-based obstacles
+ 
+**Advanced Features:**
+- [Dynamic Strategy Switching](tutorials/dynamic_strategy_switching.md) - Switch between robot modes
+- [MPC Planner](tutorials/5_mpc_planner.md) - Real-time reactive planning
+- [IK/FK Services](tutorials/ik_fk_services.md) - Kinematics services
+ 
+### Concepts – Deep Dives
+ 
+- **[Unified Planner](concepts/unified_planner.md)** - Multiple planning strategies
+- **[Architecture](concepts/architecture.md)** - System design patterns
+- **[ROS Interfaces](concepts/ros_interfaces.md)** - Services, topics, actions
+- **[RViz Plugin](concepts/rviz_plugin.md)** - Interactive visualization
+ 
+### Troubleshooting
+ 
+- [**Troubleshooting Guide**](troubleshooting.md) - Common CUDA/Docker/X-server issues
+ 
+---
+ 
+
+
+
+
+ 
+## Quick Reference
+ 
+### Planner Selection
+ 
+```bash
+# List available planners
+ros2 service call /unified_planner/list_planners std_srvs/srv/Trigger
+ 
+# Switch planners
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 0}"  # Classic
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"  # MPC
+```
+ 
+### Robot Strategy Selection
+ 
+```bash
+# Change robot control strategy
+ros2 param set /trajectory_planner robot_type "emulator"  # or "doosan_m1013", "ghost"
+ros2 service call /trajectory_planner/set_robot_strategy std_srvs/srv/Trigger
+```
+ 
+### Common Commands
+ 
+```bash
+# Generate trajectory
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "{...}"
+ 
+# Execute trajectory
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}"
+ 
+# Add collision object
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject "{...}"
+ 
+# Remove all objects
+ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
+```
 
 **Happy motion planning!** 🤖
+
+
+
+
+
+
+
+
