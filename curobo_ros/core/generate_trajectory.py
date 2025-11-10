@@ -55,7 +55,8 @@ class CuRoboTrajectoryMaker(Node):
         self.declare_parameter('collision_activation_distance', 0.025)
 
         # Publishers and subscribers
-        self.marker_publisher = MarkerPublisher()
+        # Become useless
+        # self.marker_publisher = MarkerPublisher()
 
         self.tensor_args = TensorDeviceType()
 

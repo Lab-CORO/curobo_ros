@@ -13,6 +13,8 @@ from curobo.types.robot import JointState
 from curobo.geom.sdf.world import CollisionCheckerType, CollisionQueryBuffer
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 from curobo_msgs.srv import GetCollisionDistance
+from curobo.wrap.reacher.mpc import MpcSolver, MpcSolverConfig
+
 # ros
 import rclpy
 from rclpy.parameter import Parameter
@@ -22,6 +24,28 @@ from std_msgs.msg import Float32
 
 # Camera management
 from curobo_ros.cameras import CameraContext, PointCloudCameraStrategy
+
+class ConfigWrapperMPC(ConfigWrapper):
+    def __init__(self, node, robot):
+        super().__init__(node, robot)
+
+        # Add a simple ground plane as minimal collision object to satisfy cuRobo's requirements
+        from curobo.geom.types import Cuboid
+        ground_plane = Cuboid(
+            name="ground",
+            pose=[0, 0, -0.1, 1, 0, 0, 0],  # 10cm below base
+            dims=[3.0, 3.0, 0.01],  # Large thin plane
+            color=[0.5, 0.5, 0.5, 1.0]
+        )
+        self.world_cfg.add_obstacle(ground_plane)
+
+        self.mpc_config = MpcSolverConfig.load_from_robot_config(
+            self.robot_cfg,
+            self.world_cfg,
+            store_rollouts=True,
+            step_dt=0.03,
+        )
+        node.mpc = MpcSolver(self.mpc_config)
 
 
 class ConfigWrapperMotion(ConfigWrapper):
