@@ -1247,3 +1247,833 @@ jobs:
 **Total Estimé**: ~100 tests unitaires + 6 scénarios E2E
 **Effort Estimé**: 6-8 semaines (1 développeur)
 **Couverture Cible**: >80% code, 100% interfaces
+
+---
+
+## Spécification des Rosbags pour Tests
+
+### Vue d'ensemble
+
+Les rosbags sont essentiels pour les tests reproductibles, en particulier pour:
+- Tests de perception sans caméra physique
+- Tests de régression (comparaison avant/après modifications)
+- Tests sans robot réel (replay des états joints)
+- Validation des performances sur données réelles
+- CI/CD automatisé sans hardware
+
+---
+
+## Rosbags Requis par Catégorie
+
+### 1. ROSBAG PERCEPTION - Caméra Depth
+
+#### 1.1 Rosbag: `test_depth_static_scene.bag`
+
+**Description**: Scène statique avec objets connus pour validation de la segmentation
+
+**Topics requis**:
+```
+/depth_to_rgb/image_raw              [sensor_msgs/Image]
+/depth_to_rgb/camera_info            [sensor_msgs/CameraInfo]
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/tf                                   [tf2_msgs/TFMessage]
+/tf_static                            [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 30 secondes minimum
+- **Fréquence**:
+  - Depth images: 15-30 Hz
+  - Joint states: 50-100 Hz
+  - TF: selon publication
+- **Scène**:
+  - Robot dans 3-5 configurations différentes
+  - 2-3 objets statiques visibles (boîtes, cylindres)
+  - Fond avec mur/table
+  - Bon éclairage, pas de zones saturées
+
+**Utilisation dans tests**:
+- `TEST_DEPTH_001`: Validation publication masked_depth_image
+- `TEST_DEPTH_002`: Qualité du masquage robot
+- `TEST_E2E_003`: Pipeline perception → planification
+
+**Validation du rosbag**:
+- [ ] Camera_info constant et valide (matrice intrinsèque, distorsion)
+- [ ] Timestamps synchronisés entre depth et joint_states (<50ms écart)
+- [ ] Pas de frames dropout
+- [ ] Profondeur dans range valide (0.3m - 3m typiquement)
+
+---
+
+#### 1.2 Rosbag: `test_depth_dynamic_obstacle.bag`
+
+**Description**: Objet mobile pour test de mise à jour temps réel de l'environnement
+
+**Topics requis**:
+```
+/depth_to_rgb/image_raw              [sensor_msgs/Image]
+/depth_to_rgb/camera_info            [sensor_msgs/CameraInfo]
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/tf                                   [tf2_msgs/TFMessage]
+/tf_static                            [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 60 secondes
+- **Fréquence**: Identique à 1.1
+- **Scène**:
+  - Robot statique ou mouvement lent
+  - Objet entrant dans champ de vision (main, boîte)
+  - Objet se déplaçant dans workspace robot
+  - Objet sortant du champ
+
+**Utilisation dans tests**:
+- `TEST_E2E_002`: Environnement dynamique
+- `TEST_VOXEL_002`: Mise à jour voxel grid
+- Validation latence détection obstacle
+
+**Métadonnées requises** (dans fichier .yaml associé):
+```yaml
+rosbag: test_depth_dynamic_obstacle.bag
+timestamps:
+  object_enters: 5.0s
+  object_closest: 15.0s
+  object_exits: 25.0s
+ground_truth:
+  - time: 15.0s
+    object_position: [0.5, 0.2, 0.3]  # relative to base_link
+    object_size: [0.1, 0.1, 0.15]
+```
+
+---
+
+#### 1.3 Rosbag: `test_depth_robot_motion.bag`
+
+**Description**: Robot en mouvement pour test segmentation dynamique
+
+**Topics requis**:
+```
+/depth_to_rgb/image_raw              [sensor_msgs/Image]
+/depth_to_rgb/camera_info            [sensor_msgs/CameraInfo]
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/tf                                   [tf2_msgs/TFMessage]
+/tf_static                            [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 45 secondes
+- **Scène**:
+  - Robot exécutant mouvement complet (home → target → home)
+  - Scène statique (pas d'objets mobiles)
+  - Caméra fixe
+
+**Utilisation dans tests**:
+- Validation que robot est correctement masqué dans toutes configurations
+- `TEST_DEPTH_002`: Qualité segmentation
+- `robot_pointcloud_debug` topic validation
+
+---
+
+### 2. ROSBAG PERCEPTION - Point Cloud
+
+#### 2.1 Rosbag: `test_pointcloud_workspace.bag`
+
+**Description**: Point cloud du workspace pour tests PointCloudCameraStrategy
+
+**Topics requis**:
+```
+/camera/depth/points                 [sensor_msgs/PointCloud2]
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/tf                                   [tf2_msgs/TFMessage]
+/tf_static                            [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 30 secondes
+- **Fréquence**: Point cloud 10-30 Hz
+- **Scène**:
+  - Workspace avec table, objets posés
+  - Point cloud dense (>100k points par frame)
+  - Couverture 360° si possible (ou au moins 180°)
+
+**Utilisation dans tests**:
+- Validation conversion point cloud → depth orthographique
+- Test de `PointCloudCameraStrategy`
+- Validation grille voxel depuis point cloud
+
+---
+
+### 3. ROSBAG ROBOT CONTROL
+
+#### 3.1 Rosbag: `test_robot_trajectory_execution.bag`
+
+**Description**: Exécution complète de trajectoire sur robot réel
+
+**Topics requis**:
+```
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/leeloo/execute_trajectory           [trajectory_msgs/JointTrajectory]
+/leeloo/trajectory_state             [std_msgs/Float32]
+/tf                                   [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 20-30 secondes (trajectoire complète)
+- **Contenu**:
+  - État initial (5s statique)
+  - Publication de la trajectoire sur /leeloo/execute_trajectory
+  - Exécution (10-15s)
+  - État final (5s statique)
+  - Progression sur /leeloo/trajectory_state de 0.0 → 1.0
+
+**Utilisation dans tests**:
+- `TEST_ACTION_001`: Exécution trajectoire complète
+- `TEST_ACTION_003`: Validation feedback temps réel
+- `TEST_DOOSAN_001`: Publication sur contrôleur Doosan
+- Validation que trajectoire planifiée est suivie (erreur tracking)
+
+**Ground truth requis** (fichier .yaml):
+```yaml
+rosbag: test_robot_trajectory_execution.bag
+trajectory:
+  start_time: 5.0s
+  end_time: 20.0s
+  waypoints_count: 10
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+  expected_positions:
+    - time: 5.0s
+      joints: [0.0, -0.5, 1.0, 0.0, 1.57, 0.0]
+    - time: 20.0s
+      joints: [1.57, -1.0, 1.5, 0.5, 1.0, 0.0]
+  max_tracking_error: 0.05  # radians
+```
+
+---
+
+#### 3.2 Rosbag: `test_robot_joint_states_variety.bag`
+
+**Description**: Diverses configurations du robot pour tests FK/IK
+
+**Topics requis**:
+```
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/tf                                   [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 60 secondes
+- **Contenu**: Robot passant par:
+  - Configuration home
+  - Configuration près des limites articulaires
+  - Configuration près de singularités
+  - 5-10 configurations intermédiaires variées
+  - Pause de 5s à chaque configuration
+
+**Utilisation dans tests**:
+- `TEST_FK_001-004`: Validation FK
+- `TEST_IK_001-004`: Seed pour IK
+- Tests de cohérence IK→FK round-trip
+
+**Métadonnées** (.yaml):
+```yaml
+rosbag: test_robot_joint_states_variety.bag
+configurations:
+  - name: "home"
+    time: 5.0s
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ee_pose:
+      position: [x, y, z]
+      orientation: [qx, qy, qz, qw]
+  - name: "singularity_near"
+    time: 15.0s
+    joints: [1.57, 0.0, 0.0, 0.0, 0.0, 0.0]
+    note: "Near wrist singularity"
+  # ... autres configs
+```
+
+---
+
+### 4. ROSBAG VISUALISATION
+
+#### 4.1 Rosbag: `test_visualization_markers.bag`
+
+**Description**: Marqueurs de visualisation pour validation RViz
+
+**Topics requis**:
+```
+/curobo_gen_traj/collision_spheres   [visualization_msgs/MarkerArray]
+/visualization_marker_array          [visualization_msgs/MarkerArray]
+/visualise_voxel_grid                [visualization_msgs/Marker]
+/tf                                   [tf2_msgs/TFMessage]
+/tf_static                            [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 30 secondes
+- **Contenu**:
+  - Génération de trajectoire avec visualisation waypoints
+  - Affichage sphères de collision robot
+  - Voxel grid avec obstacles
+
+**Utilisation dans tests**:
+- `TEST_VIZ_001-003`: Validation publications marqueurs
+- `TEST_SPHERES_001-002`: Sphères de collision
+- Tests RViz configs
+
+---
+
+### 5. ROSBAG SCÉNARIOS COMPLETS
+
+#### 5.1 Rosbag: `test_e2e_pick_place.bag`
+
+**Description**: Scénario complet pick-and-place avec perception
+
+**Topics requis**:
+```
+# Perception
+/depth_to_rgb/image_raw              [sensor_msgs/Image]
+/depth_to_rgb/camera_info            [sensor_msgs/CameraInfo]
+
+# Robot
+/dsr01/joint_states                  [sensor_msgs/JointState]
+/leeloo/execute_trajectory           [trajectory_msgs/JointTrajectory]
+/leeloo/trajectory_state             [std_msgs/Float32]
+
+# Segmentation
+/masked_depth_image                  [sensor_msgs/Image]
+/collision_spheres                   [visualization_msgs/MarkerArray]
+
+# Visualisation
+/visualization_marker_array          [visualization_msgs/MarkerArray]
+/visualise_voxel_grid                [visualization_msgs/Marker]
+
+# TF
+/tf                                   [tf2_msgs/TFMessage]
+/tf_static                            [tf2_msgs/TFMessage]
+```
+
+**Spécifications**:
+- **Durée**: 120 secondes (scénario complet)
+- **Phases**:
+  1. Scan initial scène (10s)
+  2. Planification approche objet (5s)
+  3. Exécution mouvement vers objet (15s)
+  4. Préhension (5s statique)
+  5. Planification mouvement vers zone placement (5s)
+  6. Exécution mouvement (15s)
+  7. Dépose (5s)
+  8. Retour home (15s)
+
+**Utilisation dans tests**:
+- `TEST_E2E_001`: Pipeline complet pick-place
+- Validation latences bout-en-bout
+- Test d'intégration global
+
+**Métadonnées détaillées requises**:
+```yaml
+rosbag: test_e2e_pick_place.bag
+scenario: pick_and_place
+object:
+  type: "box"
+  dimensions: [0.05, 0.05, 0.08]
+  pick_pose:
+    position: [0.5, 0.2, 0.0]
+    orientation: [0, 0, 0, 1]
+  place_pose:
+    position: [0.3, -0.3, 0.1]
+    orientation: [0, 0, 0.707, 0.707]
+phases:
+  - name: "scan"
+    start_time: 0.0s
+    end_time: 10.0s
+  - name: "plan_approach"
+    start_time: 10.0s
+    end_time: 15.0s
+  - name: "execute_approach"
+    start_time: 15.0s
+    end_time: 30.0s
+    expected_ee_pose: [0.5, 0.2, 0.1]
+  # ... autres phases
+success_criteria:
+  position_accuracy: 0.01  # m
+  orientation_accuracy: 0.05  # rad
+  total_time_max: 120.0  # s
+```
+
+---
+
+#### 5.2 Rosbag: `test_e2e_obstacle_avoidance.bag`
+
+**Description**: Évitement d'obstacles dynamiques
+
+**Topics requis**: Identiques à 5.1
+
+**Spécifications**:
+- **Durée**: 90 secondes
+- **Scène**:
+  - Trajectoire planifiée initialement
+  - Obstacle apparaît dans le chemin (t=20s)
+  - Replanification nécessaire
+  - Exécution de trajectoire modifiée
+
+**Utilisation dans tests**:
+- `TEST_E2E_002`: Environnement dynamique
+- Validation replanification temps réel
+
+---
+
+### 6. ROSBAG STRESS & PERFORMANCE
+
+#### 6.1 Rosbag: `test_high_frequency_data.bag`
+
+**Description**: Flux haute fréquence pour tests de performance
+
+**Topics requis**:
+```
+/depth_to_rgb/image_raw              [sensor_msgs/Image] @ 60Hz
+/dsr01/joint_states                  [sensor_msgs/JointState] @ 200Hz
+/camera/depth/points                 [sensor_msgs/PointCloud2] @ 30Hz
+```
+
+**Spécifications**:
+- **Durée**: 300 secondes (5 minutes)
+- **But**: Tester stabilité sous charge continue
+
+**Utilisation dans tests**:
+- `TEST_E2E_005`: Stress test
+- Validation pas de memory leaks
+- Mesure utilisation CPU/GPU
+
+---
+
+## Structure de Fichiers Rosbag Proposée
+
+```
+curobo_ros/
+├── test/
+│   └── rosbags/
+│       ├── perception/
+│       │   ├── test_depth_static_scene.db3
+│       │   ├── test_depth_static_scene.yaml
+│       │   ├── test_depth_dynamic_obstacle.db3
+│       │   ├── test_depth_dynamic_obstacle.yaml
+│       │   ├── test_depth_robot_motion.db3
+│       │   ├── test_depth_robot_motion.yaml
+│       │   ├── test_pointcloud_workspace.db3
+│       │   └── test_pointcloud_workspace.yaml
+│       ├── robot_control/
+│       │   ├── test_robot_trajectory_execution.db3
+│       │   ├── test_robot_trajectory_execution.yaml
+│       │   ├── test_robot_joint_states_variety.db3
+│       │   └── test_robot_joint_states_variety.yaml
+│       ├── visualization/
+│       │   ├── test_visualization_markers.db3
+│       │   └── test_visualization_markers.yaml
+│       ├── e2e_scenarios/
+│       │   ├── test_e2e_pick_place.db3
+│       │   ├── test_e2e_pick_place.yaml
+│       │   ├── test_e2e_obstacle_avoidance.db3
+│       │   └── test_e2e_obstacle_avoidance.yaml
+│       ├── stress/
+│       │   ├── test_high_frequency_data.db3
+│       │   └── test_high_frequency_data.yaml
+│       └── README.md
+```
+
+---
+
+## Commandes pour Enregistrer les Rosbags
+
+### Perception - Scène Statique
+```bash
+ros2 bag record -o test_depth_static_scene \
+  /depth_to_rgb/image_raw \
+  /depth_to_rgb/camera_info \
+  /dsr01/joint_states \
+  /tf /tf_static \
+  --duration 30
+```
+
+### Perception - Obstacle Dynamique
+```bash
+ros2 bag record -o test_depth_dynamic_obstacle \
+  /depth_to_rgb/image_raw \
+  /depth_to_rgb/camera_info \
+  /dsr01/joint_states \
+  /tf /tf_static \
+  --duration 60
+```
+
+### Perception - Robot en Mouvement
+```bash
+ros2 bag record -o test_depth_robot_motion \
+  /depth_to_rgb/image_raw \
+  /depth_to_rgb/camera_info \
+  /dsr01/joint_states \
+  /tf /tf_static \
+  --duration 45
+```
+
+### Point Cloud
+```bash
+ros2 bag record -o test_pointcloud_workspace \
+  /camera/depth/points \
+  /dsr01/joint_states \
+  /tf /tf_static \
+  --duration 30
+```
+
+### Exécution Trajectoire
+```bash
+ros2 bag record -o test_robot_trajectory_execution \
+  /dsr01/joint_states \
+  /leeloo/execute_trajectory \
+  /leeloo/trajectory_state \
+  /tf \
+  --duration 30
+```
+
+### États Joints Variés
+```bash
+ros2 bag record -o test_robot_joint_states_variety \
+  /dsr01/joint_states \
+  /tf \
+  --duration 60
+```
+
+### Marqueurs Visualisation
+```bash
+ros2 bag record -o test_visualization_markers \
+  /curobo_gen_traj/collision_spheres \
+  /visualization_marker_array \
+  /visualise_voxel_grid \
+  /tf /tf_static \
+  --duration 30
+```
+
+### Scénario E2E Pick-Place
+```bash
+ros2 bag record -o test_e2e_pick_place \
+  /depth_to_rgb/image_raw \
+  /depth_to_rgb/camera_info \
+  /dsr01/joint_states \
+  /leeloo/execute_trajectory \
+  /leeloo/trajectory_state \
+  /masked_depth_image \
+  /collision_spheres \
+  /visualization_marker_array \
+  /visualise_voxel_grid \
+  /tf /tf_static \
+  --duration 120
+```
+
+### Scénario E2E Évitement Obstacles
+```bash
+ros2 bag record -o test_e2e_obstacle_avoidance \
+  /depth_to_rgb/image_raw \
+  /depth_to_rgb/camera_info \
+  /dsr01/joint_states \
+  /leeloo/execute_trajectory \
+  /leeloo/trajectory_state \
+  /masked_depth_image \
+  /collision_spheres \
+  /visualization_marker_array \
+  /tf /tf_static \
+  --duration 90
+```
+
+### Stress Test Haute Fréquence
+```bash
+ros2 bag record -o test_high_frequency_data \
+  /depth_to_rgb/image_raw \
+  /dsr01/joint_states \
+  /camera/depth/points \
+  --duration 300
+```
+
+---
+
+## Format des Fichiers Métadonnées (.yaml)
+
+Chaque rosbag doit avoir un fichier .yaml associé avec les métadonnées suivantes:
+
+```yaml
+# test_depth_static_scene.yaml
+rosbag:
+  name: test_depth_static_scene
+  version: 1.0
+  date_recorded: 2025-11-10
+  duration: 30.0  # seconds
+
+hardware:
+  robot: Doosan M1013
+  camera: RealSense D435
+  camera_serial: 123456789
+
+environment:
+  lighting: normal_indoor
+  objects:
+    - name: "box_1"
+      type: "cube"
+      dimensions: [0.1, 0.1, 0.1]
+      position: [0.5, 0.2, 0.0]  # relative to base_link
+      color: "red"
+    - name: "cylinder_1"
+      type: "cylinder"
+      radius: 0.05
+      height: 0.15
+      position: [0.4, -0.2, 0.0]
+      color: "blue"
+
+robot_configs:
+  initial_joints: [0.0, -0.5, 1.0, 0.0, 1.57, 0.0]
+  configurations_count: 5
+  joint_range_coverage: 70  # percentage of joint limits explored
+
+quality:
+  frame_drops: 0
+  timestamp_sync_max_error: 0.030  # seconds
+  depth_min: 0.3  # meters
+  depth_max: 2.5  # meters
+
+test_compatibility:
+  - TEST_DEPTH_001
+  - TEST_DEPTH_002
+  - TEST_E2E_003
+
+notes: |
+  Good lighting conditions.
+  All objects clearly visible.
+  No occlusions.
+  Robot moves slowly through 5 configurations.
+```
+
+---
+
+## Validation des Rosbags
+
+Avant d'utiliser un rosbag pour les tests, valider avec ce script:
+
+```python
+# validate_rosbag.py
+import rclpy
+from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
+import yaml
+
+def validate_rosbag(bag_path, metadata_path):
+    """Valide qu'un rosbag contient toutes les données requises"""
+
+    # Charger métadonnées
+    with open(metadata_path, 'r') as f:
+        metadata = yaml.safe_load(f)
+
+    # Ouvrir rosbag
+    storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
+    converter_options = ConverterOptions('', '')
+    reader = SequentialReader()
+    reader.open(storage_options, converter_options)
+
+    # Vérifications
+    checks = {
+        'topics_present': False,
+        'duration_correct': False,
+        'no_gaps': False,
+        'timestamps_sync': False
+    }
+
+    # Vérifier topics
+    topics_info = reader.get_all_topics_and_types()
+    required_topics = [...]  # From metadata
+    checks['topics_present'] = all(t in topics_info for t in required_topics)
+
+    # Vérifier durée
+    metadata_info = reader.get_metadata()
+    duration = (metadata_info.duration.nanoseconds) / 1e9
+    expected_duration = metadata['rosbag']['duration']
+    checks['duration_correct'] = abs(duration - expected_duration) < 1.0
+
+    # ... autres vérifications
+
+    return checks
+
+# Utilisation
+if __name__ == '__main__':
+    result = validate_rosbag(
+        'test/rosbags/perception/test_depth_static_scene.db3',
+        'test/rosbags/perception/test_depth_static_scene.yaml'
+    )
+    print(f"Validation results: {result}")
+```
+
+---
+
+## Utilisation des Rosbags dans les Tests
+
+### Exemple: Test avec Replay Rosbag
+
+```python
+# test_depth_perception.py
+import pytest
+import rclpy
+from rosbag2_py import Player
+import launch
+import launch_ros
+
+@pytest.fixture
+def rosbag_player():
+    """Lance player rosbag"""
+    player = Player()
+    player.play('test/rosbags/perception/test_depth_static_scene.db3')
+    yield player
+    player.stop()
+
+def test_depth_segmentation_static_scene(rosbag_player):
+    """TEST_DEPTH_001: Validation publication masked_depth_image"""
+
+    # Lancer nœud robot_segmentation
+    node = DepthMapRobotSegmentation()
+
+    # Attendre messages
+    masked_images = []
+
+    def callback(msg):
+        masked_images.append(msg)
+
+    node.create_subscription(Image, 'masked_depth_image', callback, 10)
+
+    # Laisser rosbag jouer
+    rclpy.spin_for(node, timeout_sec=30.0)
+
+    # Validations
+    assert len(masked_images) > 100  # Au moins 100 images à 15Hz sur 30s
+    assert all(img.encoding == '32FC1' for img in masked_images)
+
+    # Vérifier que robot est masqué
+    # ... analyse des images
+```
+
+---
+
+## Checklist Enregistrement Rosbags
+
+Avant chaque session d'enregistrement:
+
+- [ ] Calibration caméra vérifiée (camera_info correct)
+- [ ] TF tree complet publié
+- [ ] Éclairage stable et adéquat
+- [ ] Espace de travail dégagé
+- [ ] Robot homed et prêt
+- [ ] Stockage suffisant (>10GB disponible)
+- [ ] Noms de fichiers selon convention
+- [ ] Notes manuscrites des conditions d'enregistrement
+
+Après chaque enregistrement:
+
+- [ ] Vérifier durée du rosbag
+- [ ] Vérifier tous topics présents
+- [ ] Pas de warnings/erreurs pendant enregistrement
+- [ ] Créer fichier .yaml métadonnées
+- [ ] Validation avec script validate_rosbag.py
+- [ ] Backup dans stockage partagé
+- [ ] Ajout dans documentation
+
+---
+
+## Estimation Taille des Rosbags
+
+| Rosbag | Durée | Topics Principaux | Taille Estimée |
+|--------|-------|-------------------|----------------|
+| test_depth_static_scene | 30s | depth (30Hz) + joints | ~500 MB |
+| test_depth_dynamic_obstacle | 60s | depth (30Hz) + joints | ~1 GB |
+| test_depth_robot_motion | 45s | depth (30Hz) + joints | ~750 MB |
+| test_pointcloud_workspace | 30s | pointcloud (15Hz) | ~2 GB |
+| test_robot_trajectory_execution | 30s | joints + traj | ~50 MB |
+| test_robot_joint_states_variety | 60s | joints | ~100 MB |
+| test_visualization_markers | 30s | markers | ~100 MB |
+| test_e2e_pick_place | 120s | tous topics | ~3 GB |
+| test_e2e_obstacle_avoidance | 90s | tous topics | ~2.5 GB |
+| test_high_frequency_data | 300s | high freq | ~10 GB |
+
+**Total estimé**: ~20-25 GB pour suite complète de rosbags
+
+---
+
+## Stockage et Gestion
+
+### Organisation Git LFS
+
+Les rosbags sont trop volumineux pour Git standard. Utiliser Git LFS:
+
+```bash
+# Installer Git LFS
+git lfs install
+
+# Tracker les rosbags
+git lfs track "test/rosbags/**/*.db3"
+git add .gitattributes
+
+# Commit
+git add test/rosbags/
+git commit -m "Add test rosbags"
+```
+
+### Alternative: Stockage Cloud
+
+Si Git LFS n'est pas disponible, héberger sur:
+- Google Drive / OneDrive
+- AWS S3
+- Lab server NAS
+- DVC (Data Version Control)
+
+Ajouter script de téléchargement:
+
+```bash
+# download_test_data.sh
+#!/bin/bash
+
+echo "Downloading test rosbags..."
+
+# URL du stockage
+BASE_URL="https://lab-server.com/curobo_ros/test_data"
+
+# Télécharger chaque rosbag
+wget $BASE_URL/test_depth_static_scene.db3 -P test/rosbags/perception/
+wget $BASE_URL/test_depth_static_scene.yaml -P test/rosbags/perception/
+# ... autres fichiers
+
+echo "Download complete!"
+```
+
+---
+
+## Résumé des Rosbags Prioritaires
+
+### Priorité HAUTE (P0) - Essentiel pour CI/CD
+
+1. ✅ `test_depth_static_scene.bag` - Perception de base
+2. ✅ `test_robot_joint_states_variety.bag` - IK/FK tests
+3. ✅ `test_robot_trajectory_execution.bag` - Exécution
+
+### Priorité MOYENNE (P1) - Tests avancés
+
+4. ⚠️ `test_depth_dynamic_obstacle.bag` - Environnement dynamique
+5. ⚠️ `test_e2e_pick_place.bag` - Scénario complet
+6. ⚠️ `test_pointcloud_workspace.bag` - Point cloud
+
+### Priorité BASSE (P2) - Tests spécifiques
+
+7. 🔵 `test_visualization_markers.bag` - Visualisation
+8. 🔵 `test_high_frequency_data.bag` - Performance
+9. 🔵 `test_e2e_obstacle_avoidance.bag` - Avancé
+
+---
+
+## Prochaines Actions
+
+1. **Créer le dossier** `test/rosbags/` avec sous-dossiers
+2. **Enregistrer les 3 rosbags P0** en priorité
+3. **Créer fichiers .yaml** métadonnées pour chaque rosbag
+4. **Valider** les rosbags avec script validation
+5. **Configurer Git LFS** ou alternative stockage
+6. **Documenter** procédure d'enregistrement
+7. **Intégrer** dans tests CI/CD

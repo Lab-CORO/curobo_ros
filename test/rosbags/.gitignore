@@ -1,0 +1,7 @@
+# Ignorer les fichiers rosbag (.db3) car ils sont trop volumineux
+# Utiliser Git LFS ou stockage cloud externe
+*.db3
+
+# Garder les fichiers de métadonnées
+!*.yaml
+!README.md

@@ -1,0 +1,99 @@
+# Template de métadonnées pour test_depth_static_scene.bag
+# Copier ce fichier en .yaml et remplir avec les vraies valeurs après enregistrement
+
+rosbag:
+  name: test_depth_static_scene
+  version: 1.0
+  date_recorded: YYYY-MM-DD  # Date d'enregistrement
+  duration: 30.0  # seconds
+  recorder: ""  # Nom de la personne ayant enregistré
+
+hardware:
+  robot: Doosan M1013
+  robot_serial: ""  # Numéro de série si disponible
+  camera: RealSense D435  # ou D455, etc.
+  camera_serial: ""  # À remplir
+
+environment:
+  lighting: normal_indoor  # ou bright_indoor, low_light, etc.
+  temperature: 20  # Celsius
+  location: ""  # Lab name or location
+  objects:
+    - name: "box_1"
+      type: "cube"
+      dimensions: [0.1, 0.1, 0.1]  # meters [x, y, z]
+      position: [0.5, 0.2, 0.0]  # relative to base_link [x, y, z]
+      orientation: [0, 0, 0, 1]  # quaternion [x, y, z, w]
+      color: "red"
+      material: "cardboard"  # optional
+    - name: "cylinder_1"
+      type: "cylinder"
+      radius: 0.05  # meters
+      height: 0.15  # meters
+      position: [0.4, -0.2, 0.0]
+      orientation: [0, 0, 0, 1]
+      color: "blue"
+
+robot_configs:
+  initial_joints: [0.0, -0.5, 1.0, 0.0, 1.57, 0.0]  # radians
+  final_joints: [0.0, -0.5, 1.0, 0.0, 1.57, 0.0]
+  configurations_count: 5  # Nombre de configurations différentes
+  joint_range_coverage: 70  # pourcentage des limites articulaires explorées
+  movement_speed: slow  # slow, medium, fast
+
+topics:
+  depth_image: /depth_to_rgb/image_raw
+  camera_info: /depth_to_rgb/camera_info
+  joint_states: /dsr01/joint_states
+  tf: /tf
+  tf_static: /tf_static
+
+frequencies:
+  depth_image: 30  # Hz (réel mesuré)
+  camera_info: 30  # Hz
+  joint_states: 100  # Hz
+
+quality:
+  frame_drops: 0  # Nombre d'images perdues
+  timestamp_sync_max_error: 0.030  # seconds (max écart depth/joints)
+  depth_min: 0.3  # meters - profondeur minimale valide
+  depth_max: 2.5  # meters - profondeur maximale valide
+  depth_resolution_x: 640  # pixels
+  depth_resolution_y: 480  # pixels
+  point_cloud_density: high  # low, medium, high
+  occlusions: none  # none, partial, significant
+
+validation:
+  camera_info_valid: true  # Matrice intrinsèque présente et cohérente
+  tf_tree_complete: true  # Toutes les transformations disponibles
+  no_warnings: true  # Pas de warnings ROS pendant enregistrement
+  no_errors: true  # Pas d'erreurs ROS pendant enregistrement
+
+test_compatibility:
+  # Liste des tests qui peuvent utiliser ce rosbag
+  - TEST_DEPTH_001  # Publication masked_depth_image
+  - TEST_DEPTH_002  # Qualité du masquage robot
+  - TEST_E2E_003  # Pipeline perception → planification
+  - TEST_SUB_DEPTH_001  # Réception images depth
+
+ground_truth:
+  # Vérités terrain pour validation des tests
+  robot_visible_in_camera: true
+  objects_visible: [box_1, cylinder_1]
+  expected_voxels_occupied: 500  # Estimation du nombre de voxels occupés
+
+notes: |
+  Conditions d'enregistrement:
+  - Éclairage naturel + éclairage lab
+  - Pas de personnes dans la scène
+  - Robot se déplace lentement à travers 5 configurations prédéfinies
+  - Objets bien contrastés et stables
+  - Caméra montée sur trépied fixe
+
+  Problèmes connus:
+  - Aucun
+
+  Utilisation:
+  - Tests unitaires de perception
+  - Tests de segmentation robot
+  - Validation masquage depth
