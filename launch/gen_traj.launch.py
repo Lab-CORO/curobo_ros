@@ -165,7 +165,7 @@ def launch_setup(context, *args, **kwargs):
             package='tf2_ros',
             executable='static_transform_publisher',
             namespace='preview',
-            arguments=['0', '0', '0', '0', '0', '0', 'world', 'preview/world']
+            arguments=['0', '0', '0', '0', '0', '0', base_link, f'preview/{base_link}']
         ),
 
         # Log an informational message

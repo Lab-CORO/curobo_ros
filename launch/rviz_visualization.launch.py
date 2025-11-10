@@ -27,6 +27,17 @@ def setup_rviz_config(context, *args, **kwargs):
                 rviz_config['Visualization Manager']['Global Options'] = {}
             rviz_config['Visualization Manager']['Global Options']['Fixed Frame'] = base_link
 
+            # Modifier également le Reference Frame des displays curobo_rviz/ArrowInteractionDisplay
+            if 'Displays' in rviz_config['Visualization Manager']:
+                for display in rviz_config['Visualization Manager']['Displays']:
+                    if isinstance(display, dict):
+                        # Mettre à jour le Reference Frame pour les ArrowInteractionDisplay
+                        if display.get('Class') == 'curobo_rviz/ArrowInteractionDisplay':
+                            if 'Reference Frame' in display:
+                                old_frame = display['Reference Frame']
+                                display['Reference Frame'] = base_link
+                                print(f"[rviz_visualization.launch] Updated Reference Frame for '{display.get('Name', 'Unknown')}': {old_frame} -> {base_link}")
+
         # Créer un fichier temporaire avec la configuration modifiée
         temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.rviz', delete=False)
         yaml.dump(rviz_config, temp_file, default_flow_style=False)
