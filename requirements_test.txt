@@ -1,0 +1,44 @@
+# Dépendances pour les tests d'intégration CuRobo ROS
+
+# Core testing
+pytest>=7.0.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.0.0  # Parallel test execution
+pytest-cov>=4.0.0  # Code coverage
+pytest-html>=3.1.0  # HTML reports
+pytest-mock>=3.10.0  # Mocking support
+
+# ROS 2 testing (installed via ROS 2)
+# launch_testing
+# launch_testing_ros
+
+# Performance monitoring
+psutil>=5.9.0  # System and process utilities
+memory-profiler>=0.60.0  # Memory profiling
+
+# Numerical computation (for test data analysis)
+numpy>=1.21.0
+
+# Utilities
+pyyaml>=6.0  # YAML parsing for rosbag metadata
+colorama>=0.4.6  # Colored terminal output
+
+# Optional: Advanced testing
+pytest-benchmark>=4.0.0  # Benchmarking tests
+pytest-repeat>=0.9.0  # Repeat tests
+pytest-randomly>=3.12.0  # Randomize test order
+
+# Optional: Test reporting
+pytest-json-report>=1.5.0  # JSON test reports
+allure-pytest>=2.12.0  # Allure test reports
+
+# ROS 2 dependencies (usually installed with ROS 2, listed for reference)
+# rclpy
+# std_msgs
+# geometry_msgs
+# sensor_msgs
+# trajectory_msgs
+# visualization_msgs
+# std_srvs
+
+# Note: curobo_msgs must be built and sourced from workspace
