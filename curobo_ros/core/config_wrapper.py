@@ -266,24 +266,63 @@ class ConfigWrapper:
                     return response
 
                 try:
-                    # Create mesh and convert to cuboid
+                    # Create mesh object
+                    node.get_logger().info(
+                        f'Creating mesh object "{request.name}" with pose: {extracted_pose}, '
+                        f'scale: {extracted_dimensions}')
+
                     mesh_obj = Mesh(
                         name=request.name,
                         pose=extracted_pose,
                         file_path=request.mesh_file_path,
-                        scale=extracted_dimensions
+                        scale=extracted_dimensions,
+                        color=extracted_color
                     )
+
+                    # Log mesh object details
+                    node.get_logger().info(f'Mesh object created. Type: {type(mesh_obj)}')
+                    if hasattr(mesh_obj, 'name'):
+                        node.get_logger().info(f'  name: {mesh_obj.name}')
+                    if hasattr(mesh_obj, 'pose'):
+                        node.get_logger().info(f'  pose: {mesh_obj.pose}')
+                    if hasattr(mesh_obj, 'scale'):
+                        node.get_logger().info(f'  scale: {mesh_obj.scale}')
+
+                    # Convert mesh to cuboid for collision detection
+                    node.get_logger().info('Converting mesh to cuboid bounding box...')
                     obstacle = mesh_obj.get_cuboid()
 
                     # Validate that cuboid conversion succeeded
                     if obstacle is None:
                         response.success = False
-                        response.message = f'Failed to convert mesh to collision object: {request.mesh_file_path}'
+                        response.message = f'Failed to convert mesh to collision cuboid: {request.mesh_file_path}'
+                        node.get_logger().error(
+                            f'Mesh.get_cuboid() returned None for "{request.name}"')
                         return response
 
+                    # Log cuboid details
+                    node.get_logger().info(f'Cuboid created. Type: {type(obstacle)}')
+                    if hasattr(obstacle, 'name'):
+                        node.get_logger().info(f'  name: {obstacle.name}')
+                    if hasattr(obstacle, 'pose'):
+                        node.get_logger().info(f'  pose: {obstacle.pose}')
+                    if hasattr(obstacle, 'dims'):
+                        node.get_logger().info(f'  dims: {obstacle.dims}')
+
+                        # Validate dimensions are positive
+                        if any(d <= 0 for d in obstacle.dims):
+                            response.success = False
+                            response.message = (
+                                f'Mesh "{request.name}" has invalid bounding box dimensions: {obstacle.dims}. '
+                                f'The mesh file may be empty, too small, or corrupted.')
+                            node.get_logger().error(
+                                f'Invalid cuboid dimensions (<= 0) for mesh "{request.name}": {obstacle.dims}')
+                            return response
+                    else:
+                        node.get_logger().warn(f'Cuboid has no dims attribute')
+
                     node.get_logger().info(
-                        f'Successfully loaded mesh "{request.name}" from {request.mesh_file_path} '
-                        f'(scale: {extracted_dimensions})')
+                        f'Successfully loaded mesh "{request.name}" from {request.mesh_file_path}')
 
                 except Exception as e:
                     response.success = False
@@ -305,7 +344,17 @@ class ConfigWrapper:
                 response.message = f'Failed to create obstacle "{request.name}": obstacle is None'
                 return response
 
+            # Add obstacle to world config
             self.world_cfg.add_obstacle(obstacle)
+
+            # Log world config state after adding obstacle
+            node.get_logger().info(
+                f'Obstacle "{request.name}" added to world_cfg. '
+                f'Total cuboids: {len(self.world_cfg.cuboid)}, '
+                f'Total objects: {len(self.world_cfg.objects)}'
+            )
+
+            # Update the world model with new configuration
             self.update_world_config(self.node)
             response.message = 'Object ' + request.name + ' added successfully'
 

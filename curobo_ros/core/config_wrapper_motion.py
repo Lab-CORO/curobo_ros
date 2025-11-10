@@ -126,8 +126,21 @@ class ConfigWrapperMotion(ConfigWrapper):
         return response
 
     def update_world_config(self, node):
+        # Log world config state before update
+        total_obstacles = (
+            len(self.world_cfg.cuboid) +
+            len(self.world_cfg.mesh) if hasattr(self.world_cfg, 'mesh') else 0
+        )
+        node.get_logger().info(
+            f'Updating world config: {len(self.world_cfg.cuboid)} cuboids, '
+            f'{len(self.world_cfg.mesh) if hasattr(self.world_cfg, "mesh") else 0} meshes'
+        )
+
+        # Clear cache and update world
         node.motion_gen.world_coll_checker.clear_cache()
         node.motion_gen.update_world(self.world_cfg)
+
+        node.get_logger().info(f'World config updated successfully')
 
     
 
