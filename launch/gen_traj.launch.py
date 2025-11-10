@@ -130,7 +130,7 @@ def launch_setup(context, *args, **kwargs):
         # Run curobo_gen_traj node
         Node(
             package='curobo_ros',
-            executable='curobo_gen_traj',
+            executable='curobo_trajectory_planner',
             output='screen',
             parameters=[{
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
