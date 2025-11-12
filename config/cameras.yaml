@@ -1,8 +1,33 @@
+# cameras:
+#   - name: depth_map_test
+#     type: depth_camera
+#     topic: /depth_to_rgb/image_raw
+#     frame_id: rgb_camera_link
+#     camera_info: /depth_to_rgb/camera_info
+#     intrinsics: []
+#     extrinsics: []
+
 cameras:
   - name: depth_map_test
     type: depth_camera
-    topic: /depth_to_rgb/image_raw
-    frame_id: rgb_camera_link
-    camera_info: /depth_to_rgb/camera_info
-    intrinsics: []
-    extrinsics: []
+    topic: /masked_depth_image/image_raw
+    frame_id: ""
+    camera_info: /masked_depth_image/camera_info
+    intrinsic_matrix: []
+    extrinsic_matrix: [
+                [ 0.168, -0.733,  0.659, 0.161 ],
+                [ -0.968, 0.005,  0.253, -0.428 ],
+                [ -0.189, -0.680, -0.709,  1.585 ],
+                [ 0.0,    0.0,    0.0,    1.0   ]]
+
+
+
+
+
+
+    # extrinsic_matrix: [
+    #             [ 0.168, -0.733,  0.659, -0.126 ],
+    #             [ -0.968, 0.005,  0.253, -0.428 ],
+    #             [ -0.189, -0.680, -0.709,  0.879 ],
+    #             [ 0.0,    0.0,    0.0,    1.0   ]]
+

@@ -36,10 +36,18 @@ class CameraContext:
             camera_name: Unique identifier for this camera
             camera_type: Type of camera ('point_cloud' or 'depth_camera')
             topic: ROS topic for the camera data
-            camera_info: Camera intrinsics (for depth cameras)
-            frame_id: Frame ID for the camera
-            **kwargs: Additional parameters for specific camera strategies
+            camera_info: Camera intrinsics topic (for depth cameras) or path
+            frame_id: Frame ID for the camera (optional if extrinsic_matrix provided)
+            **kwargs: Additional parameters for specific camera strategies:
+                    - pixel_size: Size of each pixel in meters (point_cloud)
+                    - bounds: Workspace bounds (point_cloud)
+                    - extrinsic_matrix: Camera extrinsic matrix [4x4] (optional, fallback for TF)
+                    - intrinsic_matrix: Camera intrinsic matrix [3x3] (optional, fallback for camera_info)
         """
+        # Extract optional matrices
+        extrinsic_matrix = kwargs.get('extrinsic_matrix', None)
+        intrinsic_matrix = kwargs.get('intrinsic_matrix', None)
+
         # Create the appropriate camera strategy based on type
         if camera_type == 'point_cloud':
             # For point cloud cameras
@@ -52,20 +60,23 @@ class CameraContext:
                 camera_info=camera_info,
                 frame_id=frame_id,
                 pixel_size=pixel_size,
-                bounds=bounds
+                bounds=bounds,
+                extrinsic_matrix=extrinsic_matrix,
+                intrinsic_matrix=intrinsic_matrix
             )
 
         elif camera_type == 'depth_camera':
             # For depth cameras (RealSense, etc.)
             # Use camera_info parameter from config or fallback to topic-based guess
             camera_info_topic = camera_info if camera_info else topic.replace('/image', '/camera_info')
-            camera_pose = kwargs.get('camera_pose', None)
             camera_strategy = DepthMapCameraStrategy(
                 node=self.node,
                 camera_name=camera_name,
                 topic=topic,
                 camera_info_topic=camera_info_topic,
-                frame_id=frame_id                
+                frame_id=frame_id,
+                extrinsic_matrix=extrinsic_matrix,
+                intrinsic_matrix=intrinsic_matrix
             )
 
         else:

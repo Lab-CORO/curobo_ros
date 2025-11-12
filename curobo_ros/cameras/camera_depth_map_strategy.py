@@ -5,6 +5,7 @@ from curobo.types.math import Pose
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image, CameraInfo
 from rclpy.wait_for_message import wait_for_message
+from tf2_ros import TransformException
 import rclpy
 from scipy.spatial.transform import Rotation
 
@@ -21,7 +22,9 @@ class DepthMapCameraStrategy(CameraStrategy):
     '''
     def __init__(self, node, camera_name, topic='/camera/depth/image_rect_raw',
                  camera_info_topic='/camera/depth/camera_info',
-                 frame_id=''
+                 frame_id='',
+                 extrinsic_matrix=None,
+                 intrinsic_matrix=None
                  ):
         """
         Initialize a depthmap camera strategy.
@@ -31,35 +34,62 @@ class DepthMapCameraStrategy(CameraStrategy):
             camera_name: Name of the camera
             topic: Topic name for depth image
             camera_info_topic: Topic name for camera info
-            frame_id: Frame ID for the camera
-            camera_pose: Camera pose [x, y, z, qw, qx, qy, qz] or None for identity
+            frame_id: Frame ID for the camera (optional if extrinsic_matrix provided)
+            extrinsic_matrix: Camera extrinsic matrix [4x4] as fallback for TF
+            intrinsic_matrix: Camera intrinsic matrix [3x3] as fallback for camera_info
         """
-        super().__init__(node, camera_name, topic, camera_info_topic, frame_id)
+        super().__init__(node, camera_name, topic, camera_info_topic, frame_id,
+                         extrinsic_matrix=extrinsic_matrix, intrinsic_matrix=intrinsic_matrix)
 
         self.depth_map = None
         self.intrinsics = None
 
-        # Wait for camera info message to get intrinsics
-        node.get_logger().info(f"Waiting for camera info on {camera_info_topic}...")
-        res, camera_info_msg = wait_for_message(CameraInfo, node, camera_info_topic, time_to_wait=5.0)
+        # Try to get intrinsics from provided matrix first, then fallback to ROS topic
+        if self._intrinsic_matrix is not None:
+            # Use provided intrinsic matrix
+            try:
+                if isinstance(self._intrinsic_matrix, (list, np.ndarray)):
+                    intrinsic_array = np.array(self._intrinsic_matrix, dtype=np.float32)
+                    if intrinsic_array.shape != (3, 3):
+                        node.get_logger().error(
+                            f"Invalid intrinsic_matrix shape: {intrinsic_array.shape}. Expected (3, 3)"
+                        )
+                        raise ValueError("intrinsic_matrix must be 3x3")
 
-        if res:
-            # Extract intrinsics from camera_info and create 3x3 matrix
-            # K is a flattened 3x3 matrix: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
-            K = camera_info_msg.k
+                    self.intrinsics = torch.from_numpy(intrinsic_array).to(
+                        dtype=self.tensor_args.dtype, device=self.tensor_args.device
+                    )
+                    node.get_logger().info(
+                        f"Using provided intrinsic_matrix: fx={intrinsic_array[0,0]:.2f}, "
+                        f"fy={intrinsic_array[1,1]:.2f}, cx={intrinsic_array[0,2]:.2f}, "
+                        f"cy={intrinsic_array[1,2]:.2f}"
+                    )
+            except Exception as e:
+                node.get_logger().error(f"Failed to parse intrinsic_matrix: {e}")
+                self.intrinsics = None
 
-            # Create intrinsics as a 3x3 matrix (shape: (3, 3))
-            # CameraObservation will add batch dimension automatically if needed
-            self.intrinsics = torch.tensor([
-                [K[0], K[1], K[2]],  # [fx,  0, cx]
-                [K[3], K[4], K[5]],  # [ 0, fy, cy]
-                [K[6], K[7], K[8]]   # [ 0,  0,  1]
-            ], dtype=self.tensor_args.dtype, device=self.tensor_args.device)
+        # Fallback to camera info topic if intrinsics not loaded
+        if self.intrinsics is None:
+            node.get_logger().info(f"Waiting for camera info on {camera_info_topic}...")
+            res, camera_info_msg = wait_for_message(CameraInfo, node, camera_info_topic, time_to_wait=5.0)
 
-            node.get_logger().info(f"Camera intrinsics: fx={K[0]:.2f}, fy={K[4]:.2f}, cx={K[2]:.2f}, cy={K[5]:.2f}")
-        else:
-            node.get_logger().error(f"Failed to receive camera info from {camera_info_topic}")
-            raise RuntimeError("Could not get camera intrinsics")
+            if res:
+                # Extract intrinsics from camera_info and create 3x3 matrix
+                # K is a flattened 3x3 matrix: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+                K = camera_info_msg.k
+
+                # Create intrinsics as a 3x3 matrix (shape: (3, 3))
+                # CameraObservation will add batch dimension automatically if needed
+                self.intrinsics = torch.tensor([
+                    [K[0], K[1], K[2]],  # [fx,  0, cx]
+                    [K[3], K[4], K[5]],  # [ 0, fy, cy]
+                    [K[6], K[7], K[8]]   # [ 0,  0,  1]
+                ], dtype=self.tensor_args.dtype, device=self.tensor_args.device)
+
+                node.get_logger().info(f"Camera intrinsics from ROS: fx={K[0]:.2f}, fy={K[4]:.2f}, cx={K[2]:.2f}, cy={K[5]:.2f}")
+            else:
+                node.get_logger().error(f"Failed to receive camera info from {camera_info_topic}")
+                raise RuntimeError("Could not get camera intrinsics from topic or intrinsic_matrix")
 
 
 
@@ -99,30 +129,12 @@ class DepthMapCameraStrategy(CameraStrategy):
                 dtype=self.tensor_args.dtype
             )
 
-      
-            # Lookup transform from base_link to camera frame
-            t = self.tf_buffer.lookup_transform(
-                "base_link",
-                self._frame_id,
-                rclpy.time.Time())
+            # Get camera pose from TF or extrinsic matrix
+            self.camera_pose = self._get_camera_pose()
 
-            # Extract translation
-            translation = t.transform.translation
-            position = [translation.x, translation.y, translation.z]
-
-            # Extract rotation and convert to quaternion using scipy
-            rotation_msg = t.transform.rotation
-            # ROS quaternion format: (x, y, z, w)
-            quat_ros = [rotation_msg.x, rotation_msg.y, rotation_msg.z, rotation_msg.w]
-
-            # Convert to scipy Rotation
-            rot = Rotation.from_quat(quat_ros)  # scipy expects [x, y, z, w]
-            quat_scipy = rot.as_quat()  # Returns [x, y, z, w]
-
-            # cuRobo expects [x, y, z, qw, qx, qy, qz]
-            camera_pose = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
-
-            self.camera_pose = Pose.from_list(camera_pose, tensor_args=self.tensor_args)
+            if self.camera_pose is None:
+                self.node.get_logger().error("Failed to get camera pose from TF or extrinsic_matrix")
+                return
             # Create a camera observation (similar to realsense_collision.py line 231-233)
             data_camera = CameraObservation(
                 depth_image=depth_tensor,
@@ -147,3 +159,80 @@ class DepthMapCameraStrategy(CameraStrategy):
             # Fallback to identity pose if transform not available
             self.node.get_logger().warn(
                 f'Could not transform base_link to {self._frame_id}: {ex}. Using identity pose.')
+
+    def _get_camera_pose(self) -> Pose:
+        """
+        Get camera pose from TF (preferred) or extrinsic matrix (fallback).
+
+        Returns:
+            Pose object or None if both TF and extrinsic_matrix are unavailable
+        """
+        # Try TF lookup first if frame_id is available
+        if self._frame_id and self.tf_buffer is not None:
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    "base_link",
+                    self._frame_id,
+                    rclpy.time.Time()
+                )
+
+                # Extract translation
+                translation = t.transform.translation
+                position = [translation.x, translation.y, translation.z]
+
+                # Extract rotation and convert to quaternion using scipy
+                rotation_msg = t.transform.rotation
+                # ROS quaternion format: (x, y, z, w)
+                quat_ros = [rotation_msg.x, rotation_msg.y, rotation_msg.z, rotation_msg.w]
+
+                # Convert to scipy Rotation
+                rot = Rotation.from_quat(quat_ros)  # scipy expects [x, y, z, w]
+                quat_scipy = rot.as_quat()  # Returns [x, y, z, w]
+
+                # cuRobo expects [x, y, z, qw, qx, qy, qz]
+                camera_pose = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
+
+                return Pose.from_list(camera_pose, tensor_args=self.tensor_args)
+
+            except TransformException as ex:
+                self.node.get_logger().warn(
+                    f'Could not get transform from base_link to {self._frame_id}: {ex}. '
+                    'Trying extrinsic_matrix...'
+                )
+
+        # Fallback to extrinsic matrix if TF failed or unavailable
+        if self._extrinsic_matrix is not None:
+            try:
+                extrinsic_array = np.array(self._extrinsic_matrix, dtype=np.float32)
+                if extrinsic_array.shape != (4, 4):
+                    self.node.get_logger().error(
+                        f"Invalid extrinsic_matrix shape: {extrinsic_array.shape}. Expected (4, 4)"
+                    )
+                    return None
+
+                # Extract translation from 4x4 matrix
+                position = extrinsic_array[:3, 3].tolist()
+
+                # Extract rotation from 4x4 matrix and convert to quaternion
+                rotation_matrix = extrinsic_array[:3, :3]
+                rot = Rotation.from_matrix(rotation_matrix)
+                quat_scipy = rot.as_quat()  # Returns [x, y, z, w]
+
+                # cuRobo expects [x, y, z, qw, qx, qy, qz]
+                camera_pose = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
+
+                # self.node.get_logger().info(f"Using extrinsic_matrix for camera pose")
+                return Pose.from_list(camera_pose, tensor_args=self.tensor_args)
+
+            except Exception as e:
+                self.node.get_logger().error(f"Failed to parse extrinsic_matrix: {e}")
+                return None
+
+        # If neither TF nor extrinsic_matrix available, return identity pose
+        self.node.get_logger().warn(
+            "No frame_id or extrinsic_matrix available. Using identity pose."
+        )
+        return Pose(
+            position=self.tensor_args.to_device([0, 0, 0]),
+            quaternion=self.tensor_args.to_device([1, 0, 0, 0]),
+        )

@@ -109,19 +109,39 @@ class ConfigWrapper:
                         camera_frame_id = camera.get("frame_id", "")
                         camera_info = camera.get("camera_info", '')
 
+                        # Support both singular and plural naming conventions
+                        extrinsic_matrix = camera.get("extrinsic_matrix", None) or camera.get("extrinsics", None)
+                        intrinsic_matrix = camera.get("intrinsic_matrix", None) or camera.get("intrinsics", None)
+
+                        # If no frame id check if there is a extrinsic matrix
+                        if not camera_frame_id:
+                            if extrinsic_matrix:
+                                self.node.get_logger().info(f"Camera '{camera_name}' has no frame_id but has extrinsic_matrix defined")
+                            else:
+                                self.node.get_logger().warn(f"Camera '{camera_name}' has no frame_id and no extrinsic_matrix defined")
+
+                        # Same for camera info and intrinsic matrix
+                        if not camera_info:
+                            if intrinsic_matrix:
+                                self.node.get_logger().info(f"Camera '{camera_name}' has no camera_info but has intrinsic_matrix defined")
+                            else:
+                                self.node.get_logger().warn(f"Camera '{camera_name}' has no camera_info and no intrinsic_matrix defined")
+
                         # Get pixel_size parameter if available (for point cloud cameras)
                         pixel_size = 0.01  # Default
                         if self.node.has_parameter('pixel_size'):
                             pixel_size = self.node.get_parameter('pixel_size').get_parameter_value().double_value
 
-                        # Add camera with appropriate type
+                        # Add camera with appropriate type and optional matrices
                         self.camera_context.add_camera(
                             camera_name=camera_name,
                             camera_type=camera_type,
                             topic=camera_topic,
                             camera_info=camera_info,
                             frame_id=camera_frame_id,
-                            pixel_size=pixel_size
+                            pixel_size=pixel_size,
+                            extrinsic_matrix=extrinsic_matrix,
+                            intrinsic_matrix=intrinsic_matrix
                         )
 
                     self.node.get_logger().info(f"Successfully loaded {len(camera_config['cameras'])} camera(s)")

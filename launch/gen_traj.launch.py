@@ -94,6 +94,7 @@ def launch_setup(context, *args, **kwargs):
 
 
     gui_enabled = LaunchConfiguration('gui', default='true')
+    voxel_size = LaunchConfiguration('voxel_size', default=0.05)
 
     nodes = [
         IncludeLaunchDescription(
@@ -136,6 +137,7 @@ def launch_setup(context, *args, **kwargs):
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
                 'base_link': base_link,
                 'cameras_config_file': LaunchConfiguration('cameras_config_file'),
+                'voxel_size': voxel_size
             }]
         ),
 

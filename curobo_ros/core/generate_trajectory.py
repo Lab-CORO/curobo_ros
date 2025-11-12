@@ -111,15 +111,15 @@ class CuRoboTrajectoryMaker(Node):
             )
             traj = result.get_interpolated_plan()
             # send command to strategies:
-            self.robot_context.set_command(traj.joint_names, traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
+            self.robot_context.set_command(self.robot_context.get_joint_names(), traj.velocity.tolist(),traj.acceleration.tolist(), traj.position.tolist())
             response.success = True
             response.message = "Trajectory generated"
 
         except Exception as e:
             response.success = False
-            response.message = f"Error The trajectory could not be generated: {result}"
+            response.message = f"Error The trajectory could not be generated: {str(e)}"
             self.get_logger().error(
-                f"An error occurred during trajectory generation: {result}")
+                f"An error occurred during trajectory generation: {str(e)}")
         return response
         
     def execute_callback(self, goal_handle):

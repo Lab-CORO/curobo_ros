@@ -37,7 +37,8 @@ class PointCloudCameraStrategy(CameraStrategy):
     depth represents the Z-coordinate of points.
     """
 
-    def __init__(self, node, name, topic='', camera_info=[], frame_id='', pixel_size=0.01, bounds=None):
+    def __init__(self, node, name, topic='', camera_info=[], frame_id='', pixel_size=0.01, bounds=None,
+                 extrinsic_matrix=None, intrinsic_matrix=None):
         """
         Initialize the PointCloud to orthographic depth image strategy.
 
@@ -45,12 +46,15 @@ class PointCloudCameraStrategy(CameraStrategy):
             node: ROS2 node for creating subscriptions and logging
             topic: Topic name for the point cloud subscription
             camera_info: Not used for point cloud (kept for interface compatibility)
-            frame_id: Frame ID for the camera
+            frame_id: Frame ID for the camera (optional if extrinsic_matrix provided)
             pixel_size: Size of each pixel in meters (default: 1cm for good resolution)
             bounds: Workspace bounds as [min_x, max_x, min_y, max_y, min_z, max_z]
                    If None, uses default [-1.5, 1.5, -1.5, 1.5, -1.5, 1.5]
+            extrinsic_matrix: Camera extrinsic matrix [4x4] as fallback for TF
+            intrinsic_matrix: Not used for point cloud (kept for interface compatibility)
         """
-        super().__init__(node, name, topic, camera_info, frame_id)
+        super().__init__(node, name, topic, camera_info, frame_id,
+                         extrinsic_matrix=extrinsic_matrix, intrinsic_matrix=intrinsic_matrix)
 
         # Paramètres
         # self.node.declare_parameter('voxel_size', 0.02)
