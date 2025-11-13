@@ -75,7 +75,7 @@ class TrajectoryPlanner(ABC):
         pass
 
     @abstractmethod
-    def plan(self, start_state: JointState, goal_pose: Pose, config: dict) -> PlannerResult:
+    def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context: Optional[Any] = None) -> PlannerResult:
         """
         Generate a plan from start to goal.
 
@@ -83,6 +83,7 @@ class TrajectoryPlanner(ABC):
             start_state: Initial robot joint state
             goal_pose: Target end-effector pose
             config: Planner-specific configuration parameters
+            robot_context: Optional RobotContext for trajectory visualization
 
         Returns:
             PlannerResult with success status and trajectory/metadata

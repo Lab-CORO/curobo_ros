@@ -48,6 +48,9 @@ class MPCPlanner(TrajectoryPlanner):
         self.goal_pose = None
         self.is_goal_active = False
 
+        # Goal update from topic (for real-time tracking)
+        self.latest_goal_from_topic = None
+
         # Performance tracking
         self.mpc_time = []
 
@@ -79,7 +82,7 @@ class MPCPlanner(TrajectoryPlanner):
         """
         self.mpc = mpc_solver
 
-    def plan(self, start_state: JointState, goal_pose: Pose, config: dict) -> PlannerResult:
+    def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context=None) -> PlannerResult:
         """
         Setup MPC goal buffer for closed-loop execution.
 
@@ -92,6 +95,7 @@ class MPCPlanner(TrajectoryPlanner):
             config: Dictionary with keys:
                 - convergence_threshold: Error threshold for goal (default 0.01)
                 - max_iterations: Maximum MPC iterations (default 1000)
+            robot_context: Optional RobotContext (not used for MPC, visualizes during execute)
 
         Returns:
             PlannerResult with goal buffer setup status
@@ -151,6 +155,41 @@ class MPCPlanner(TrajectoryPlanner):
                 message=f"MPC setup error: {str(e)}",
             )
 
+    def update_goal_pose(self, new_goal_pose: Pose) -> bool:
+        """
+        Update MPC goal during execution (for real-time tracking).
+
+        Args:
+            new_goal_pose: New target end-effector pose
+
+        Returns:
+            True if goal update succeeded
+        """
+        try:
+            from curobo.rollout.rollout_base import Goal
+
+            # Create new goal with updated pose
+            goal = Goal(
+                current_state=None,  # Will use current state from MPC loop
+                goal_pose=new_goal_pose,
+            )
+
+            # Setup and update MPC goal buffer
+            new_goal_buffer = self.mpc.setup_solve_single(goal, 1)
+            self.mpc.update_goal(new_goal_buffer)
+
+            # Update stored goal
+            self.goal_pose = new_goal_pose
+            self.goal_buffer = new_goal_buffer
+
+            self.node.get_logger().debug(f"MPC goal updated to position: [{new_goal_pose.position.x:.3f}, {new_goal_pose.position.y:.3f}, {new_goal_pose.position.z:.3f}]")
+
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"Failed to update MPC goal: {e}")
+            return False
+
     def execute(self, robot_context, goal_handle=None) -> bool:
         """
         Execute MPC closed-loop control.
@@ -188,6 +227,11 @@ class MPCPlanner(TrajectoryPlanner):
                     self.node.get_logger().warn("MPC execution cancelled")
                     robot_context.stop_robot()
                     return False
+
+                # Check for goal update from topic (for real-time tracking)
+                if self.latest_goal_from_topic is not None:
+                    self.update_goal_pose(self.latest_goal_from_topic)
+                    self.latest_goal_from_topic = None  # Consumed
 
                 st_time = time.time()
 

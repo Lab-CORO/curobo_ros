@@ -122,6 +122,15 @@ class UnifiedPlannerNode(Node):
             callback_group=MutuallyExclusiveCallbackGroup()
         )
 
+        # Create subscription for MPC goal updates (for real-time tracking)
+        from geometry_msgs.msg import Pose as PoseMsg
+        self.mpc_goal_sub = self.create_subscription(
+            PoseMsg,
+            f'{self.get_name()}/mpc_goal',
+            self.mpc_goal_callback,
+            10
+        )
+
         self.get_logger().info(
             f"Unified planner ready with initial planner: "
             f"{self.planner_manager.get_current_planner().get_planner_name()}"
@@ -236,7 +245,7 @@ class UnifiedPlannerNode(Node):
                 f"Planning with {planner.get_planner_name()}"
             )
 
-            result = planner.plan(start_state, goal_pose, config)
+            result = planner.plan(start_state, goal_pose, config, self.robot_context)
 
             # Build response
             response.success = result.success
@@ -382,6 +391,36 @@ class UnifiedPlannerNode(Node):
             self.get_logger().error(traceback.format_exc())
 
         return response
+
+    def mpc_goal_callback(self, msg):
+        """
+        Callback for MPC goal updates (real-time tracking).
+
+        Receives goal pose from RViz plugin and updates MPC planner during execution.
+        """
+        from curobo.types.math import Pose
+
+        # Convert ROS Pose message to cuRobo Pose
+        new_goal_pose = Pose.from_list([
+            msg.position.x, msg.position.y, msg.position.z,
+            msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z
+        ])
+
+        # Get current planner
+        planner = self.planner_manager.get_current_planner()
+
+        # Only update if MPC planner is active
+        from curobo_ros.planners.mpc_planner import MPCPlanner
+        if isinstance(planner, MPCPlanner):
+            # Store goal for MPC execute() loop to pick up
+            planner.latest_goal_from_topic = new_goal_pose
+            self.get_logger().debug(
+                f"MPC goal updated from topic: [{msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}]"
+            )
+        else:
+            self.get_logger().warn(
+                f"Received MPC goal but current planner is {planner.get_planner_name()}"
+            )
 
     def list_planners_callback(self, request: Trigger, response: Trigger.Response):
         """

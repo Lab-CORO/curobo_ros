@@ -77,7 +77,7 @@ class ClassicPlanner(TrajectoryPlanner):
         """
         self.motion_gen = motion_gen
 
-    def plan(self, start_state: JointState, goal_pose: Pose, config: dict) -> PlannerResult:
+    def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context=None) -> PlannerResult:
         """
         Generate a complete trajectory using MotionGen.
 
@@ -87,6 +87,7 @@ class ClassicPlanner(TrajectoryPlanner):
             config: Dictionary with keys:
                 - max_attempts: Number of planning attempts
                 - timeout: Planning timeout in seconds
+            robot_context: Optional RobotContext for trajectory visualization
                 - time_dilation_factor: Trajectory time scaling
 
         Returns:
@@ -139,6 +140,17 @@ class ClassicPlanner(TrajectoryPlanner):
                 f"Successfully planned trajectory with {len(self.planned_trajectory.position)} waypoints"
             )
 
+            # Send trajectory to robot context for visualization
+            if robot_context is not None:
+                traj = self.planned_trajectory
+                robot_context.set_command(
+                    traj.joint_names,
+                    traj.velocity.tolist(),
+                    traj.acceleration.tolist(),
+                    traj.position.tolist()
+                )
+                self.node.get_logger().info("Trajectory sent to robot context for visualization")
+
             return PlannerResult(
                 success=True,
                 message="Trajectory planned successfully",
@@ -178,13 +190,7 @@ class ClassicPlanner(TrajectoryPlanner):
 
         try:
             # Send trajectory commands to robot context
-            traj = self.planned_trajectory
-            robot_context.set_command(
-                traj.joint_names,
-                traj.velocity.tolist(),
-                traj.acceleration.tolist(),
-                traj.position.tolist()
-            )
+            
 
             # Start trajectory execution
             robot_context.send_trajectrory()
