@@ -54,12 +54,16 @@ See the [Getting Started Guide](doc/getting_started.md) for detailed instruction
 ### 📚 Step-by-Step Tutorials
 1. **[Your First Trajectory](doc/tutorials/1_first_trajectory.md)** - Generate trajectories, add obstacles, tune parameters
 2. **[Adding Your Robot](doc/tutorials/2_adding_your_robot.md)** - Integrate your robot (Doosan M1013 example)
-3. **[Managing Obstacles](doc/tutorials/3_adding_obstacles.md)** - Dynamic obstacle management and collision checking
+3. **[Managing Obstacles](doc/tutorials/adding_collision_objects.md)** - Dynamic obstacle management and collision checking
 4. **[Dynamic Strategy Switching](doc/tutorials/4_dynamic_strategy_switching.md)** - Switch between real robot, emulator, and simulation
-5. **[IK/FK Services](doc/tutorials/6_ik_fk_services.md)** - Use inverse and forward kinematics services
+5. **[MPC Planner](doc/tutorials/5_mpc_planner.md)** - Real-time reactive trajectory planning with Model Predictive Control
+6. **[IK/FK Services](doc/tutorials/ik_fk_services.md)** - Use inverse and forward kinematics services
+7. **[Point Cloud Obstacle Detection](doc/tutorials/pointcloud_obstacle_detection.md)** - Integrate cameras for dynamic obstacle detection
 
 ### 📖 Concepts & Reference
+- **[Unified Planner Architecture](doc/concepts/unified_planner.md)** - Flexible planning framework supporting multiple algorithms
 - **[Parameters Guide](doc/concepts/parameters.md)** - Understand `voxel_size`, `time_dilation_factor`, and all parameters
+- **[Async Warmup](doc/concepts/warmup_async.md)** - GPU optimization and asynchronous initialization
 - **[ROS Interfaces](doc/concepts/ros_interfaces.md)** - Complete reference of services, topics, and actions
 - **[Architecture](doc/concepts/architecture.md)** - System architecture and class diagrams
 
@@ -71,6 +75,8 @@ See the [Getting Started Guide](doc/getting_started.md) for detailed instruction
 ## Features
 
 - ✅ **GPU-Accelerated Planning** - CUDA-based trajectory optimization for real-time performance
+- ✅ **Unified Planner Architecture** - Flexible framework supporting multiple planning algorithms (Classic, MPC, Batch, Constrained)
+- 📋 **MPC Real-Time Planning** - Model Predictive Control for reactive, closed-loop trajectory execution _(specification ready, implementation planned)_
 - ✅ **Collision Avoidance** - Voxel-based collision checking (BLOX) with dynamic obstacle management
 - ✅ **Multiple Robot Support** - Easy integration of custom robots via YAML configuration
 - ✅ **Strategy Switching** - Dynamically switch between real robot, emulator, and visualization modes

@@ -1,7 +1,9 @@
 # Tutorial: Using the MPC Planner
- 
+
+> **📋 Implementation Status**: This tutorial describes the planned MPC planner functionality. The MPC planner architecture is fully specified and documented, but the implementation is currently in progress. This document serves as both a specification for developers and a preview of upcoming features for users.
+
 Model Predictive Control (MPC) enables **real-time reactive trajectory planning** that can adapt to dynamic obstacles and disturbances.
- 
+
 ---
  
 ## What is MPC?
@@ -567,7 +569,10 @@ if not result.success:
 ---
  
 ## References
- 
+
 - [MPC Overview](https://en.wikipedia.org/wiki/Model_predictive_control)
 - [cuRobo Documentation](https://curobo.org/)
-- [Real-time Trajectory Optimization](https://doi.org/10.1109/ICRA.2021.XXXXXX)
+- [Unified Planner Architecture](../concepts/unified_planner.md) - Overall planner framework design
+- [MPC Implementation Guide](../concepts/mpc_implementation_guide.md) - Technical guide for developers
+
+**For Developers**: If you're implementing the MPC planner, see the [MPC Implementation Guide](../concepts/mpc_implementation_guide.md) for detailed technical specifications, code templates, and testing strategies.

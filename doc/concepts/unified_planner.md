@@ -1,7 +1,9 @@
 # Unified Planner Architecture
- 
+
+> **📋 Implementation Status**: This document describes the planned unified planner architecture. The design is complete and serves as a specification for ongoing implementation. The Classic planner (open-loop) is currently functional using the existing MotionGen integration. MPC, Batch, and Constrained planners are planned for future releases.
+
 The **Unified Planner** is a flexible, extensible architecture for trajectory planning in curobo_ros that supports multiple planning algorithms through a unified interface.
- 
+
 ---
  
 ## Overview
@@ -484,10 +486,125 @@ RuntimeError: CUDA out of memory
 - Decrease MPC horizon length
  
 ---
- 
+
+## Implementation Roadmap
+
+### Current Status (Phase 1: ✅ Complete)
+
+**What's Working:**
+- ✅ **Classic Planner** - Fully functional using existing `MotionGen` integration
+- ✅ **Robot Strategy Pattern** - Dynamic switching between real/emulator/visualization modes
+- ✅ **Configuration Framework** - `ConfigWrapper` and parameter management
+- ✅ **Collision Detection** - Voxel-based BLOX integration with camera support
+- ✅ **ROS 2 Integration** - Services, actions, and topics for trajectory generation
+
+**Current Limitations:**
+- Only Classic (open-loop) planner is implemented
+- No runtime planner switching (UnifiedPlannerNode not yet implemented)
+- MPC, Batch, and Constrained planners exist as specifications only
+
+### Phase 2: Unified Planner Framework (🚧 In Progress)
+
+**To Implement:**
+```
+curobo_ros/planners/
+├── __init__.py
+├── base_planner.py           # TrajectoryPlanner abstract base class
+├── planner_factory.py        # PlannerFactory for creating planners
+├── planner_manager.py        # PlannerManager for runtime switching
+├── classic_planner.py        # Wrapper around existing MotionGen
+└── execution_modes.py        # ExecutionMode enum
+```
+
+**Services to Add:**
+- `~/set_planner` - Switch between planners at runtime
+- `~/list_planners` - Query available planners
+- `~/get_current_planner` - Get active planner name
+
+**Key Implementation Tasks:**
+1. Create `TrajectoryPlanner` abstract base class with `plan()` and `execute()` methods
+2. Implement `PlannerFactory` with registration system
+3. Build `PlannerManager` for runtime switching
+4. Wrap existing trajectory generation in `ClassicPlanner`
+5. Create `UnifiedPlannerNode` to expose new services
+6. Add planner type enum to `curobo_msgs`
+
+### Phase 3: MPC Planner (📋 Planned)
+
+**To Implement:**
+```python
+curobo_ros/planners/mpc_planner.py
+```
+
+**Key Features:**
+- Closed-loop control with continuous replanning
+- Integration with cuRobo's MPC solver
+- Configurable horizon, frequency, convergence thresholds
+- Real-time obstacle adaptation
+- Performance monitoring via `/mpc_stats` topic
+
+**Dependencies:**
+- cuRobo MPC solver API
+- Real-time control loop framework
+- GPU resource management for sustained computation
+
+### Phase 4: Batch & Constrained Planners (📋 Future)
+
+**Batch Planner:**
+- Generate multiple alternative trajectories
+- Parallel GPU computation
+- Cost-based trajectory selection
+
+**Constrained Planner:**
+- Custom constraint specification API
+- Orientation constraints
+- Velocity/acceleration limits
+- Task-space constraints
+
+### Developer Notes
+
+**For Contributors Implementing Phase 2:**
+
+1. **Start with base_planner.py**:
+   ```python
+   from abc import ABC, abstractmethod
+   from enum import Enum
+
+   class ExecutionMode(Enum):
+       OPEN_LOOP = 0
+       CLOSED_LOOP = 1
+
+   class TrajectoryPlanner(ABC):
+       @abstractmethod
+       def plan(self, start_state, goal_pose, config) -> PlannerResult:
+           pass
+
+       @abstractmethod
+       def execute(self, robot_context, goal_handle) -> bool:
+           pass
+   ```
+
+2. **Preserve Existing Functionality**: The Classic planner should wrap existing code without breaking changes
+
+3. **Use Existing Patterns**: Follow the Robot Strategy pattern already in `curobo_ros/robot/`
+
+4. **Testing**: Write unit tests for each planner and integration tests for switching
+
+5. **Documentation**: Update this doc with actual implementation details as you code
+
+**Reference Implementations:**
+- Robot strategies: `curobo_ros/robot/robot_strategy.py`
+- Config management: `curobo_ros/core/config_wrapper.py`
+- Service patterns: Look at existing `set_robot_strategy` service
+
+**Detailed Implementation Guide:**
+- See [MPC Implementation Guide](mpc_implementation_guide.md) for complete technical specifications, code templates, and testing strategies
+
+---
+
 ## Future Extensions
- 
-Planned planner implementations:
+
+Additional planner types being considered:
  
 ```python
 # Hybrid planner
