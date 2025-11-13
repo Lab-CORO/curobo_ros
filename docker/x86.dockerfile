@@ -181,12 +181,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /home/ros2_ws/src
 
 RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
-RUN git clone https://github.com/Lab-CORO/curobo_msgs.git
 
-# Construire les packages un par un pour résoudre les dépendances
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select curobo_msgs"
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build"
-RUN echo "source /home/ros2_ws/install/setup.bash" >> ~/.bashrc
+# Note: curobo_msgs, curobo_rviz, and curobo_ros will be mounted as volumes in DEV mode
 
 RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
     rosdep update # "sudo rosdep update --include-eol-distros" 
@@ -194,8 +190,7 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
 # Setup for trajectory_preview
 RUN git clone https://github.com/swri-robotics/trajectory_preview.git
 
-# Setup for curobo_rviz
-RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
+# curobo_rviz and curobo_ros will be mounted as volumes in DEV mode
 
 # Add tools for pcd_fuse
 RUN apt remove python3-blinker -y
@@ -233,7 +228,7 @@ RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
 WORKDIR /home/ros2_ws
 
 # Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
-RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+#RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
 
 # update ucx path: https://github.com/openucx/ucc/issues/476
 ENV LD_LIBRARY_PATH=/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH
