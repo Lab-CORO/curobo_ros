@@ -1,0 +1,144 @@
+═══════════════════════════════════════════════════════════════════════
+ DÉMONSTRATION: ANALYSE DES SOLUTIONS IK - UNICITÉ ET DIVERSITÉ
+═══════════════════════════════════════════════════════════════════════
+
+Simulation typique avec num_seeds=20:
+
+📊 STATISTIQUES GLOBALES
+──────────────────────────────────────────────────────────────────────
+  Graines générées (num_seeds):     20
+  Solutions convergées:              20
+  Solutions valides (success=True):  18
+  Solutions UNIQUES trouvées:        4 ⭐ ← SEULEMENT 4 sur 20!
+  Taux de convergence:               90.0%
+  Taux d'unicité:                    22.2%  ← 78% de doublons!
+
+⚙️  PARAMÈTRES
+──────────────────────────────────────────────────────────────────────
+  Seuil d'unicité:                   0.0100 rad (0.57°)
+
+📏 DIVERSITÉ DES SOLUTIONS
+──────────────────────────────────────────────────────────────────────
+  Distance minimale entre solutions: 1.8234 rad (104.5°)
+  Distance maximale entre solutions: 4.2156 rad (241.5°)
+  Distance moyenne entre solutions:  2.9447 rad (168.7°)
+
+🎯 DÉTAIL DES SOLUTIONS UNIQUES
+──────────────────────────────────────────────────────────────────────
+
+  Solution #1 (trouvée par 7 graines = 38.9%)
+    Joints (rad): [ 0.000 -0.500  1.200  0.000  0.800  0.000]
+    Joints (deg): [  0.0 -28.6  68.8   0.0  45.8   0.0]
+    ⚠️  ATTENTION: 6 doublons détectés (convergence multiple)
+
+  Solution #2 (trouvée par 5 graines = 27.8%)
+    Joints (rad): [ 0.000 -0.500 -1.200  0.000 -0.800  0.000]
+    Joints (deg): [  0.0 -28.6 -68.8   0.0 -45.8   0.0]
+    ⚠️  ATTENTION: 4 doublons détectés (convergence multiple)
+
+  Solution #3 (trouvée par 4 graines = 22.2%)
+    Joints (rad): [ 3.140  0.500  1.200  3.140  0.800  3.140]
+    Joints (deg): [180.0  28.6  68.8 180.0  45.8 180.0]
+    ⚠️  ATTENTION: 3 doublons détectés (convergence multiple)
+
+  Solution #4 (trouvée par 2 graines = 11.1%)
+    Joints (rad): [-1.500 -1.000  0.500  1.000  1.500 -0.500]
+    Joints (deg): [-85.9 -57.3  28.6  57.3  85.9 -28.6]
+    ⚠️  ATTENTION: 1 doublon détecté (convergence multiple)
+
+═══════════════════════════════════════════════════════════════════════
+
+⚠️  AVERTISSEMENT:
+  Seulement 4 solution(s) unique(s) trouvée(s).
+  Pour un robot 6-DOF typique, jusqu'à 8 solutions peuvent exister.
+
+  Suggestions pour trouver plus de solutions:
+    • Augmenter num_seeds (ex: 50, 100, 200)
+    • Utiliser une méthode IK analytique si disponible
+    • Vérifier la géométrie du robot (poignet sphérique?)
+
+═══════════════════════════════════════════════════════════════════════
+
+💡 INTERPRÉTATION DES RÉSULTATS:
+
+1. CONVERGENCE MULTIPLE VERS MÊMES SOLUTIONS
+   - 7 graines convergent vers Solution #1 (Elbow up, shoulder normal)
+   - 5 graines convergent vers Solution #2 (Elbow down)
+   - 4 graines convergent vers Solution #3 (Shoulder flipped)
+   - 2 graines convergent vers Solution #4 (Configuration alternative)
+
+   → 18 graines valides trouvent seulement 4 solutions distinctes
+   → 14 graines sont des "doublons" (convergence redondante)
+
+2. SOLUTIONS POTENTIELLEMENT MANQUANTES
+   - Un robot 6-DOF avec poignet sphérique peut avoir jusqu'à 8 solutions
+   - On n'en trouve que 4
+   - 4 solutions possibles ne sont pas trouvées (aucune graine n'a convergé vers elles)
+
+   Configuration théorique des 8 solutions pour poignet sphérique:
+   ┌─────────────┬───────────┬──────────┬───────────┬────────┐
+   │ Solution    │ Shoulder  │ Elbow    │ Wrist     │ Trouvé │
+   ├─────────────┼───────────┼──────────┼───────────┼────────┤
+   │ #1          │ Normal    │ Up       │ Normal    │   ✅   │
+   │ #2          │ Normal    │ Down     │ Normal    │   ✅   │
+   │ #3          │ Flipped   │ Up       │ Normal    │   ✅   │
+   │ #4          │ Normal    │ Up       │ Flipped   │   ✅   │
+   │ #5 (absent) │ Normal    │ Down     │ Flipped   │   ❌   │
+   │ #6 (absent) │ Flipped   │ Down     │ Normal    │   ❌   │
+   │ #7 (absent) │ Flipped   │ Up       │ Flipped   │   ❌   │
+   │ #8 (absent) │ Flipped   │ Down     │ Flipped   │   ❌   │
+   └─────────────┴───────────┴──────────┴───────────┴────────┘
+
+3. IMPACT PRATIQUE
+
+   🟢 Avantages des 4 solutions trouvées:
+      - Offre déjà des alternatives (elbow up/down, shoulder flip)
+      - Permet d'éviter des obstacles
+      - Permet d'optimiser la distance à la config actuelle
+
+   🔴 Problèmes des 4 solutions manquantes:
+      - Certaines peuvent être meilleures (plus proche config actuelle)
+      - Certaines peuvent être les seules sans collision
+      - Pas de garantie d'avoir trouvé la solution optimale
+
+4. RECOMMANDATIONS
+
+   Pour trouver TOUTES les solutions:
+
+   Option A: Augmenter num_seeds
+   ┌──────────────┬─────────────────┬─────────────────────┐
+   │ num_seeds    │ Prob. toutes    │ Temps calcul (GPU)  │
+   ├──────────────┼─────────────────┼─────────────────────┤
+   │ 20 (actuel)  │ ~50%            │ 10 ms               │
+   │ 50           │ ~80%            │ 25 ms               │
+   │ 100          │ ~95%            │ 50 ms               │
+   │ 200          │ ~99%            │ 100 ms              │
+   └──────────────┴─────────────────┴─────────────────────┘
+
+   Option B: IK Analytique (idéal)
+   - Garantit TOUTES les solutions (8 pour poignet sphérique)
+   - Très rapide (<1 ms CPU)
+   - Nécessite implémentation spécifique au robot
+   - Puis utiliser CuRobo pour vérifier les collisions
+
+   Option C: Initialisation intelligente
+   - Cibler les 8 configurations connues (shoulder/elbow/wrist)
+   - Augmente fortement les chances
+   - Nécessite connaissance de la géométrie du robot
+
+═══════════════════════════════════════════════════════════════════════
+
+📚 RÉFÉRENCES THÉORIQUES:
+
+Nombre de solutions IK pour robots 6-DOF:
+  • Robot général 6-DOF:           Jusqu'à 16 solutions
+  • Robot poignet sphérique:       Jusqu'à 8 solutions
+  • Robot avec redondance (7-DOF): Solutions infinies (espace nul)
+
+Source: Recherche web "6-DOF robot manipulator analytical inverse kinematics"
+  - https://opentextbooks.clemson.edu/wangrobotics/chapter/inverse-kinematics/
+  - https://automaticaddison.com/the-ultimate-guide-to-inverse-kinematics-for-6dof-robot-arms/
+
+Fichier d'analyse détaillée: ANALYSE_UNICITE_SOLUTIONS_IK.md
+
+═══════════════════════════════════════════════════════════════════════
