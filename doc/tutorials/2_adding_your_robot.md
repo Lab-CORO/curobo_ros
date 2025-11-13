@@ -17,6 +17,28 @@ To use curobo_ros with your robot, you need:
 2. **Configuration YAML** - cuRobo-specific parameters (joint limits, collision spheres, etc.)
 3. **Robot package** (optional) - ROS package containing URDF and meshes
 
+### Two Approaches for Robot Configuration
+
+This tutorial covers **two methods** to generate the configuration YAML:
+
+#### 🚀 Method 1: Automated (Recommended)
+- **Uses**: NVIDIA Isaac Sim + cuRobo tools
+- **Time**: ~30-60 minutes
+- **Pros**: Visual editor, automatic collision sphere generation, high accuracy
+- **Cons**: Requires Isaac Sim installation (~30 GB)
+- **Best for**: Production robots, complex geometries, teams with Isaac Sim access
+
+#### ✍️ Method 2: Manual
+- **Uses**: Text editor + trial and error
+- **Time**: ~2-4 hours
+- **Pros**: No additional software needed, good for learning
+- **Cons**: Time-consuming, requires iteration, prone to errors
+- **Best for**: Simple robots, educational purposes, no Isaac Sim access
+
+**Quick Decision:**
+- **Have Isaac Sim?** → Use Method 1 (much faster and more accurate)
+- **No Isaac Sim or very simple robot?** → Use Method 2 (manual)
+
 ---
 
 ## Example: Doosan M1013
@@ -169,9 +191,240 @@ ik_solver:
 
 ## Creating Configuration for Your Robot
 
-Follow these steps to create a configuration for your own robot:
+You have **two approaches** to create a robot configuration:
 
-### Step 1: Prepare Your URDF
+1. **🚀 Automated (Recommended)**: Use cuRobo + Isaac Sim to generate collision spheres automatically
+2. **✍️ Manual**: Create configuration file by hand with custom collision spheres
+
+We'll cover both approaches below.
+
+---
+
+## Method 1: Automated Configuration with cuRobo Tools (Recommended)
+
+This method uses **NVIDIA Isaac Sim** and cuRobo's built-in tools to automatically generate collision spheres for your robot. This is the **fastest and most accurate** way to configure a new robot.
+
+### Prerequisites
+
+- NVIDIA Isaac Sim installed ([download here](https://developer.nvidia.com/isaac-sim))
+- cuRobo installed in Isaac Sim's Python environment
+- Your robot URDF file
+
+### Step 1: Install cuRobo in Isaac Sim
+
+```bash
+# Navigate to Isaac Sim installation
+cd $ISAAC_SIM_PATH
+
+# Install cuRobo in Isaac Sim's Python environment
+# Replace {CUROBO_PATH} with path to your cuRobo clone
+./python.sh -m pip install -e {CUROBO_PATH} --no-build-isolation
+
+# Verify installation
+./python.sh -c "import curobo; print('cuRobo installed successfully!')"
+```
+
+**Note**: `python.sh` is typically located at:
+- Linux: `~/.local/share/ov/pkg/isaac_sim-*/python.sh`
+- Windows: `C:\Users\{USER}\AppData\Local\ov\pkg\isaac_sim-*\python.bat`
+
+### Step 2: Create Initial Robot Configuration
+
+Create a basic YAML file with your robot's kinematics information:
+
+```yaml
+# my_robot.yml (initial version)
+robot:
+  kinematics:
+    urdf_path: "absolute/path/to/my_robot.urdf"
+    base_link: "base_link"              # Update with your base link name
+    ee_link: "end_effector_link"        # Update with your EE link name
+
+  cspace:
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    # Extract from URDF (use script below)
+    position_limits:
+      - [-3.14, 3.14]
+      - [-2.0, 2.0]
+      - [-2.5, 2.5]
+      - [-3.14, 3.14]
+      - [-2.0, 2.0]
+      - [-6.28, 6.28]
+    velocity_limits: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+    acceleration_limits: [15.0, 15.0, 15.0, 15.0, 15.0, 15.0]
+    jerk_limits: [500.0, 500.0, 500.0, 500.0, 500.0, 500.0]
+
+  # Collision spheres will be generated in next steps
+  collision_spheres: {}
+```
+
+### Step 3: Convert URDF to USD Format
+
+Isaac Sim uses USD (Universal Scene Description) format. Convert your URDF:
+
+```bash
+# Navigate to Isaac Sim
+cd $ISAAC_SIM_PATH
+
+# Run conversion script (provided by cuRobo)
+./python.sh {CUROBO_PATH}/examples/isaac_sim/utils/convert_urdf_to_usd.py \
+  --robot /path/to/my_robot.yml \
+  --save_usd
+```
+
+**Output**: Creates `my_robot.usd` in the same directory as your YAML file.
+
+**Common Issues:**
+- **Mesh paths not found**: Ensure URDF mesh paths are absolute or relative to URDF location
+- **Missing textures**: USD conversion works without textures, but robot may look gray in Isaac Sim
+
+### Step 4: Generate Collision Spheres in Isaac Sim
+
+Now use Isaac Sim's visual editor to automatically generate collision spheres:
+
+1. **Launch Isaac Sim**
+   ```bash
+   cd $ISAAC_SIM_PATH
+   ./isaac-sim.sh  # Linux
+   # or isaac-sim.bat on Windows
+   ```
+
+2. **Load Your Robot USD**
+   - File → Open
+   - Navigate to `my_robot.usd`
+   - Robot should appear in viewport
+
+3. **Open Lula Robot Description Editor**
+   - Top menu: **Isaac Utils** → **Lula Robot Description Editor**
+   - A panel appears on the right side
+
+4. **Configure Robot Description**
+   - In the editor panel, click **"Load from Stage"**
+   - Select your robot's root prim in the Stage panel
+   - The editor analyzes your robot structure
+
+5. **Generate Collision Spheres**
+
+   For each link you want collision checking on:
+
+   a. **Select Link in Stage Panel**
+      - Example: `/my_robot/link1`
+
+   b. **In "Link Sphere Editor" section:**
+      - **Select Mesh**: Choose collision mesh from dropdown
+        - Example: `/collisions/link1/mesh` or `/visuals/link1/mesh`
+
+      - **Radius Offset**: Set offset between mesh surface and sphere radius
+        - Recommended: `0.02` to `0.05` (meters)
+        - Larger = more conservative collision avoidance
+
+      - **Number of Spheres**: How many spheres to generate for this link
+        - Short links: 2-4 spheres
+        - Long links: 6-10 spheres
+        - Larger links: 8-15 spheres
+
+      - Click **"Generate Spheres"**
+
+   c. **Visual Verification**
+      - Collision spheres appear as wireframe spheres in viewport
+      - Check coverage: spheres should overlap slightly and cover entire link
+      - Adjust parameters and regenerate if needed
+
+   d. **Repeat for all links**
+
+6. **Export Configuration**
+   - In the editor panel, click **"Export to File"**
+   - Save as `my_robot_generated.yml`
+   - This file contains the `collision_spheres:` section
+
+### Step 5: Merge Generated Collision Spheres
+
+The exported file contains collision sphere definitions. Copy them to your original config:
+
+```bash
+# Open both files
+nano my_robot.yml
+nano my_robot_generated.yml
+
+# Copy the entire collision_spheres section from generated file
+# Paste into my_robot.yml, replacing the empty collision_spheres: {}
+```
+
+**Important**: The generated file formats collision spheres as a list, but cuRobo needs a dictionary. You may need to adjust the format:
+
+**Generated format (list):**
+```yaml
+collision_spheres:
+  - link1
+  - center: [0.0, 0.0, 0.1]
+    radius: 0.08
+  - center: [0.0, 0.0, 0.2]
+    radius: 0.07
+```
+
+**Required format (dictionary):**
+```yaml
+collision_spheres:
+  link1:
+    - center: [0.0, 0.0, 0.1]
+      radius: 0.08
+    - center: [0.0, 0.0, 0.2]
+      radius: 0.07
+```
+
+### Step 6: Add Collision Link Names
+
+In your YAML, add the names of all links you want to check for collisions:
+
+```yaml
+robot:
+  kinematics:
+    # ... existing config ...
+    collision_link_names: [link1, link2, link3, link4, link5, link6]
+    # Include all links that have collision_spheres defined
+```
+
+### Step 7: Test Configuration with Isaac Sim
+
+Verify your configuration works in Isaac Sim:
+
+```bash
+cd $ISAAC_SIM_PATH
+
+# Test with motion planning example
+./python.sh {CUROBO_PATH}/examples/isaac_sim/motion_gen_reacher.py \
+  --robot /path/to/my_robot.yml \
+  --visualize_spheres
+```
+
+**What to check:**
+- ✅ Robot loads without errors
+- ✅ Collision spheres are visible (if `--visualize_spheres` is used)
+- ✅ Motion planning completes successfully
+- ✅ Robot doesn't collide with obstacles
+
+### Step 8: Use with curobo_ros
+
+Now use your configuration with curobo_ros:
+
+```bash
+# Copy config to curobo_ros (or reference from your robot package)
+cp my_robot.yml ~/ros2_ws/src/curobo_ros/config/
+
+# Inside Docker container
+ros2 launch curobo_ros gen_traj.launch.py \
+  robot_config_file:=/home/ros2_ws/src/curobo_ros/config/my_robot.yml
+```
+
+**Success!** Your robot is now configured with automatically generated collision spheres.
+
+---
+
+## Method 2: Manual Configuration
+
+Follow these steps to create a configuration manually (useful if you don't have Isaac Sim):
+
+### Manual Step 1: Prepare Your URDF
 
 Requirements:
 - Valid URDF with `<robot>` tag
@@ -190,7 +443,7 @@ Requirements:
 </joint>
 ```
 
-### Step 2: Extract Joint Limits from URDF
+### Manual Step 2: Extract Joint Limits from URDF
 
 You can use this Python script:
 
@@ -227,7 +480,7 @@ def extract_joint_limits(urdf_path):
 extract_joint_limits('path/to/your_robot.urdf')
 ```
 
-### Step 3: Define Collision Spheres
+### Manual Step 3: Define Collision Spheres Manually
 
 Collision spheres approximate your robot's geometry for fast GPU collision checking.
 
@@ -262,7 +515,7 @@ collision_spheres:
 
 **Tip**: Start with fewer, larger spheres. Refine later for better performance.
 
-### Step 4: Set Acceleration/Jerk Limits
+### Manual Step 4: Set Acceleration/Jerk Limits
 
 If your URDF doesn't specify these:
 
@@ -281,7 +534,7 @@ jerk_limits: [500.0, 500.0, 500.0, 500.0, 500.0, 500.0]
 **Too high**: Robot may not track trajectory accurately
 **Too low**: Unnecessarily slow motion
 
-### Step 5: Create the YAML File
+### Manual Step 5: Create the YAML File
 
 ```bash
 # Create config file
@@ -316,7 +569,7 @@ robot:
     # ... etc
 ```
 
-### Step 6: Test Your Configuration
+### Manual Step 6: Test Your Configuration
 
 ```bash
 # Launch with your config
@@ -444,14 +697,38 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 
 ---
 
+## Comparison: Automated vs Manual Configuration
+
+| Aspect | Automated (Isaac Sim) | Manual |
+|--------|----------------------|--------|
+| **Time** | 30-60 minutes | 2-4 hours |
+| **Accuracy** | High (visual verification) | Medium (trial and error) |
+| **Prerequisites** | Isaac Sim required | None (just text editor) |
+| **Learning Curve** | Moderate (GUI-based) | Steep (needs understanding) |
+| **Iteration** | Fast (regenerate in seconds) | Slow (edit, test, repeat) |
+| **Coverage** | Excellent (visual feedback) | Variable (depends on experience) |
+| **Best For** | Production robots, complex geometries | Simple robots, no Isaac Sim access |
+
+**Recommendation**: Use automated method if you have Isaac Sim. The visual editor makes it much faster and more accurate.
+
+---
+
 ## Summary
 
 **You've learned:**
 
 - ✅ How to import a robot package (Doosan M1013 example)
 - ✅ Understanding configuration file structure
-- ✅ Creating configuration for your own robot
-- ✅ Defining collision spheres
+- ✅ **Method 1**: Automated configuration with Isaac Sim and cuRobo tools
+  - Installing cuRobo in Isaac Sim
+  - Converting URDF to USD format
+  - Using Lula Robot Description Editor to generate collision spheres
+  - Testing configuration with Isaac Sim examples
+- ✅ **Method 2**: Manual configuration creation
+  - Extracting joint limits from URDF
+  - Manually defining collision spheres
+  - Setting acceleration and jerk limits
+- ✅ Creating a dedicated robot package
 - ✅ Testing and troubleshooting
 
 ---
@@ -471,6 +748,9 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 - `config/ur5e.yml` - Universal Robots UR5e (if available)
 
 **Useful Links:**
-- cuRobo robot configuration: [curobo.org/robot_configuration.html](https://curobo.org/robot_configuration.html)
-- URDF tutorials: [wiki.ros.org/urdf/Tutorials](http://wiki.ros.org/urdf/Tutorials)
-- Lab-CORO robots: [github.com/Lab-CORO](https://github.com/Lab-CORO)
+- **cuRobo Robot Configuration Tutorial**: [curobo.org/tutorials/1_robot_configuration.html](https://curobo.org/tutorials/1_robot_configuration.html)
+- **Isaac Sim Generate Robot Config**: [Isaac Sim Documentation](https://docs.isaacsim.omniverse.nvidia.com/latest/robot_setup_tutorials/tutorial_generate_robot_config.html)
+- **NVIDIA Isaac Sim**: [developer.nvidia.com/isaac-sim](https://developer.nvidia.com/isaac-sim)
+- **cuRobo GitHub Repository**: [github.com/NVlabs/curobo](https://github.com/NVlabs/curobo)
+- **URDF Tutorials**: [wiki.ros.org/urdf/Tutorials](http://wiki.ros.org/urdf/Tutorials)
+- **Lab-CORO Robot Packages**: [github.com/Lab-CORO](https://github.com/Lab-CORO)
