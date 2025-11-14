@@ -141,7 +141,7 @@ This publishes the filtered point cloud on `/masked_pointcloud`.
 Start the trajectory generation node with point cloud camera enabled:
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py use_pointcloud_camera:=true
+ros2 launch curobo_ros unified_planner.launch.py use_pointcloud_camera:=true
 ```
 
 ### 3. Generate trajectories
@@ -149,7 +149,7 @@ ros2 launch curobo_ros gen_traj.launch.py use_pointcloud_camera:=true
 The trajectory generation automatically updates the world model from cameras before planning:
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0, x: 0.0, y: 0.0, z: 0.0}}}"
 ```
 
@@ -158,14 +158,14 @@ ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/Trajector
 You can manually trigger a world update from cameras:
 
 ```bash
-ros2 service call /curobo_gen_traj/update_world_from_cameras std_srvs/srv/Trigger
+ros2 service call /unified_planner/update_world_from_cameras std_srvs/srv/Trigger
 ```
 
 ## Services
 
 | Service Name | Service Type | Description |
 |-------------|-------------|-------------|
-| `/curobo_gen_traj/update_world_from_cameras` | `Trigger` | Manually update world model from all camera observations |
+| `/unified_planner/update_world_from_cameras` | `Trigger` | Manually update world model from all camera observations |
 
 ## Advanced: Adding Custom Camera Strategies
 
@@ -211,7 +211,7 @@ camera_context.add_camera('my_custom', custom_camera)
 
 2. Verify camera is ready:
    ```bash
-   ros2 service call /curobo_gen_traj/update_world_from_cameras std_srvs/srv/Trigger
+   ros2 service call /unified_planner/update_world_from_cameras std_srvs/srv/Trigger
    ```
    Should return: `success: True` with camera names
 

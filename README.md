@@ -30,12 +30,12 @@ bash start_docker_x86.sh
 # 4. Inside container: Launch the system
 cd /home/ros2_ws
 source install/setup.bash
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 
 # 5. In another terminal: Generate your first trajectory
 docker exec -it x86docker bash
 source /home/ros2_ws/install/setup.bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
@@ -119,7 +119,7 @@ See the [Getting Started Guide](doc/getting_started.md) for detailed instruction
                │ ROS 2 Services/Actions/Topics
                ▼
 ┌──────────────────────────────────────────┐
-│         curobo_gen_traj Node             │
+│         unified_planner Node             │
 │  • Motion planning                       │
 │  • Obstacle management                   │
 │  • Robot strategy handling               │
@@ -150,11 +150,11 @@ See [Architecture](doc/concepts/architecture.md) for details.
 
 | Service/Action | Type | Description |
 |----------------|------|-------------|
-| `/curobo_gen_traj/generate_trajectory` | Service | Generate collision-free trajectory |
-| `/curobo_gen_traj/send_trajectrory` | Action | Execute trajectory with feedback |
-| `/curobo_gen_traj/add_object` | Service | Add collision object |
-| `/curobo_gen_traj/remove_all_objects` | Service | Clear all obstacles |
-| `/curobo_gen_traj/set_robot_strategy` | Service | Switch robot control mode |
+| `/unified_planner/generate_trajectory` | Service | Generate collision-free trajectory |
+| `/unified_planner/send_trajectrory` | Action | Execute trajectory with feedback |
+| `/unified_planner/add_object` | Service | Add collision object |
+| `/unified_planner/remove_all_objects` | Service | Clear all obstacles |
+| `/unified_planner/set_robot_strategy` | Service | Switch robot control mode |
 | `/curobo_ik/ik_pose` | Service | Solve inverse kinematics |
 | `/curobo_fk/fk_poses` | Service | Solve forward kinematics |
 

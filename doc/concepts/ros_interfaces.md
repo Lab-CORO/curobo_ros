@@ -34,6 +34,6 @@ Summarry of every interfaces for this project.
 ## Actions
 | Name | Message/Service Type | Description |
 |---|---|---|
-|`curobo_gen_traj/send_trajectrory`| [curobo_msgs/action/SendTrajectory.action](https://github.com/Lab-CORO/curobo_msgs/blob/main/action/SendTrajectory.action) |
+|`unified_planner/send_trajectrory`| [curobo_msgs/action/SendTrajectory.action](https://github.com/Lab-CORO/curobo_msgs/blob/main/action/SendTrajectory.action) |
 
 

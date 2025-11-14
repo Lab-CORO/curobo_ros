@@ -12,12 +12,12 @@ This tutorial walks you through generating your first motion plan with curobo_ro
 ## Prerequisites
 
 - Completed [Getting Started Guide](../getting_started.md)
-- curobo_gen_traj node is running
+- unified_planner node is running
 - RViz is open
 
 If not, start the system:
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 ---
@@ -30,7 +30,7 @@ Before planning, it's helpful to understand your robot's workspace.
 
 ```bash
 # See which robot is loaded
-ros2 param get /curobo_gen_traj robot_config_file
+ros2 param get /unified_planner robot_config_file
 
 # Example output: m1013.yml (Doosan M1013)
 ```
@@ -63,7 +63,7 @@ source /home/ros2_ws/install/setup.bash
 ### Call the Trajectory Service
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0.0, y: 0.0, z: 0.0}}}"
 ```
 
@@ -138,21 +138,21 @@ Let's explore the workspace by trying different positions.
 ### Target 1: Higher Position
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.6}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
 ### Target 2: To the Side
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.6, y: 0.3, z: 0.4}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
 ### Target 3: Unreachable (Should Fail)
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 2.0, y: 0.0, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
@@ -183,7 +183,7 @@ quat = R.from_euler('z', 90, degrees=True).as_quat()  # [x, y, z, w]
 
 ```bash
 # 45 degrees around Z axis
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 0.9239, x: 0.0, y: 0.0, z: 0.3827}}}"
 ```
 
@@ -196,7 +196,7 @@ Now let's make it interesting by adding obstacles!
 ### Add a Box Obstacle
 
 ```bash
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'table',
   type: 0,
@@ -222,7 +222,7 @@ ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
 ### Generate Trajectory (Will Avoid Obstacle)
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
@@ -232,7 +232,7 @@ Watch in RViz - the robot now avoids the table!
 
 ```bash
 # Add a sphere
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'ball',
   type: 1,
@@ -247,7 +247,7 @@ ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
 ### List All Obstacles
 
 ```bash
-ros2 service call /curobo_gen_traj/get_obstacles std_srvs/srv/Trigger
+ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
 ```
 
 **Response**:
@@ -259,13 +259,13 @@ message: "table, ball"  # List of obstacle names
 ### Remove Specific Obstacle
 
 ```bash
-ros2 service call /curobo_gen_traj/remove_object curobo_msgs/srv/RemoveObject "{name: 'ball'}"
+ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject "{name: 'ball'}"
 ```
 
 ### Clear All Obstacles
 
 ```bash
-ros2 service call /curobo_gen_traj/remove_all_objects std_srvs/srv/Trigger
+ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
 ```
 
 ---
@@ -278,10 +278,10 @@ Let's experiment with parameters to see their effect.
 
 ```bash
 # Slow motion (30% speed)
-ros2 param set /curobo_gen_traj time_dilation_factor 0.3
+ros2 param set /unified_planner time_dilation_factor 0.3
 
 # Generate trajectory
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 
 # Watch in RViz - ghost robot moves slower
@@ -289,7 +289,7 @@ ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/Trajector
 
 ```bash
 # Fast motion (80% speed)
-ros2 param set /curobo_gen_traj time_dilation_factor 0.8
+ros2 param set /unified_planner time_dilation_factor 0.8
 
 # Generate again - much faster!
 ```
@@ -298,7 +298,7 @@ ros2 param set /curobo_gen_traj time_dilation_factor 0.8
 
 ```bash
 # Try 3 times if first attempt fails
-ros2 param set /curobo_gen_traj max_attempts 3
+ros2 param set /unified_planner max_attempts 3
 
 # This increases success rate for difficult targets
 ```
@@ -307,7 +307,7 @@ ros2 param set /curobo_gen_traj max_attempts 3
 
 ```bash
 # Allow more time for planning
-ros2 param set /curobo_gen_traj timeout 10.0
+ros2 param set /unified_planner timeout 10.0
 ```
 
 ---
@@ -320,11 +320,11 @@ If you have a real robot or emulator configured, you can execute the trajectory.
 
 ```bash
 # Generate a trajectory first
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 
 # Execute it
-ros2 action send_goal /curobo_gen_traj/send_trajectrory curobo_msgs/action/SendTrajectory "{}"
+ros2 action send_goal /unified_planner/send_trajectrory curobo_msgs/action/SendTrajectory "{}"
 ```
 
 **What happens:**
@@ -355,7 +355,7 @@ class TrajectoryClient(Node):
         super().__init__('trajectory_client')
         self.client = self.create_client(
             TrajectoryGeneration,
-            '/curobo_gen_traj/generate_trajectory'
+            '/unified_planner/generate_trajectory'
         )
 
         # Wait for service
@@ -430,7 +430,7 @@ python3 my_trajectory_client.py
 **Solutions**:
 - Try a target closer to the robot
 - Check orientation is valid
-- Increase `max_attempts`: `ros2 param set /curobo_gen_traj max_attempts 5`
+- Increase `max_attempts`: `ros2 param set /unified_planner max_attempts 5`
 
 ### "Collision detected" / "Planning failed"
 
@@ -446,7 +446,7 @@ python3 my_trajectory_client.py
 **Cause**: Low `time_dilation_factor` or visualization artifacts
 
 **Solutions**:
-- Increase `time_dilation_factor`: `ros2 param set /curobo_gen_traj time_dilation_factor 0.6`
+- Increase `time_dilation_factor`: `ros2 param set /unified_planner time_dilation_factor 0.6`
 - This is just visualization - actual robot motion will be smooth
 
 ### Planning takes too long
@@ -486,7 +486,7 @@ python3 my_trajectory_client.py
 
 ### Trajectory Generation Service
 
-**Service**: `/curobo_gen_traj/generate_trajectory`
+**Service**: `/unified_planner/generate_trajectory`
 **Type**: `curobo_msgs/srv/TrajectoryGeneration`
 
 **Request**:
@@ -507,14 +507,14 @@ trajectory: trajectory_msgs/JointTrajectory
 
 ```bash
 # Check node status
-ros2 node info /curobo_gen_traj
+ros2 node info /unified_planner
 
 # Monitor planning time
 ros2 topic hz /trajectory
 
 # View collision spheres
-ros2 topic echo /curobo_gen_traj/collision_spheres
+ros2 topic echo /unified_planner/collision_spheres
 
 # List all parameters
-ros2 param list | grep curobo_gen_traj
+ros2 param list | grep unified_planner
 ```

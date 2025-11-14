@@ -2,15 +2,15 @@
 
 ### 1. Motion Generation
 
-The `curobo_gen_traj` node handles motion planning. You can launch it with:
+The `unified_planner` node handles motion planning. You can launch it with:
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 > ⚠️ On first launch, you may encounter the “missing symbol: ucm\_set\_global\_opts” error. The workaround is in [Troubleshooting](../troubleshooting.md#2-missing-symbol-ucm_set_global_opts), though a permanent fix is currently pending.
 
-Once the node is running, interact with it using the `/curobo_gen_traj/generate_trajectory` ROS 2 service. You send a `geometry_msgs/Pose`; the node returns success or error. If successful, the trajectory is published to the `/trajectory` topic, which you can visualize in RViz using the **trajectory\_preview** plugin.
+Once the node is running, interact with it using the `/unified_planner/generate_trajectory` ROS 2 service. You send a `geometry_msgs/Pose`; the node returns success or error. If successful, the trajectory is published to the `/trajectory` topic, which you can visualize in RViz using the **trajectory\_preview** plugin.
 
 #### ⚙️ 2. Adjustable Parameters
 
@@ -23,7 +23,7 @@ Once the node is running, interact with it using the `/curobo_gen_traj/generate_
     * `voxel_size`: Collision grid cell resolution.
     * `collision_activation_distance`: Distance threshold to activate collision checking.
   
-To execute the tragectory generated, an action server is available. To execute a trajectory, it have to be generated first with the service `/curobo_gen_traj/generate_trajectory`. The action send the trajector to the robot and wait for the end with a feedback message, the percentage of completion [0 , 1]. This execution depend on the implementation of your robot strategie (you can see the implementation for doosan m1013 [here](https://github.com/Lab-CORO/leeloo/blob/main/leeloo/src/execute_trajectory.cpp). Currently, only the doosan m1013 strategie have been implemented. In next mounths, the Ur5e should be implemented.   
+To execute the tragectory generated, an action server is available. To execute a trajectory, it have to be generated first with the service `/unified_planner/generate_trajectory`. The action send the trajector to the robot and wait for the end with a feedback message, the percentage of completion [0 , 1]. This execution depend on the implementation of your robot strategie (you can see the implementation for doosan m1013 [here](https://github.com/Lab-CORO/leeloo/blob/main/leeloo/src/execute_trajectory.cpp). Currently, only the doosan m1013 strategie have been implemented. In next mounths, the Ur5e should be implemented.   
 
 ---
 

@@ -241,24 +241,24 @@ Now let's start the motion planning system!
 
 ```bash
 # Make sure you sourced the workspace (step 6)
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 **What launches:**
 1. `robot_state_publisher` - Publishes robot URDF
 2. `joint_state_publisher` - Publishes joint states
-3. `curobo_gen_traj` - Main motion planning node
+3. `unified_planner` - Main motion planning node
 4. `marker_publisher` - Publishes visualization markers
 5. `rviz2` - RViz visualization window
 
 **First launch**: The node performs a **warmup** (compiling GPU kernels). This takes ~30-60 seconds. You'll see:
 
 ```
-[INFO] [curobo_gen_traj]: Starting motion generation warmup...
-[INFO] [curobo_gen_traj]: Warmup progress: 10%
-[INFO] [curobo_gen_traj]: Warmup progress: 20%
+[INFO] [unified_planner]: Starting motion generation warmup...
+[INFO] [unified_planner]: Warmup progress: 10%
+[INFO] [unified_planner]: Warmup progress: 20%
 ...
-[INFO] [curobo_gen_traj]: ✅ Warmup complete! Ready to generate trajectories.
+[INFO] [unified_planner]: ✅ Warmup complete! Ready to generate trajectories.
 ```
 
 **RViz should open** showing your robot (default: Doosan M1013).
@@ -290,14 +290,14 @@ source /home/ros2_ws/install/setup.bash
 
 # Check if the node is running
 ros2 node list
-# Should show: /curobo_gen_traj
+# Should show: /unified_planner
 
 # Check if services are available
-ros2 service list | grep curobo_gen_traj
-# Should show multiple services including /curobo_gen_traj/generate_trajectory
+ros2 service list | grep unified_planner
+# Should show multiple services including /unified_planner/generate_trajectory
 
 # Call the availability service
-ros2 service call /curobo_gen_traj/is_available std_srvs/srv/Trigger
+ros2 service call /unified_planner/is_available std_srvs/srv/Trigger
 ```
 
 **Expected response:**
@@ -424,8 +424,8 @@ ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{plan
  
 ```bash
 # Change robot control strategy
-ros2 param set /trajectory_planner robot_type "emulator"  # or "doosan_m1013", "ghost"
-ros2 service call /trajectory_planner/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "emulator"  # or "doosan_m1013", "ghost"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
  
 ### Common Commands

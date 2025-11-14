@@ -25,12 +25,12 @@ curobo_ros supports dynamic obstacle management. You can add or remove objects a
 
 ## Prerequisites
 
-- curobo_gen_traj or curobo_ik node running
+- unified_planner or curobo_ik node running
 - Basic understanding of 3D coordinates and orientations
 
 ```bash
 # Launch the system
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 ---
@@ -56,7 +56,7 @@ curobo_ros supports 5 object types:
 ### 1. Adding a Box (Cuboid)
 
 ```bash
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'table',
   type: 0,
@@ -86,7 +86,7 @@ message: "Object 'table' added successfully"
 ### 2. Adding a Sphere
 
 ```bash
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'ball',
   type: 1,
@@ -104,7 +104,7 @@ ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
 ### 3. Adding a Cylinder
 
 ```bash
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'pillar',
   type: 2,
@@ -126,7 +126,7 @@ ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
 ### 4. Adding a Mesh
 
 ```bash
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'custom_part',
   type: 4,
@@ -153,7 +153,7 @@ ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
 ### List All Objects
 
 ```bash
-ros2 service call /curobo_gen_traj/get_obstacles std_srvs/srv/Trigger
+ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
 ```
 
 **Response:**
@@ -165,7 +165,7 @@ message: "table, ball, pillar, custom_part"
 ### Remove Specific Object
 
 ```bash
-ros2 service call /curobo_gen_traj/remove_object curobo_msgs/srv/RemoveObject \
+ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject \
   "{name: 'ball'}"
 ```
 
@@ -178,7 +178,7 @@ message: "Object 'ball' removed successfully"
 ### Remove All Objects
 
 ```bash
-ros2 service call /curobo_gen_traj/remove_all_objects std_srvs/srv/Trigger
+ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
 ```
 
 **Response:**
@@ -197,12 +197,12 @@ The robot is represented as a collection of spheres for collision checking.
 
 **View collision spheres:**
 ```bash
-ros2 topic echo /curobo_gen_traj/collision_spheres
+ros2 topic echo /unified_planner/collision_spheres
 ```
 
 **In RViz:**
 1. Add → MarkerArray
-2. Topic: `/curobo_gen_traj/collision_spheres`
+2. Topic: `/unified_planner/collision_spheres`
 3. You'll see red semi-transparent spheres covering the robot
 
 **Update rate:** 0.5 Hz (twice per second)
@@ -213,7 +213,7 @@ The environment is discretized into voxels for collision checking.
 
 **Get voxel grid:**
 ```bash
-ros2 service call /curobo_gen_traj/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
+ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
 ```
 
 **Response** includes:
@@ -235,7 +235,7 @@ This publishes to `/visualization_marker_voxel` (view in RViz).
 Check how close the robot is to obstacles:
 
 ```bash
-ros2 service call /curobo_gen_traj/get_collision_distance curobo_msgs/srv/GetCollisionDistance
+ros2 service call /unified_planner/get_collision_distance curobo_msgs/srv/GetCollisionDistance
 ```
 
 **Response:**
@@ -259,34 +259,34 @@ Let's build a complete scene with multiple obstacles:
 
 ```bash
 # 1. Add a table
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{name: 'table', type: 0,
   pose: {position: {x: 0.5, y: 0.0, z: 0.15}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
   dimensions: {x: 0.8, y: 1.0, z: 0.05},
   color: {r: 0.6, g: 0.4, b: 0.2, a: 0.9}}"
 
 # 2. Add walls
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{name: 'wall_left', type: 0,
   pose: {position: {x: 0.5, y: -0.6, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
   dimensions: {x: 1.5, y: 0.05, z: 1.0},
   color: {r: 0.8, g: 0.8, b: 0.8, a: 0.5}}"
 
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{name: 'wall_right', type: 0,
   pose: {position: {x: 0.5, y: 0.6, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
   dimensions: {x: 1.5, y: 0.05, z: 1.0},
   color: {r: 0.8, g: 0.8, b: 0.8, a: 0.5}}"
 
 # 3. Add a hanging obstacle
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{name: 'ceiling_lamp', type: 1,
   pose: {position: {x: 0.6, y: 0.2, z: 0.8}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
   dimensions: {x: 0.15, y: 0.15, z: 0.15},
   color: {r: 1.0, g: 1.0, b: 0.0, a: 0.7}}"
 
 # 4. Add objects on table
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{name: 'box_on_table', type: 0,
   pose: {position: {x: 0.4, y: 0.1, z: 0.25}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
   dimensions: {x: 0.1, y: 0.1, z: 0.15},
@@ -296,7 +296,7 @@ ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
 **Now plan a trajectory - it will avoid all obstacles!**
 
 ```bash
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.6, y: 0.0, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
@@ -322,13 +322,13 @@ class ObjectManager(Node):
 
         # Create service clients
         self.add_client = self.create_client(
-            AddObject, '/curobo_gen_traj/add_object')
+            AddObject, '/unified_planner/add_object')
         self.remove_client = self.create_client(
-            RemoveObject, '/curobo_gen_traj/remove_object')
+            RemoveObject, '/unified_planner/remove_object')
         self.get_obstacles_client = self.create_client(
-            Trigger, '/curobo_gen_traj/get_obstacles')
+            Trigger, '/unified_planner/get_obstacles')
         self.clear_client = self.create_client(
-            Trigger, '/curobo_gen_traj/remove_all_objects')
+            Trigger, '/unified_planner/remove_all_objects')
 
         # Wait for services
         self.add_client.wait_for_service()
@@ -475,7 +475,7 @@ ros2 service call /curobo_ik/ik_pose curobo_msgs/srv/Ik \
 
 ### Services Available
 
-All services work for both `/curobo_gen_traj` and `/curobo_ik` nodes:
+All services work for both `/unified_planner` and `/curobo_ik` nodes:
 
 | Service Name | Service Type | Description |
 |-------------|-------------|-------------|
@@ -515,10 +515,10 @@ All services work for both `/curobo_gen_traj` and `/curobo_ik` nodes:
 **Solutions:**
 ```bash
 # Use smaller voxels
-ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.03
+ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.03
 
 # Reload configuration
-ros2 service call /curobo_gen_traj/update_motion_gen_config std_srvs/srv/Trigger
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 ```
 
 ### False collisions
