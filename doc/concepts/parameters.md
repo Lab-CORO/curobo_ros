@@ -79,11 +79,11 @@ The robot is represented as spheres, and collision checking tests if any sphere 
 
 ```bash
 # At launch time
-ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
+ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
 
 # To change at runtime (requires reload)
-ros2 param set /curobo_gen_traj voxel_size 0.02
-ros2 service call /curobo_gen_traj/update_motion_gen_config std_srvs/srv/Trigger
+ros2 param set /unified_planner voxel_size 0.02
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 ```
 
 #### Visual Guide
@@ -172,10 +172,10 @@ time_dilation_factor = 1.0 → Executed in 2.0 seconds (faster, at limits)
 
 ```bash
 # At launch time
-ros2 launch curobo_ros gen_traj.launch.py time_dilation_factor:=0.7
+ros2 launch curobo_ros unified_planner.launch.py time_dilation_factor:=0.7
 
 # At runtime (takes effect on next trajectory)
-ros2 param set /curobo_gen_traj time_dilation_factor 0.7
+ros2 param set /unified_planner time_dilation_factor 0.7
 ```
 
 #### Example
@@ -231,7 +231,7 @@ The robot will start avoiding obstacles when it gets within this distance. Think
 #### How to Set
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py collision_activation_distance:=0.03
+ros2 launch curobo_ros unified_planner.launch.py collision_activation_distance:=0.03
 ```
 
 ---
@@ -262,10 +262,10 @@ If planning fails, the node will retry up to `max_attempts` times with different
 
 ```bash
 # At launch
-ros2 launch curobo_ros gen_traj.launch.py max_attempts:=3
+ros2 launch curobo_ros unified_planner.launch.py max_attempts:=3
 
 # At runtime
-ros2 param set /curobo_gen_traj max_attempts 3
+ros2 param set /unified_planner max_attempts 3
 ```
 
 ---
@@ -298,7 +298,7 @@ If planning takes longer than `timeout`, it will fail and return an error.
 
 ```bash
 # At runtime
-ros2 param set /curobo_gen_traj timeout 2.0
+ros2 param set /unified_planner timeout 2.0
 ```
 
 ---
@@ -321,7 +321,7 @@ ros2 param set /curobo_gen_traj timeout 2.0
 #### How to Set
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py robot_config_file:=path/to/your_robot.yml
+ros2 launch curobo_ros unified_planner.launch.py robot_config_file:=path/to/your_robot.yml
 ```
 
 See [Adding Your Robot Tutorial](../tutorials/2_adding_your_robot.md) for details.
@@ -375,7 +375,7 @@ Here's how to tune parameters for your application:
 ### Step 1: Start with Defaults
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 Test your application and identify issues.
@@ -386,10 +386,10 @@ If motion is too fast/slow:
 
 ```bash
 # Slower (safer)
-ros2 param set /curobo_gen_traj time_dilation_factor 0.3
+ros2 param set /unified_planner time_dilation_factor 0.3
 
 # Faster (when confident)
-ros2 param set /curobo_gen_traj time_dilation_factor 0.8
+ros2 param set /unified_planner time_dilation_factor 0.8
 ```
 
 ### Step 3: Tune Collision Checking
@@ -398,10 +398,10 @@ If planning is slow or missing obstacles:
 
 ```bash
 # For small obstacles (slower)
-ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
+ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
 
 # For large obstacles (faster)
-ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.08
+ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.08
 ```
 
 ### Step 4: Tune Reliability
@@ -410,20 +410,20 @@ If planning often fails:
 
 ```bash
 # More attempts
-ros2 param set /curobo_gen_traj max_attempts 3
+ros2 param set /unified_planner max_attempts 3
 
 # Longer timeout
-ros2 param set /curobo_gen_traj timeout 10.0
+ros2 param set /unified_planner timeout 10.0
 
 # Looser collision constraints
-ros2 launch curobo_ros gen_traj.launch.py collision_activation_distance:=0.04
+ros2 launch curobo_ros unified_planner.launch.py collision_activation_distance:=0.04
 ```
 
 ### Step 5: Measure and Iterate
 
 ```bash
 # Monitor planning time
-ros2 topic echo /curobo_gen_traj/planning_time
+ros2 topic echo /unified_planner/planning_time
 
 # Monitor success rate
 # (keep track in your application)
@@ -436,7 +436,7 @@ ros2 topic echo /curobo_gen_traj/planning_time
 ### For Testing/Development
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   time_dilation_factor:=0.3 \
   voxel_size:=0.05 \
   max_attempts:=2 \
@@ -448,7 +448,7 @@ ros2 launch curobo_ros gen_traj.launch.py \
 ### For Production (Fast)
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   time_dilation_factor:=0.8 \
   voxel_size:=0.05 \
   max_attempts:=1 \
@@ -460,7 +460,7 @@ ros2 launch curobo_ros gen_traj.launch.py \
 ### For Precision Tasks
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   time_dilation_factor:=0.4 \
   voxel_size:=0.02 \
   collision_activation_distance:=0.02 \
@@ -472,7 +472,7 @@ ros2 launch curobo_ros gen_traj.launch.py \
 ### For Cluttered Environments
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   time_dilation_factor:=0.5 \
   voxel_size:=0.03 \
   collision_activation_distance:=0.03 \
@@ -503,13 +503,13 @@ ros2 launch curobo_ros gen_traj.launch.py \
 **Try**:
 ```bash
 # Larger voxels
-ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.08
+ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.08
 
 # Fewer attempts
-ros2 param set /curobo_gen_traj max_attempts 1
+ros2 param set /unified_planner max_attempts 1
 
 # Shorter timeout
-ros2 param set /curobo_gen_traj timeout 2.0
+ros2 param set /unified_planner timeout 2.0
 ```
 
 ### Problem: Missing small obstacles
@@ -517,7 +517,7 @@ ros2 param set /curobo_gen_traj timeout 2.0
 **Try**:
 ```bash
 # Smaller voxels
-ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
+ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
 ```
 
 ### Problem: Can't find paths in tight spaces
@@ -525,10 +525,10 @@ ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
 **Try**:
 ```bash
 # Tighter collision threshold
-ros2 launch curobo_ros gen_traj.launch.py collision_activation_distance:=0.01
+ros2 launch curobo_ros unified_planner.launch.py collision_activation_distance:=0.01
 
 # More attempts
-ros2 param set /curobo_gen_traj max_attempts 5
+ros2 param set /unified_planner max_attempts 5
 ```
 
 ### Problem: Robot moves too fast/slow
@@ -536,8 +536,8 @@ ros2 param set /curobo_gen_traj max_attempts 5
 **Try**:
 ```bash
 # Adjust speed
-ros2 param set /curobo_gen_traj time_dilation_factor 0.3  # slower
-ros2 param set /curobo_gen_traj time_dilation_factor 0.8  # faster
+ros2 param set /unified_planner time_dilation_factor 0.3  # slower
+ros2 param set /unified_planner time_dilation_factor 0.8  # faster
 ```
 
 ---

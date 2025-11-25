@@ -118,7 +118,7 @@ colcon build --symlink-install
 source install/setup.bash
 
 # Launch
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 ### 3. Edit Code on Host
@@ -193,7 +193,7 @@ colcon build
 source install/setup.bash
 
 # Use curobo_ros in your code
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 **Note**: curobo_ros is installed in `/home/curobo_ws` (separate from your workspace) and is automatically sourced on container startup via `.bashrc`.
@@ -260,7 +260,7 @@ colcon build --symlink-install
 source install/setup.bash
 
 # Launch
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 **Pro Tip**: Open multiple terminals (Terminal → New Terminal) - they all run inside the container!
@@ -402,7 +402,7 @@ bash start_docker_x86.sh  # Choose GPU, then DEV mode
 cd /home/ros2_ws
 colcon build --symlink-install --packages-select curobo_ros
 source install/setup.bash
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 
 # Edit files on host machine
 # vim ~/ros2_ws/src/curobo_ros/curobo_ros/my_file.py
@@ -431,7 +431,7 @@ colcon build  # Build YOUR packages
 source install/setup.bash
 
 # Use curobo_ros
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 ---

@@ -33,10 +33,10 @@ Le warmup de cuRobo est un processus intensif qui peut prendre **30 à 60 second
 #### Option 1 : Via topic ROS (Recommandé)
 ```bash
 # Terminal 1: Lancer le node
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 
 # Terminal 2: Monitorer la progression en temps réel
-ros2 topic echo /curobo_gen_traj/warmup_progress
+ros2 topic echo /unified_planner/warmup_progress
 ```
 
 **Output exemple:**
@@ -55,16 +55,16 @@ data: 1.0     # 100% - Terminé!
 #### Option 2 : Via paramètre ROS
 ```bash
 # Interroger le paramètre de progression
-ros2 param get /curobo_gen_traj warmup_progress
+ros2 param get /unified_planner warmup_progress
 
 # Interroger la disponibilité du node
-ros2 param get /curobo_gen_traj node_is_available
+ros2 param get /unified_planner node_is_available
 ```
 
 #### Option 3 : Via service
 ```bash
 # Vérifier si le node est disponible
-ros2 service call /curobo_gen_traj/is_available std_srvs/srv/Trigger
+ros2 service call /unified_planner/is_available std_srvs/srv/Trigger
 ```
 
 **Response:**
@@ -90,7 +90,7 @@ class WarmupMonitor(Node):
         # S'abonner au topic de progression
         self.sub = self.create_subscription(
             Float32,
-            '/curobo_gen_traj/warmup_progress',
+            '/unified_planner/warmup_progress',
             self.progress_callback,
             10
         )
@@ -122,7 +122,7 @@ def main():
 
     print('Waiting for warmup...')
     if monitor.wait_for_warmup(timeout=120.0):
-        print('Ready to use curobo_gen_traj!')
+        print('Ready to use unified_planner!')
     else:
         print('Warmup failed or timeout')
 
@@ -218,11 +218,11 @@ Si un service est appelé **avant la fin du warmup** :
 
 **Exemple de logs:**
 ```
-[WARN] [curobo_gen_traj]: Service called but warmup not complete. Waiting for warmup to finish...
-[INFO] [curobo_gen_traj]: Warmup progress: 45.2% (30.5s / 68.6s)
-[INFO] [curobo_gen_traj]: Warmup progress: 67.8% (35.5s / 68.6s)
-[INFO] [curobo_gen_traj]: ✅ Warmup complete in 42.3s (estimated: 68.6s)
-[INFO] [curobo_gen_traj]: Service executed successfully
+[WARN] [unified_planner]: Service called but warmup not complete. Waiting for warmup to finish...
+[INFO] [unified_planner]: Warmup progress: 45.2% (30.5s / 68.6s)
+[INFO] [unified_planner]: Warmup progress: 67.8% (35.5s / 68.6s)
+[INFO] [unified_planner]: ✅ Warmup complete in 42.3s (estimated: 68.6s)
+[INFO] [unified_planner]: Service executed successfully
 ```
 
 ---
@@ -235,7 +235,7 @@ Si le warmup prend plus de temps que prévu :
 
 ```bash
 # Vérifier les logs pour voir l'estimation
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 
 # Dans les logs, chercher:
 # "Warmup thread: Starting warmup (estimated duration: XX.Xs)"
@@ -253,7 +253,7 @@ Si la progression reste à 0% :
 
 ```bash
 # Vérifier les erreurs CUDA
-ros2 topic echo /curobo_gen_traj/warmup_progress
+ros2 topic echo /unified_planner/warmup_progress
 
 # Vérifier les logs d'erreur
 # Si aucune progression après 10s, probablement une erreur CUDA
@@ -270,7 +270,7 @@ Si un service retourne "warmup timeout" :
 
 ```bash
 # Vérifier l'état actuel
-ros2 param get /curobo_gen_traj node_is_available
+ros2 param get /unified_planner node_is_available
 
 # Si False, le warmup n'est pas terminé
 # Augmenter le timeout dans le code si nécessaire
@@ -281,18 +281,18 @@ ros2 param get /curobo_gen_traj node_is_available
 ## 📝 Logs typiques d'un warmup réussi
 
 ```
-[INFO] [curobo_gen_traj]: Starting warmup in background thread...
-[INFO] [curobo_gen_traj]: Ready to generate trajectories
-[INFO] [curobo_gen_traj]: Warmup thread: Starting warmup (estimated duration: 68.6s)
-[INFO] [curobo_gen_traj]: Warmup thread: Starting CUDA warmup (this may take 30-60 seconds)...
-[INFO] [curobo_gen_traj]: Warmup progress: 15.3% (5.0s / 68.6s)
-[INFO] [curobo_gen_traj]: Warmup progress: 28.7% (10.0s / 68.6s)
-[INFO] [curobo_gen_traj]: Warmup progress: 42.1% (15.0s / 68.6s)
-[INFO] [curobo_gen_traj]: Warmup progress: 55.5% (20.0s / 68.6s)
-[INFO] [curobo_gen_traj]: Warmup progress: 68.9% (25.0s / 68.6s)
-[INFO] [curobo_gen_traj]: Warmup progress: 82.3% (30.0s / 68.6s)
-[INFO] [curobo_gen_traj]: ✅ Warmup complete in 35.2s (estimated: 68.6s)
-[INFO] [curobo_gen_traj]: ✅ Motion generation ready to use!
+[INFO] [unified_planner]: Starting warmup in background thread...
+[INFO] [unified_planner]: Ready to generate trajectories
+[INFO] [unified_planner]: Warmup thread: Starting warmup (estimated duration: 68.6s)
+[INFO] [unified_planner]: Warmup thread: Starting CUDA warmup (this may take 30-60 seconds)...
+[INFO] [unified_planner]: Warmup progress: 15.3% (5.0s / 68.6s)
+[INFO] [unified_planner]: Warmup progress: 28.7% (10.0s / 68.6s)
+[INFO] [unified_planner]: Warmup progress: 42.1% (15.0s / 68.6s)
+[INFO] [unified_planner]: Warmup progress: 55.5% (20.0s / 68.6s)
+[INFO] [unified_planner]: Warmup progress: 68.9% (25.0s / 68.6s)
+[INFO] [unified_planner]: Warmup progress: 82.3% (30.0s / 68.6s)
+[INFO] [unified_planner]: ✅ Warmup complete in 35.2s (estimated: 68.6s)
+[INFO] [unified_planner]: ✅ Motion generation ready to use!
 ```
 
 ---
