@@ -25,7 +25,7 @@ from curobo.geom.types import Cuboid
 
 from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion, ConfigWrapperMPC
-from curobo_ros.planners import PlannerFactory, PlannerManager, ClassicPlanner, MPCPlanner
+from curobo_ros.planners import PlannerFactory, PlannerManager, ClassicPlanner, MPCPlanner, SinglePlanner
 
 
 class UnifiedPlannerNode(Node):
@@ -165,7 +165,11 @@ class UnifiedPlannerNode(Node):
             self.get_logger().info("  → Initializing MotionGen...")
             self.config_wrapper_motion.set_motion_gen_config(self, None, None)
             self.motion_gen = self.motion_gen  # Set by config wrapper
-            self.get_logger().info("  → MotionGen ready")
+
+            # Share MotionGen instance with all SinglePlanner children
+            # This allows switching between SinglePlanner-based planners without re-warmup
+            SinglePlanner.set_motion_gen(self.motion_gen)
+            self.get_logger().info("  → MotionGen ready and shared with SinglePlanner hierarchy")
         else:
             self.get_logger().info("  → MotionGen already initialized (using cache)")
 

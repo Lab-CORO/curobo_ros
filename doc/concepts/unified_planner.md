@@ -22,22 +22,79 @@ The unified planner architecture uses the **Strategy Pattern** to encapsulate di
 ---
  
 ## Architecture
- 
+
+### Class Hierarchy
+
 ```
 TrajectoryPlanner (Abstract Base Class)
 ├── plan(start, goal, config) → PlannerResult
 ├── execute(robot_context, goal_handle) → bool
 └── get_execution_mode() → ExecutionMode
- 
-ClassicPlanner
-├── Mode: OPEN_LOOP
-├── Algorithm: MotionGen
-└── Execution: Complete trajectory at once
- 
-MPCPlanner
-├── Mode: CLOSED_LOOP
-├── Algorithm: MPC Solver
-└── Execution: Iterative real-time loop
+
+├── SinglePlanner (MotionGen-based planners) ⭐ Shared warmup
+│   ├── ClassicPlanner (single-shot planning)
+│   ├── MultiPointPlanner (waypoint planning)
+│   ├── JointSpacePlanner (joint space planning) [Future]
+│   └── GraspPlanner (grasp planning) [Future]
+│
+└── MPCPlanner (MpcSolver-based)
+    ├── Mode: CLOSED_LOOP
+    └── Execution: Iterative real-time loop
+```
+
+### SinglePlanner: Shared MotionGen Architecture
+
+**SinglePlanner** is an abstract intermediate class for all planners that use cuRobo's MotionGen as their underlying solver. It provides infrastructure for efficient planner management:
+
+#### Key Design Decisions
+
+1. **Shared MotionGen Instance**
+   - All `SinglePlanner` children share a **single** MotionGen instance (class-level variable)
+   - Warmup is performed **only once** by `ConfigWrapperMotion`
+   - Switching between SinglePlanner-based planners is **instantaneous** (no re-warmup)
+   - Saves significant GPU memory and initialization time
+
+2. **Separation of Concerns**
+   - `SinglePlanner` handles: execution logic, cancellation, feedback, trajectory storage
+   - Child classes implement: `_plan_trajectory()` (how to plan) and optionally `_process_trajectory()` (post-processing)
+
+3. **Open-Loop Execution**
+   - All SinglePlanner children use open-loop execution
+   - Trajectory fully generated in `plan()`, then executed in `execute()`
+   - Different from `MPCPlanner` which uses closed-loop
+
+#### Architecture Comparison
+
+| Aspect | SinglePlanner Children | MPCPlanner |
+|--------|----------------------|------------|
+| **Solver** | MotionGen (shared) | MpcSolver (independent) |
+| **Warmup** | Once for all children | Independent |
+| **Execution** | Open-loop | Closed-loop |
+| **Switching Cost** | Instant | Requires MPC setup |
+| **Memory** | Single instance | Separate instance |
+
+#### Example: ClassicPlanner
+
+```python
+class ClassicPlanner(SinglePlanner):
+    """Simple single-goal planner using MotionGen."""
+
+    def get_planner_name(self) -> str:
+        return "Classic Motion Generation"
+
+    def _plan_trajectory(self, start_state, goal_pose, config):
+        # Only implement HOW to plan - everything else handled by SinglePlanner
+        return self.motion_gen.plan_single(
+            start_state,
+            goal_pose,
+            MotionGenPlanConfig(
+                max_attempts=config.get('max_attempts', 1),
+                timeout=config.get('timeout', 5.0),
+                time_dilation_factor=config.get('time_dilation_factor', 0.5),
+            )
+        )
+
+    # execute(), cancel(), plan() all inherited from SinglePlanner!
 ```
  
 ### Execution Modes
@@ -240,39 +297,80 @@ class PlannerFactory:
 ```
  
 ### Creating Custom Planners
- 
+
+#### Option 1: MotionGen-based Planner (Recommended)
+
+If your planner uses cuRobo's MotionGen, **inherit from `SinglePlanner`** to automatically get warmup sharing:
+
+```python
+from curobo_ros.planners import SinglePlanner
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig, MotionGenResult
+
+class MyMotionGenPlanner(SinglePlanner):
+    """Benefits: warmup sharing, execution/cancel/feedback already implemented"""
+
+    def get_planner_name(self) -> str:
+        return "My MotionGen Planner"
+
+    def _plan_trajectory(self, start_state, goal_pose, config) -> MotionGenResult:
+        """Define HOW to generate the trajectory - everything else is inherited"""
+        return self.motion_gen.plan_single(
+            start_state,
+            goal_pose,
+            MotionGenPlanConfig(
+                max_attempts=config.get('max_attempts', 1),
+                timeout=config.get('timeout', 5.0),
+            )
+        )
+
+    # Optional: override to post-process trajectory
+    def _process_trajectory(self, trajectory, config):
+        # Add custom modifications here
+        return trajectory
+
+# No need to call set_motion_gen() - already shared!
+PlannerFactory.register_planner('my_custom', MyMotionGenPlanner)
+```
+
+**When to use SinglePlanner:**
+- ✅ Uses cuRobo MotionGen
+- ✅ Wants automatic warmup sharing
+- ✅ Open-loop execution
+- ✅ Examples: ClassicPlanner, MultiPointPlanner
+
+---
+
+#### Option 2: Fully Custom Planner
+
+If not using MotionGen, inherit from `TrajectoryPlanner`:
+
 ```python
 from curobo_ros.planners import TrajectoryPlanner, ExecutionMode, PlannerResult
- 
+
 class MyCustomPlanner(TrajectoryPlanner):
     def _get_execution_mode(self) -> ExecutionMode:
         return ExecutionMode.OPEN_LOOP
- 
+
     def get_planner_name(self) -> str:
         return "My Custom Planner"
- 
-    def plan(self, start_state, goal_pose, config) -> PlannerResult:
-        # Your planning algorithm
-        trajectory = my_planning_algorithm(start_state, goal_pose)
- 
-        return PlannerResult(
-            success=True,
-            message="Planning succeeded",
-            trajectory=trajectory
-        )
- 
+
+    def plan(self, start_state, goal_pose, config, robot_context=None) -> PlannerResult:
+        # Your custom planning algorithm
+        trajectory = my_algorithm(start_state, goal_pose)
+        return PlannerResult(success=True, trajectory=trajectory)
+
     def execute(self, robot_context, goal_handle=None) -> bool:
         # Your execution logic
         robot_context.set_command(...)
-        robot_context.send_trajectory()
         return True
- 
-# Register your planner
+
 PlannerFactory.register_planner('custom', MyCustomPlanner)
- 
-# Use it
-planner = PlannerFactory.create_planner('custom', node, config_wrapper)
 ```
+
+**When to use TrajectoryPlanner directly:**
+- ✅ Uses different solver (not MotionGen)
+- ✅ Needs full control
+- ✅ Example: MPCPlanner uses MpcSolver
  
 ---
  

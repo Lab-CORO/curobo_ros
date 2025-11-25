@@ -6,267 +6,111 @@ This planner generates a complete trajectory from start to goal in one shot,
 then executes it in open-loop fashion.
 """
 
-import time
 from typing import Optional
 
 import torch
 from curobo.types.robot import JointState
 from curobo.types.math import Pose
-from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig, MotionGenResult
 
-from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
-
-from curobo_msgs.action import SendTrajectory
+from .single_planner import SinglePlanner
 
 
-import traceback
-
-class ClassicPlanner(TrajectoryPlanner):
+class ClassicPlanner(SinglePlanner):
     """
     Classic motion generation planner.
 
     Uses cuRobo's MotionGen to generate a complete collision-free trajectory
     from start to goal, which is then executed in open-loop.
 
+    This is the simplest MotionGen-based planner:
+    - Takes a single target pose
+    - Generates a full trajectory in one shot using plan_single()
+    - Executes the trajectory as-is (no post-processing)
+
     Execution flow:
-    1. plan() - Generate full trajectory using MotionGen
+    1. plan() - Generate full trajectory using MotionGen.plan_single()
     2. execute() - Send trajectory to robot and monitor progress
+
+    Example usage:
+        >>> # After warmup
+        >>> SinglePlanner.set_motion_gen(node.motion_gen)
+        >>>
+        >>> # Create planner
+        >>> planner = ClassicPlanner(node, config_wrapper)
+        >>>
+        >>> # Plan
+        >>> result = planner.plan(
+        >>>     start_state=current_joint_state,
+        >>>     goal_pose=target_pose,
+        >>>     config={
+        >>>         'max_attempts': 2,
+        >>>         'timeout': 5.0,
+        >>>         'time_dilation_factor': 0.5,
+        >>>     }
+        >>> )
+        >>>
+        >>> # Execute
+        >>> if result.success:
+        >>>     success = planner.execute(robot_context)
     """
-
-    def __init__(self, node, config_wrapper):
-        """
-        Initialize classic planner.
-
-        Args:
-            node: ROS2 node
-            config_wrapper: ConfigWrapperMotion with MotionGen configured
-        """
-        super().__init__(node, config_wrapper)
-
-        # Store reference to motion_gen from config wrapper
-        # This will be set after warmup
-        self.motion_gen = None
-
-        # Store planned trajectory for execution
-        self.planned_trajectory = None
-        self.start_state = None
-        self.goal_pose = None
-
-        # Cancellation flag for execution loop
-        self._cancelled = False
-
-    def _get_execution_mode(self) -> ExecutionMode:
-        """This planner uses open-loop execution."""
-        return ExecutionMode.OPEN_LOOP
 
     def get_planner_name(self) -> str:
         """Return planner name."""
         return "Classic Motion Generation"
 
-    def get_config_parameters(self) -> list:
-        """List of ROS parameters used by this planner."""
-        return [
-            'max_attempts',
-            'timeout',
-            'time_dilation_factor',
-            'voxel_size',
-            'collision_activation_distance',
-        ]
-
-    def set_motion_gen(self, motion_gen):
+    def _plan_trajectory(
+        self,
+        start_state: JointState,
+        goal_pose: Pose,
+        config: dict
+    ) -> MotionGenResult:
         """
-        Set the motion generator instance.
+        Generate trajectory using MotionGen.plan_single().
 
-        This is called after warmup is complete.
-
-        Args:
-            motion_gen: Initialized MotionGen instance
-        """
-        self.motion_gen = motion_gen
-
-    def cancel(self):
-        """
-        Cancel the current trajectory execution.
-
-        This method is called by the unified planner node when a cancellation
-        request is received. It sets a flag that breaks the execution loop.
-        """
-        self._cancelled = True
-        self.node.get_logger().info("Classic planner: Cancellation requested")
-
-    def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context=None) -> PlannerResult:
-        """
-        Generate a complete trajectory using MotionGen.
+        This is the core planning logic for ClassicPlanner. It uses MotionGen's
+        standard single-goal planning with collision avoidance.
 
         Args:
             start_state: Initial joint configuration
             goal_pose: Target end-effector pose
             config: Dictionary with keys:
-                - max_attempts: Number of planning attempts
-                - timeout: Planning timeout in seconds
-            robot_context: Optional RobotContext for trajectory visualization
-                - time_dilation_factor: Trajectory time scaling
+                - max_attempts: Number of planning attempts (default: 1)
+                - timeout: Planning timeout in seconds (default: 5.0)
+                - time_dilation_factor: Trajectory time scaling (default: 0.5)
 
         Returns:
-            PlannerResult with trajectory or error
+            MotionGenResult with trajectory and status
         """
-        if self.motion_gen is None:
-            return PlannerResult(
-                success=False,
-                message="MotionGen not initialized. Call set_motion_gen() first.",
-            )
+        # Extract config parameters
+        max_attempts = config.get('max_attempts', 1)
+        timeout = config.get('timeout', 5.0)
+        time_dilation_factor = config.get('time_dilation_factor', 0.5)
 
-        # Store for execution
-        self.start_state = start_state
-        self.goal_pose = goal_pose
+        self.node.get_logger().info(
+            f"Planning with max_attempts={max_attempts}, "
+            f"timeout={timeout}s, time_dilation={time_dilation_factor}"
+        )
 
-        try:
-            # Extract config parameters
-            max_attempts = config.get('max_attempts', 1)
-            timeout = config.get('timeout', 5.0)
-            time_dilation_factor = config.get('time_dilation_factor', 0.5)
+        # Plan trajectory using MotionGen
+        result = self.motion_gen.plan_single(
+            start_state,
+            goal_pose,
+            MotionGenPlanConfig(
+                max_attempts=max_attempts,
+                timeout=timeout,
+                time_dilation_factor=time_dilation_factor,
+            ),
+        )
 
-            self.node.get_logger().info(
-                f"Planning with max_attempts={max_attempts}, "
-                f"timeout={timeout}s, time_dilation={time_dilation_factor}"
-            )
+        return result
 
-            # Plan trajectory using MotionGen
-            result = self.motion_gen.plan_single(
-                start_state,
-                goal_pose,
-                MotionGenPlanConfig(
-                    max_attempts=max_attempts,
-                    timeout=timeout,
-                    time_dilation_factor=time_dilation_factor,
-                ),
-            )
+    # Note: No need to override _process_trajectory() since we don't modify
+    # the trajectory. The default implementation in SinglePlanner returns
+    # the trajectory unchanged, which is exactly what we want.
 
-            # Check if planning succeeded
-            if not result.success.item():
-                return PlannerResult(
-                    success=False,
-                    message=f"Planning failed: {result.status}",
-                    metadata={'result': result}
-                )
+    # Note: No need to override execute() since SinglePlanner provides
+    # the complete open-loop execution logic that works for all children.
 
-            # Get interpolated trajectory
-            self.planned_trajectory = result.get_interpolated_plan()
-
-            self.node.get_logger().info(
-                f"Successfully planned trajectory with {len(self.planned_trajectory.position)} waypoints"
-            )
-
-            # Send trajectory to robot context for visualization
-            if robot_context is not None:
-                traj = self.planned_trajectory
-                robot_context.set_command(
-                    traj.joint_names,
-                    traj.velocity.tolist(),
-                    traj.acceleration.tolist(),
-                    traj.position.tolist()
-                )
-                self.node.get_logger().info("Trajectory sent to robot context for visualization")
-
-            return PlannerResult(
-                success=True,
-                message="Trajectory planned successfully",
-                trajectory=self.planned_trajectory,
-                metadata={
-                    'num_waypoints': len(self.planned_trajectory.position),
-                    'planning_time': result.solve_time,
-                }
-            )
-
-        except Exception as e:
-            self.node.get_logger().error(f"Planning exception: {e}")
-            
-            self.node.get_logger().error(traceback.format_exc())
-
-            return PlannerResult(
-                success=False,
-                message=f"Planning error: {str(e)}",
-            )
-
-    def execute(self, robot_context, goal_handle=None) -> bool:
-        """
-        Execute the planned trajectory in open-loop.
-
-        Sends the full trajectory to the robot and monitors progress.
-
-        Args:
-            robot_context: RobotContext for command sending
-            goal_handle: Optional ROS action goal handle for feedback
-
-        Returns:
-            True if execution completed successfully
-        """
-        if self.planned_trajectory is None:
-            self.node.get_logger().error("No trajectory to execute. Call plan() first.")
-            return False
-
-        try:
-            # Reset cancellation flag at the start of execution
-            self._cancelled = False
-
-            # Send trajectory commands to robot context
-
-
-            # Start trajectory execution
-            robot_context.send_trajectrory()
-
-            self.node.get_logger().info("Trajectory execution started")
-
-            # Monitor progress with feedback
-            start_time = time.time()
-            time_dilation_factor = self.node.get_parameter(
-                'time_dilation_factor'
-            ).get_parameter_value().double_value
-
-            progression = robot_context.get_progression()
-
-            while progression < 1.0 and not self._cancelled:
-                # Check for cancellation
-                if goal_handle is not None and not goal_handle.is_active:
-                    self.node.get_logger().warn("Trajectory execution cancelled")
-                    robot_context.stop_robot()
-                    return False
-
-                # Publish feedback at regular intervals
-                if (time.time() - start_time) > time_dilation_factor:
-                    # Check for cancellation again before publishing feedback
-                    if goal_handle is not None and not goal_handle.is_active:
-                        self.node.get_logger().warn("Trajectory execution cancelled")
-                        robot_context.stop_robot()
-                        return False
-
-                    if goal_handle is not None:
-                        feedback_msg = SendTrajectory.Feedback()
-                        feedback_msg.step_progression = robot_context.get_progression()
-                        goal_handle.publish_feedback(feedback_msg)
-
-                    progression = robot_context.get_progression()
-                    # Only log at significant milestones to reduce spam
-                    if progression >= 0.99 or int(progression * 10) != int((progression - 0.1) * 10):
-                        self.node.get_logger().info(f"Trajectory progress: {progression*100:.1f}%")
-                    start_time = time.time()
-
-                # Small sleep to prevent busy-waiting and allow other threads to execute
-                time.sleep(0.01)
-
-            # Check if we exited due to cancellation or completion
-            if self._cancelled:
-                self.node.get_logger().info("Trajectory execution cancelled via flag")
-                return False
-
-            # Wait for emulator thread to finish updating position
-            # This ensures the next planner reads the correct final position
-            time.sleep(0.1)
-            self.node.get_logger().info(f"Trajectory execution completed. Final position: {robot_context.get_joint_pose()}")
-            return True
-
-        except Exception as e:
-            self.node.get_logger().error(f"Execution error: {e}")
-            self.node.get_logger().error(traceback.format_exc())
-            robot_context.stop_robot()
-            return False
+    # Note: No need to override cancel() since it's already implemented
+    # in SinglePlanner and works for all children.

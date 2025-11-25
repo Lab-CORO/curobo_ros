@@ -27,6 +27,9 @@ class PlannerFactory:
         'mpc': MPCPlanner,
         'model_predictive_control': MPCPlanner,  # Alias
         # Future planners can be added here:
+        # 'multi_point': MultiPointPlanner,
+        # 'joint_space': JointSpacePlanner,
+        # 'grasp': GraspPlanner,
         # 'batch': BatchPlanner,
         # 'constrained': ConstrainedPlanner,
     }

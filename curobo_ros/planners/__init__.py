@@ -9,6 +9,7 @@ This package provides different trajectory planning algorithms:
 """
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
+from .single_planner import SinglePlanner
 from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCPlanner
 from .planner_factory import PlannerFactory, PlannerManager
@@ -17,6 +18,7 @@ __all__ = [
     'TrajectoryPlanner',
     'PlannerResult',
     'ExecutionMode',
+    'SinglePlanner',
     'ClassicPlanner',
     'MPCPlanner',
     'PlannerFactory',
