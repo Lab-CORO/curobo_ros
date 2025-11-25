@@ -28,10 +28,7 @@ Panels:
     SyncSource: ""
   - Class: curobo_rviz/RvizArgsPanel
     Name: RvizArgsPanel
-    collision_activation_distance: 0
-    max_attempts: 0
     time_dilation_factor: 0
-    timeout: 0
     voxel_size: 0
   - Class: add_objects_panel/AddObjectsPanel
     Name: AddObjectsPanel
@@ -86,101 +83,42 @@ Visualization Manager:
         Value: /robot_description
       Enabled: true
       Links:
-        2f_coupling:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         All Links Enabled: true
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
-        base:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        base_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        base_link_inertia:
+        base_0:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        coupling_gripper_fix:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        flange:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        forearm_link:
+        link1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        gripper_base_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_finger_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_finger_tip_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_inner_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_finger_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_finger_tip_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_inner_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        robot_mount:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        shoulder_link:
+        link2:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        table_base:
+        link3:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        tcp:
+        link4:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        tool0:
+          Value: true
+        link5:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        upper_arm_link:
+          Value: true
+        link6:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -189,21 +127,6 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        wrist_1_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wrist_2_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wrist_3_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
       Mass Properties:
         Inertia: false
         Mass: false
@@ -225,101 +148,42 @@ Visualization Manager:
         Value: /preview/robot_description
       Enabled: true
       Links:
-        2f_coupling:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         All Links Enabled: true
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
-        base:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        base_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        base_link_inertia:
+        base_0:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        coupling_gripper_fix:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        flange:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        forearm_link:
+        link1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        gripper_base_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_finger_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_finger_tip_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_inner_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger1_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_finger_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_finger_tip_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_inner_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        gripper_finger2_knuckle_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        robot_mount:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        shoulder_link:
+        link2:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        table_base:
+        link3:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        tcp:
+        link4:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        tool0:
+          Value: true
+        link5:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        upper_arm_link:
+          Value: true
+        link6:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -328,21 +192,6 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        wrist_1_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wrist_2_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wrist_3_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
       Mass Properties:
         Inertia: false
         Mass: false
@@ -355,7 +204,7 @@ Visualization Manager:
       Enabled: true
       Name: Obstacles
       Namespaces:
-        voxel_grid: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -374,12 +223,12 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /curobo_gen_traj/collision_spheres
+        Value: /unified_planner/collision_spheres
       Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: world
+    Fixed Frame: base_0
     Frame Rate: 30
   Name: root
   Tools:
@@ -437,10 +286,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6403970122337341
+      Pitch: 0.6303972005844116
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.675426483154297
+      Yaw: 0.5222375988960266
     Saved: ~
 Window Geometry:
   AddObjectsPanel:

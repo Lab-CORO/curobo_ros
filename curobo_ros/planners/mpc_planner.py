@@ -13,9 +13,12 @@ import torch
 from curobo.types.robot import JointState
 from curobo.types.math import Pose
 from curobo.rollout.rollout_base import Goal
-
+import traceback
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
+from curobo_ros.robot.joint_control_strategy import RobotState
 
+
+from curobo_msgs.action import SendTrajectory
 
 class MPCPlanner(TrajectoryPlanner):
     """
@@ -129,6 +132,21 @@ class MPCPlanner(TrajectoryPlanner):
 
             self.is_goal_active = True
 
+            # Initialize robot visualization with start position
+            # This clears any old trajectory from previous planner and sets correct start
+            if robot_context is not None:
+                start_position = start_state.position[0].cpu().tolist() if start_state.position.is_cuda else start_state.position[0].tolist()
+                joint_names = robot_context.robot_strategy.get_joint_name() if robot_context.robot_strategy else self.mpc.kinematics.joint_names
+
+                # Set a single-point "trajectory" at the start position
+                robot_context.set_command(
+                    joint_names,
+                    [[0.0] * len(start_position)],  # Zero velocity
+                    [[0.0] * len(start_position)],  # Zero acceleration
+                    [start_position]                 # Current position
+                )
+                self.node.get_logger().info(f"MPC: Initialized robot position to start_state: {[f'{x:.3f}' for x in start_position]}")
+
             self.node.get_logger().info(
                 f"MPC goal setup: convergence={self.convergence_threshold}m, "
                 f"max_iter={self.max_iterations}"
@@ -147,7 +165,7 @@ class MPCPlanner(TrajectoryPlanner):
 
         except Exception as e:
             self.node.get_logger().error(f"MPC setup error: {e}")
-            import traceback
+            
             self.node.get_logger().error(traceback.format_exc())
 
             return PlannerResult(
@@ -166,7 +184,6 @@ class MPCPlanner(TrajectoryPlanner):
             True if goal update succeeded
         """
         try:
-            from curobo.rollout.rollout_base import Goal
 
             # Create new goal with updated pose
             goal = Goal(
@@ -181,8 +198,6 @@ class MPCPlanner(TrajectoryPlanner):
             # Update stored goal
             self.goal_pose = new_goal_pose
             self.goal_buffer = new_goal_buffer
-
-            self.node.get_logger().debug(f"MPC goal updated to position: [{new_goal_pose.position.x:.3f}, {new_goal_pose.position.y:.3f}, {new_goal_pose.position.z:.3f}]")
 
             return True
 
@@ -233,9 +248,16 @@ class MPCPlanner(TrajectoryPlanner):
                     self.update_goal_pose(self.latest_goal_from_topic)
                     self.latest_goal_from_topic = None  # Consumed
 
+                # Read actual robot position to close the feedback loop
+                # This ensures MPC uses real robot state, not predicted state
+                actual_joint_pose = robot_context.get_joint_pose()
+                current_state = JointState.from_position(
+                    torch.Tensor([actual_joint_pose]).to(device=self.node.tensor_args.device)
+                )
+
                 st_time = time.time()
 
-                # MPC optimization step
+                # MPC optimization step with actual robot state
                 result = self.mpc.step(current_state, 1)
 
                 # Synchronize CUDA
@@ -244,9 +266,6 @@ class MPCPlanner(TrajectoryPlanner):
                 # Track timing (skip first few iterations for warmup)
                 if tstep > 5:
                     self.mpc_time.append(time.time() - st_time)
-
-                # Update current state with the action
-                current_state.copy_(result.action)
 
                 # Store trajectory for visualization
                 traj_list.append(result.action.get_state_tensor())
@@ -257,21 +276,12 @@ class MPCPlanner(TrajectoryPlanner):
 
                 # Publish feedback (use generic SendTrajectory feedback)
                 if goal_handle is not None and tstep % 10 == 0:
-                    from curobo_msgs.action import SendTrajectory
                     feedback_msg = SendTrajectory.Feedback()
                     # SendTrajectory uses step_progression (0.0 to 1.0)
                     # Estimate progress based on pose error reduction
                     progress = 1.0 - min(result.metrics.pose_error.item() / 0.1, 1.0)  # Assume 10cm initial error
                     feedback_msg.step_progression = progress
                     goal_handle.publish_feedback(feedback_msg)
-
-                # Log progress periodically
-                if tstep % 10 == 0:
-                    avg_time = sum(self.mpc_time[-10:]) / len(self.mpc_time[-10:]) if self.mpc_time else 0
-                    self.node.get_logger().info(
-                        f"MPC step {tstep}: error={result.metrics.pose_error.item():.4f}m, "
-                        f"time={avg_time*1000:.1f}ms"
-                    )
 
                 # Check convergence
                 if result.metrics.pose_error.item() < self.convergence_threshold:
@@ -283,11 +293,11 @@ class MPCPlanner(TrajectoryPlanner):
                 tstep += 1
 
                 # Safety timeout
-                if tstep > self.max_iterations:
-                    self.node.get_logger().warn(
-                        f"MPC max iterations ({self.max_iterations}) reached without convergence"
-                    )
-                    break
+                # if tstep > self.max_iterations:
+                #     self.node.get_logger().warn(
+                #         f"MPC max iterations ({self.max_iterations}) reached without convergence"
+                #     )
+                #     break
 
             # Stop robot at end
             robot_context.stop_robot()
@@ -303,7 +313,6 @@ class MPCPlanner(TrajectoryPlanner):
 
         except Exception as e:
             self.node.get_logger().error(f"MPC execution error: {e}")
-            import traceback
             self.node.get_logger().error(traceback.format_exc())
             robot_context.stop_robot()
             return False
@@ -327,7 +336,7 @@ class MPCPlanner(TrajectoryPlanner):
             velocity = action_state.velocity[0].cpu().tolist() if action_state.velocity.dim() > 1 else action_state.velocity.cpu().tolist()
         else:
             velocity = [0.0] * len(position)
-
+        
         if action_state.acceleration is not None:
             acceleration = action_state.acceleration[0].cpu().tolist() if action_state.acceleration.dim() > 1 else action_state.acceleration.cpu().tolist()
         else:
@@ -335,7 +344,7 @@ class MPCPlanner(TrajectoryPlanner):
 
         # Get joint names
         joint_names = robot_context.get_joint_name()
-
+        # self.node.get_logger().info(f"position : {position}")
         # Send single command (wrapped in list for trajectory format)
         robot_context.set_command(
             joint_names,
@@ -343,7 +352,6 @@ class MPCPlanner(TrajectoryPlanner):
             [acceleration],  # List of waypoints (1 waypoint)
             [position]       # List of waypoints (1 waypoint)
         )
-        self.node.get_logger().info(f"joint state:{position}")
         robot_context.send_trajectrory()
 
     def cancel(self):

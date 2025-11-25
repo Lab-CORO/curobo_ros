@@ -16,6 +16,10 @@ from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 
+from curobo_msgs.action import SendTrajectory
+
+
+import traceback
 
 class ClassicPlanner(TrajectoryPlanner):
     """
@@ -48,6 +52,9 @@ class ClassicPlanner(TrajectoryPlanner):
         self.start_state = None
         self.goal_pose = None
 
+        # Cancellation flag for execution loop
+        self._cancelled = False
+
     def _get_execution_mode(self) -> ExecutionMode:
         """This planner uses open-loop execution."""
         return ExecutionMode.OPEN_LOOP
@@ -76,6 +83,16 @@ class ClassicPlanner(TrajectoryPlanner):
             motion_gen: Initialized MotionGen instance
         """
         self.motion_gen = motion_gen
+
+    def cancel(self):
+        """
+        Cancel the current trajectory execution.
+
+        This method is called by the unified planner node when a cancellation
+        request is received. It sets a flag that breaks the execution loop.
+        """
+        self._cancelled = True
+        self.node.get_logger().info("Classic planner: Cancellation requested")
 
     def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context=None) -> PlannerResult:
         """
@@ -163,7 +180,7 @@ class ClassicPlanner(TrajectoryPlanner):
 
         except Exception as e:
             self.node.get_logger().error(f"Planning exception: {e}")
-            import traceback
+            
             self.node.get_logger().error(traceback.format_exc())
 
             return PlannerResult(
@@ -189,8 +206,11 @@ class ClassicPlanner(TrajectoryPlanner):
             return False
 
         try:
+            # Reset cancellation flag at the start of execution
+            self._cancelled = False
+
             # Send trajectory commands to robot context
-            
+
 
             # Start trajectory execution
             robot_context.send_trajectrory()
@@ -205,7 +225,7 @@ class ClassicPlanner(TrajectoryPlanner):
 
             progression = robot_context.get_progression()
 
-            while progression < 1.0:
+            while progression < 1.0 and not self._cancelled:
                 # Check for cancellation
                 if goal_handle is not None and not goal_handle.is_active:
                     self.node.get_logger().warn("Trajectory execution cancelled")
@@ -214,22 +234,39 @@ class ClassicPlanner(TrajectoryPlanner):
 
                 # Publish feedback at regular intervals
                 if (time.time() - start_time) > time_dilation_factor:
+                    # Check for cancellation again before publishing feedback
+                    if goal_handle is not None and not goal_handle.is_active:
+                        self.node.get_logger().warn("Trajectory execution cancelled")
+                        robot_context.stop_robot()
+                        return False
+
                     if goal_handle is not None:
-                        from curobo_msgs.action import SendTrajectory
                         feedback_msg = SendTrajectory.Feedback()
                         feedback_msg.step_progression = robot_context.get_progression()
                         goal_handle.publish_feedback(feedback_msg)
 
                     progression = robot_context.get_progression()
-                    self.node.get_logger().info(f"Trajectory progress: {progression*100:.1f}%")
+                    # Only log at significant milestones to reduce spam
+                    if progression >= 0.99 or int(progression * 10) != int((progression - 0.1) * 10):
+                        self.node.get_logger().info(f"Trajectory progress: {progression*100:.1f}%")
                     start_time = time.time()
 
-            self.node.get_logger().info("Trajectory execution completed")
+                # Small sleep to prevent busy-waiting and allow other threads to execute
+                time.sleep(0.01)
+
+            # Check if we exited due to cancellation or completion
+            if self._cancelled:
+                self.node.get_logger().info("Trajectory execution cancelled via flag")
+                return False
+
+            # Wait for emulator thread to finish updating position
+            # This ensures the next planner reads the correct final position
+            time.sleep(0.1)
+            self.node.get_logger().info(f"Trajectory execution completed. Final position: {robot_context.get_joint_pose()}")
             return True
 
         except Exception as e:
             self.node.get_logger().error(f"Execution error: {e}")
-            import traceback
             self.node.get_logger().error(traceback.format_exc())
             robot_context.stop_robot()
             return False

@@ -39,13 +39,25 @@ class ConfigWrapperMPC(ConfigWrapper):
         )
         self.world_cfg.add_obstacle(ground_plane)
 
+        # Declare MPC parameters
+        node.declare_parameter('mpc_step_dt', 0.03)  # Time step for MPC (seconds)
+        node.declare_parameter('mpc_horizon_steps', 30)  # Number of steps in MPC horizon
+
+        mpc_step_dt = node.get_parameter('mpc_step_dt').get_parameter_value().double_value
+        mpc_horizon_steps = node.get_parameter('mpc_horizon_steps').get_parameter_value().integer_value
+
         self.mpc_config = MpcSolverConfig.load_from_robot_config(
             self.robot_cfg,
             self.world_cfg,
             store_rollouts=True,
-            step_dt=0.03,
+            step_dt=mpc_step_dt,
+            horizon=mpc_horizon_steps,
         )
         node.mpc = MpcSolver(self.mpc_config)
+
+        node.get_logger().info(
+            f"MPC configured: step_dt={mpc_step_dt}s, horizon={mpc_horizon_steps} steps"
+        )
 
 
 class ConfigWrapperMotion(ConfigWrapper):

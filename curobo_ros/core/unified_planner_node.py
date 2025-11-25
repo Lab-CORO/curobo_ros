@@ -218,9 +218,15 @@ class UnifiedPlannerNode(Node):
                 return response
 
             # Get robot state
+            current_joint_pose = self.robot_context.get_joint_pose()
             start_state = JointState.from_position(
-                torch.Tensor([self.robot_context.get_joint_pose()])
+                torch.Tensor([current_joint_pose])
                 .to(device=self.tensor_args.device)
+            )
+
+            # Log current robot position for debugging position tracking issues
+            self.get_logger().info(
+                f"📍 Robot start position for planning: {[f'{x:.3f}' for x in current_joint_pose]}"
             )
 
             # Get goal pose

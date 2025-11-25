@@ -176,6 +176,10 @@ class PlannerManager:
         Args:
             planner_type: Type of planner to activate
         """
+        # Skip if already using this planner
+        if self._current_planner_type == planner_type:
+            return
+
         self._current_planner = self.get_planner(planner_type)
         self._current_planner_type = planner_type
 
