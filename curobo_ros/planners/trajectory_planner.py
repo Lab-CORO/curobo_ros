@@ -75,13 +75,16 @@ class TrajectoryPlanner(ABC):
         pass
 
     @abstractmethod
-    def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context: Optional[Any] = None) -> PlannerResult:
+    def plan(self, start_state: JointState, goal_request: Any, config: dict, robot_context: Optional[Any] = None) -> PlannerResult:
         """
         Generate a plan from start to goal.
 
         Args:
             start_state: Initial robot joint state
-            goal_pose: Target end-effector pose
+            goal_request: Goal specification (planner-specific)
+                         - For ClassicPlanner/MPCPlanner: TrajectoryGeneration request (uses target_pose)
+                         - For MultiPointPlanner: TrajectoryGeneration request (uses target_poses)
+                         Each planner extracts what it needs from the request
             config: Planner-specific configuration parameters
             robot_context: Optional RobotContext for trajectory visualization
 

@@ -62,7 +62,7 @@ class ClassicPlanner(SinglePlanner):
     def _plan_trajectory(
         self,
         start_state: JointState,
-        goal_pose: Pose,
+        goal_request,
         config: dict
     ) -> MotionGenResult:
         """
@@ -73,7 +73,7 @@ class ClassicPlanner(SinglePlanner):
 
         Args:
             start_state: Initial joint configuration
-            goal_pose: Target end-effector pose
+            goal_request: TrajectoryGeneration request
             config: Dictionary with keys:
                 - max_attempts: Number of planning attempts (default: 1)
                 - timeout: Planning timeout in seconds (default: 5.0)
@@ -82,6 +82,17 @@ class ClassicPlanner(SinglePlanner):
         Returns:
             MotionGenResult with trajectory and status
         """
+        # Extract goal pose from request (ClassicPlanner uses target_pose)
+        goal_pose = Pose.from_list([
+            goal_request.target_pose.position.x,
+            goal_request.target_pose.position.y,
+            goal_request.target_pose.position.z,
+            goal_request.target_pose.orientation.x,
+            goal_request.target_pose.orientation.y,
+            goal_request.target_pose.orientation.z,
+            goal_request.target_pose.orientation.w
+        ])
+
         # Extract config parameters
         max_attempts = config.get('max_attempts', 1)
         timeout = config.get('timeout', 5.0)

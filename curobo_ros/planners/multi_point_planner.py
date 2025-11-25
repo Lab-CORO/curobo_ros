@@ -64,19 +64,18 @@ class MultiPointPlanner(SinglePlanner):
     def _plan_trajectory(
         self,
         start_state: JointState,
-        goal_pose,  # Can be a single Pose or List[Pose]
+        goal_request,
         config: dict
     ) -> MotionGenResult:
         """
         Generate trajectory through multiple waypoints.
 
-        This method handles both single-goal and multi-goal planning:
-        - If goal_pose is a single Pose: behaves like ClassicPlanner
-        - If goal_pose is a List[Pose]: plans through all waypoints in sequence
+        Extracts multiple poses from goal_request.target_poses and plans
+        a trajectory that visits each waypoint in sequence.
 
         Args:
             start_state: Initial joint configuration
-            goal_pose: Single target pose OR list of waypoint poses
+            goal_request: TrajectoryGeneration request (uses target_poses field)
             config: Dictionary with keys:
                 - max_attempts: Number of planning attempts (default: 1)
                 - timeout: Planning timeout in seconds (default: 10.0)
@@ -88,25 +87,30 @@ class MultiPointPlanner(SinglePlanner):
         Returns:
             MotionGenResult with trajectory through all waypoints
         """
+        # Extract waypoints from request (MultiPointPlanner uses target_poses)
+        waypoints = []
+        for pose_msg in goal_request.target_poses:
+            waypoint = Pose.from_list([
+                pose_msg.position.x,
+                pose_msg.position.y,
+                pose_msg.position.z,
+                pose_msg.orientation.x,
+                pose_msg.orientation.y,
+                pose_msg.orientation.z,
+                pose_msg.orientation.w
+            ])
+            waypoints.append(waypoint)
+
         # Extract config parameters
         max_attempts = config.get('max_attempts', 1)
         timeout = config.get('timeout', 10.0)
         time_dilation_factor = config.get('time_dilation_factor', 0.5)
         connect_waypoints = config.get('connect_waypoints', True)
 
-        # Handle both single and multi-goal cases
-        if isinstance(goal_pose, list):
-            waypoints = goal_pose
-            self.node.get_logger().info(
-                f"Planning through {len(waypoints)} waypoints with "
-                f"max_attempts={max_attempts}, timeout={timeout}s"
-            )
-        else:
-            # Single goal - behave like ClassicPlanner
-            waypoints = [goal_pose]
-            self.node.get_logger().info(
-                f"Planning to single goal with max_attempts={max_attempts}, timeout={timeout}s"
-            )
+        self.node.get_logger().info(
+            f"Planning through {len(waypoints)} waypoints with "
+            f"max_attempts={max_attempts}, timeout={timeout}s"
+        )
 
         # For now, use sequential planning through waypoints
         # In future, could use MotionGen's batch planning for optimization

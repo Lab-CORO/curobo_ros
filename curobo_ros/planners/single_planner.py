@@ -138,7 +138,7 @@ class SinglePlanner(TrajectoryPlanner):
     def plan(
         self,
         start_state: JointState,
-        goal_pose: Pose,
+        goal_request: Any,
         config: dict,
         robot_context: Optional[Any] = None
     ) -> PlannerResult:
@@ -153,7 +153,8 @@ class SinglePlanner(TrajectoryPlanner):
 
         Args:
             start_state: Initial joint configuration
-            goal_pose: Target end-effector pose (or other goal type depending on child)
+            goal_request: TrajectoryGeneration request containing goal specification
+                         Child classes extract what they need (target_pose or target_poses)
             config: Dictionary with planner-specific parameters
                    Common parameters:
                    - max_attempts: Number of planning attempts
@@ -176,11 +177,11 @@ class SinglePlanner(TrajectoryPlanner):
 
         # Store for execution
         self.start_state = start_state
-        self.goal_pose = goal_pose
+        self.goal_pose = goal_request  # Store request, child classes interpret it
 
         try:
             # Let child class generate the trajectory using MotionGen
-            result = self._plan_trajectory(start_state, goal_pose, config)
+            result = self._plan_trajectory(start_state, goal_request, config)
 
             # Check if planning succeeded
             if not result.success.item():
@@ -242,7 +243,7 @@ class SinglePlanner(TrajectoryPlanner):
     def _plan_trajectory(
         self,
         start_state: JointState,
-        goal_pose: Pose,
+        goal_request: Any,
         config: dict
     ) -> MotionGenResult:
         """
@@ -251,15 +252,15 @@ class SinglePlanner(TrajectoryPlanner):
         This is the main method that child classes must implement.
         It defines HOW the trajectory is generated using MotionGen.
 
-        Different child planners will call different MotionGen methods:
-        - ClassicPlanner: motion_gen.plan_single(start, goal, config)
-        - MultiPointPlanner: motion_gen.plan_single_js(start, waypoints, config)
-        - JointSpacePlanner: motion_gen.plan_single_js(start, joint_goal, config)
-        - GraspPlanner: motion_gen.plan_single(start, grasp_pose, config)
+        Different child planners extract different data from goal_request:
+        - ClassicPlanner: Extracts goal_request.target_pose → single Pose
+        - MultiPointPlanner: Extracts goal_request.target_poses → list of Poses
+        - JointSpacePlanner: Extracts goal_request.target_joints → joint positions
+        - GraspPlanner: Extracts goal_request.target_pose + gripper config
 
         Args:
             start_state: Initial joint configuration
-            goal_pose: Target (interpretation depends on child planner)
+            goal_request: TrajectoryGeneration request (child extracts what it needs)
             config: Dictionary with planner-specific configuration
 
         Returns:
@@ -267,16 +268,23 @@ class SinglePlanner(TrajectoryPlanner):
 
         Example implementation (ClassicPlanner):
             >>> from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+            >>> from curobo.types.math import Pose
             >>>
-            >>> def _plan_trajectory(self, start_state, goal_pose, config):
+            >>> def _plan_trajectory(self, start_state, goal_request, config):
+            >>>     # Extract single pose from request
+            >>>     goal_pose = Pose.from_list([
+            >>>         goal_request.target_pose.position.x,
+            >>>         goal_request.target_pose.position.y,
+            >>>         goal_request.target_pose.position.z,
+            >>>         goal_request.target_pose.orientation.x,
+            >>>         goal_request.target_pose.orientation.y,
+            >>>         goal_request.target_pose.orientation.z,
+            >>>         goal_request.target_pose.orientation.w
+            >>>     ])
             >>>     return self.motion_gen.plan_single(
             >>>         start_state,
             >>>         goal_pose,
-            >>>         MotionGenPlanConfig(
-            >>>             max_attempts=config.get('max_attempts', 1),
-            >>>             timeout=config.get('timeout', 5.0),
-            >>>             time_dilation_factor=config.get('time_dilation_factor', 0.5),
-            >>>         )
+            >>>         MotionGenPlanConfig(...)
             >>>     )
         """
         pass

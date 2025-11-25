@@ -85,7 +85,7 @@ class MPCPlanner(TrajectoryPlanner):
         """
         self.mpc = mpc_solver
 
-    def plan(self, start_state: JointState, goal_pose: Pose, config: dict, robot_context=None) -> PlannerResult:
+    def plan(self, start_state: JointState, goal_request, config: dict, robot_context=None) -> PlannerResult:
         """
         Setup MPC goal buffer for closed-loop execution.
 
@@ -94,7 +94,7 @@ class MPCPlanner(TrajectoryPlanner):
 
         Args:
             start_state: Initial joint configuration
-            goal_pose: Target end-effector pose
+            goal_request: TrajectoryGeneration request (uses target_pose)
             config: Dictionary with keys:
                 - convergence_threshold: Error threshold for goal (default 0.01)
                 - max_iterations: Maximum MPC iterations (default 1000)
@@ -108,6 +108,17 @@ class MPCPlanner(TrajectoryPlanner):
                 success=False,
                 message="MPC solver not initialized. Call set_mpc_solver() first.",
             )
+
+        # Extract goal pose from request (MPCPlanner uses target_pose)
+        goal_pose = Pose.from_list([
+            goal_request.target_pose.position.x,
+            goal_request.target_pose.position.y,
+            goal_request.target_pose.position.z,
+            goal_request.target_pose.orientation.x,
+            goal_request.target_pose.orientation.y,
+            goal_request.target_pose.orientation.z,
+            goal_request.target_pose.orientation.w
+        ])
 
         # Store for execution
         self.start_state = start_state

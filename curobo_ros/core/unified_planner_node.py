@@ -233,17 +233,6 @@ class UnifiedPlannerNode(Node):
                 f"📍 Robot start position for planning: {[f'{x:.3f}' for x in current_joint_pose]}"
             )
 
-            # Get goal pose
-            goal_pose = Pose.from_list([
-                request.target_pose.position.x,
-                request.target_pose.position.y,
-                request.target_pose.position.z,
-                request.target_pose.orientation.x,
-                request.target_pose.orientation.y,
-                request.target_pose.orientation.z,
-                request.target_pose.orientation.w
-            ])
-
             # Build config from parameters
             config = self._get_planner_config(planner)
 
@@ -251,11 +240,12 @@ class UnifiedPlannerNode(Node):
             self._setup_planner(planner)
 
             # Plan
+            # Each planner extracts its goal from the request (target_pose or target_poses)
             self.get_logger().info(
                 f"Planning with {planner.get_planner_name()}"
             )
 
-            result = planner.plan(start_state, goal_pose, config, self.robot_context)
+            result = planner.plan(start_state, request, config, self.robot_context)
 
             # Build response
             response.success = result.success
