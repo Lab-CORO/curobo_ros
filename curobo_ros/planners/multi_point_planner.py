@@ -105,35 +105,35 @@ class MultiPointPlanner(SinglePlanner):
         max_attempts = config.get('max_attempts', 1)
         timeout = config.get('timeout', 10.0)
         time_dilation_factor = config.get('time_dilation_factor', 0.5)
-        connect_waypoints = config.get('connect_waypoints', True)
+        connect_waypoints = config.get('connect_waypoints', False)
 
-        self.node.get_logger().info(
-            f"Planning through {len(waypoints)} waypoints with "
-            f"max_attempts={max_attempts}, timeout={timeout}s"
-        )
 
-        # For now, use sequential planning through waypoints
-        # In future, could use MotionGen's batch planning for optimization
-        if len(waypoints) == 1:
-            # Single waypoint - use standard planning
+        # Plan through waypoints sequentially, stacking trajectories
+        # Based on curobo pose_sequence_example.py
+
+        # Start with initial state
+        current_state = start_state.clone()
+        combined_trajectory = None
+        total_motion_time = 0.0
+
+        # Store combined trajectory in instance variable for _process_trajectory
+        self._combined_trajectory = None
+
+        for i, waypoint in enumerate(waypoints):
+            # Reset velocity and acceleration to zero between waypoints (only if not connecting)
+            if not connect_waypoints:
+                current_state.velocity[:] = 0.0
+                current_state.acceleration[:] = 0.0
+            # Otherwise keep velocity/acceleration from previous segment for smooth motion
+
+            waypoint_pos = waypoint.position.cpu().tolist() if hasattr(waypoint.position, 'cpu') else list(waypoint.position)
+            current_pos = current_state.position[0].cpu().tolist()
+
+
+            # Plan to this waypoint
             result = self.motion_gen.plan_single(
-                start_state,
-                waypoints[0],
-                MotionGenPlanConfig(
-                    max_attempts=max_attempts,
-                    timeout=timeout,
-                    time_dilation_factor=time_dilation_factor,
-                ),
-            )
-        else:
-            # Multiple waypoints - plan segments and combine
-            # This is a simplified implementation
-            # For production, consider using MotionGen's built-in multi-goal planning
-
-            # Plan to first waypoint
-            result = self.motion_gen.plan_single(
-                start_state,
-                waypoints[0],
+                current_state.clone(),
+                waypoint,
                 MotionGenPlanConfig(
                     max_attempts=max_attempts,
                     timeout=timeout / len(waypoints),  # Divide timeout across segments
@@ -142,63 +142,134 @@ class MultiPointPlanner(SinglePlanner):
             )
 
             if not result.success.item():
-                self.node.get_logger().error(f"Failed to plan to waypoint 0")
+                self.node.get_logger().error(
+                    f"Failed to plan to waypoint {i}: {result.status}"
+                )
+                # Return the failed result
                 return result
 
-            # For subsequent waypoints, plan from end of previous segment
-            for i, waypoint in enumerate(waypoints[1:], start=1):
-                # Get final state from previous segment
-                prev_traj = result.get_interpolated_plan()
-                intermediate_state = JointState.from_position(
-                    prev_traj.position[-1:],  # Last position as start for next segment
-                    joint_names=prev_traj.joint_names
-                )
+            # Get trajectory segment (optimized or interpolated based on mode)
+            if connect_waypoints:
+                # Use optimized (non-interpolated) waypoints for smooth continuous motion
+                # We'll interpolate once at the end over all waypoints
+                segment = result.optimized_plan
+            else:
+                # Use interpolated segments with stops at each waypoint
+                segment = result.get_interpolated_plan()
 
-                # Plan next segment
-                next_result = self.motion_gen.plan_single(
-                    intermediate_state,
-                    waypoint,
-                    MotionGenPlanConfig(
-                        max_attempts=max_attempts,
-                        timeout=timeout / len(waypoints),
-                        time_dilation_factor=time_dilation_factor,
-                    ),
-                )
+            # Stack trajectories
+            if combined_trajectory is None:
+                combined_trajectory = segment
+            else:
+                combined_trajectory = combined_trajectory.stack(segment.clone())
 
-                if not next_result.success.item():
-                    self.node.get_logger().error(f"Failed to plan to waypoint {i}")
-                    return next_result
+            # Track total motion time
+            total_motion_time += result.motion_time
 
-                # TODO: Combine trajectories properly
-                # For now, just return the last segment
-                # In production, you'd concatenate all segments
-                result = next_result
+            # Update current state to end of this segment for next waypoint
+            current_state = segment[-1].unsqueeze(0).clone()
 
-            self.node.get_logger().info(
-                f"Successfully planned through all {len(waypoints)} waypoints"
+
+        # If using continuous motion mode: Apply Kunz-Stilman interpolation for truly continuous trajectory
+        if connect_waypoints:
+            from curobo.wrap.reacher.motion_gen import MotionGenResult
+            from curobo.util.trajectory import InterpolateType
+            import torch
+
+
+            # 1. Rendre la trajectoire contiguë (requis après .stack())
+            combined_trajectory = combined_trajectory.clone()
+
+            # 2. Calculer le dt de la trajectoire combinée
+            # Utiliser le nombre de waypoints pour estimer le temps total
+            num_waypoints = len(combined_trajectory.position)
+            # Estimation: ~0.5s entre chaque waypoint optimisé (ajuster selon vos données)
+            estimated_total_time = (num_waypoints - 1) * 0.5
+            combined_dt = torch.tensor(
+                [estimated_total_time / (num_waypoints - 1)],
+                device=combined_trajectory.position.device,
+                dtype=torch.float32
             )
 
+            # 3. Créer un MotionGenResult avec la trajectoire combinée
+            combined_result = MotionGenResult(
+                success=torch.tensor([True]),
+                valid_query=True,
+                optimized_plan=combined_trajectory,
+                optimized_dt=combined_dt,
+                interpolation_dt=self.motion_gen.interpolation_dt,
+                path_buffer_last_tstep=None,  # Will be set by retime_trajectory
+            )
+
+            # 4. Appliquer l'interpolation Kunz-Stilman pour motion continue
+            # CRITIQUE: Cette méthode traite les waypoints comme via-points (passe à travers)
+            # et génère des profils de vitesse/accélération continus
+
+            # Sauvegarder la trajectoire originale au cas où Kunz-Stilman échoue
+            original_combined_trajectory = combined_trajectory
+
+            try:
+                combined_result.retime_trajectory(
+                    time_dilation_factor=1.0,  # Pas de scaling (ajuster si besoin de ralentir/accélérer)
+                    interpolate_trajectory=True,
+                    interpolation_dt=self.motion_gen.interpolation_dt,
+                    interpolation_kind=InterpolateType.KUNZ_STILMAN_OPTIMAL,
+                    create_interpolation_buffer=True
+                )
+
+                # 5. Récupérer la trajectoire continue
+                interpolated_traj = combined_result.get_interpolated_plan()
+
+                if interpolated_traj is not None:
+                    combined_trajectory = interpolated_traj
+
+                else:
+                    self.node.get_logger().warn(
+                        "⚠️  Kunz-Stilman returned None - using optimized waypoints"
+                    )
+
+            except Exception as e:
+                # Si Kunz-Stilman échoue (package manquant ou autre), fallback
+                self.node.get_logger().warn(
+                    f"⚠️  Kunz-Stilman interpolation failed: {e}. "
+                    f"The 'trajectory_smoothing' package is not available in this cuRobo version. "
+                    f"Using optimized waypoints without additional interpolation."
+                )
+                # Restaurer la trajectoire originale
+                combined_trajectory = original_combined_trajectory
+
+        # Store combined trajectory for _process_trajectory to use
+        self._combined_trajectory = combined_trajectory
+
+
+        # Return the last result (motion_time and other metadata)
+        # The actual trajectory will be retrieved from self._combined_trajectory in _process_trajectory
         return result
 
     def _process_trajectory(self, trajectory: JointState, config: dict) -> JointState:
         """
         Post-process the multi-point trajectory.
 
-        For multi-point planning, you might want to:
-        - Add pauses at waypoints
-        - Smooth out velocity discontinuities at waypoint transitions
-        - Add custom actions at specific waypoints
+        For multi-point planning, we return the combined trajectory stored in _plan_trajectory
+        instead of the single-segment trajectory passed as argument.
 
         Args:
-            trajectory: Raw trajectory from MotionGen
+            trajectory: Raw trajectory from MotionGen (ignored for multi-point)
             config: Configuration dictionary
 
         Returns:
-            Processed trajectory
+            Combined multi-waypoint trajectory
         """
-        # For now, return unchanged
-        # In production, you might add waypoint-specific processing here
-        return trajectory
+        # Return the combined trajectory we built in _plan_trajectory
+        if self._combined_trajectory is not None:
+            self.node.get_logger().info(
+                f"🔍 DEBUG: _process_trajectory returning combined trajectory with {len(self._combined_trajectory.position)} waypoints"
+            )
+            return self._combined_trajectory
+        else:
+            # Fallback to single-segment trajectory if not set
+            self.node.get_logger().warn("_combined_trajectory not set, using single segment")
+            return trajectory
 
     def get_config_parameters(self) -> list:
         """

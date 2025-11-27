@@ -10,7 +10,7 @@ from typing import Dict, Optional
 from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCPlanner
-
+from .multi_point_planner import MultiPointPlanner
 
 class PlannerFactory:
     """
@@ -27,7 +27,7 @@ class PlannerFactory:
         'mpc': MPCPlanner,
         'model_predictive_control': MPCPlanner,  # Alias
         # Future planners can be added here:
-        # 'multi_point': MultiPointPlanner,
+        'multi_point': MultiPointPlanner,
         # 'joint_space': JointSpacePlanner,
         # 'grasp': GraspPlanner,
         # 'batch': BatchPlanner,
@@ -78,7 +78,7 @@ class PlannerFactory:
             List of planner type strings
         """
         # Return only primary names (not aliases)
-        return ['classic', 'mpc']
+        return cls._PLANNER_REGISTRY.keys() #['classic', 'mpc', 'multi_point']
 
     @classmethod
     def register_planner(cls, name: str, planner_class: type):

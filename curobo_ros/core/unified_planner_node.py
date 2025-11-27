@@ -343,6 +343,8 @@ class UnifiedPlannerNode(Node):
                     planner_type = 'batch'
                 case SetPlanner.Request.CONSTRAINED:
                     planner_type = 'constrained'
+                case SetPlanner.Request.MULTIPOINT:
+                    planner_type = 'multi_point'
                 case _:
                     response.success = False
                     response.message = f"Unknown planner type: {request.planner_type}"
