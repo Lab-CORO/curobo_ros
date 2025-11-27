@@ -45,21 +45,27 @@ class ConfigWrapper:
         self.world_integrator_type = "occupancy"
 
         # Get base_link from ROS parameter, default to 'base_0'
-        self.node.declare_parameter('base_link',  'base_0')
+        self.node.declare_parameter('base_link', 'base_0')
+        self.node.declare_parameter('world_file', '')
+
         self.base_link = self.node.get_parameter('base_link').get_parameter_value().string_value 
+        self.world_file = self.node.get_parameter('world_file').get_parameter_value().string_value 
         self.node.get_logger().info(f'ConfigWrapper using base_link: {self.base_link}')
 
         # Set the world configuration
-        self.world_cfg = WorldConfig.from_dict(
-            {
-                "blox": {
-                    "world": {
-                        "pose": self.world_pose,
-                        "integrator_type": self.world_integrator_type
+        if self.world_file:
+            self.world_cfg = WorldConfig.from_dict(load_yaml(self.world_file))
+        else:
+            self.world_cfg = WorldConfig.from_dict(
+                {
+                    "blox": {
+                        "world": {
+                            "pose": self.world_pose,
+                            "integrator_type": self.world_integrator_type
+                        },
                     },
-                },
-            }
-        )
+                }
+            )
 
 
         # Initialize tensor arguments with CUDA device

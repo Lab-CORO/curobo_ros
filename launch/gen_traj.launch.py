@@ -134,7 +134,8 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
             parameters=[{
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
-                'base_link': base_link
+                'base_link': base_link,
+                'world_file': LaunchConfiguration('world_file')
             }]
         ),
 
@@ -225,12 +226,19 @@ def generate_launch_description():
         description='Lancer l\'interface graphique RViz (true/false)'
     )
 
+    declare_world_file = DeclareLaunchArgument(
+        'world_file',
+        default_value='',
+        description='Chemin vers le fichier de configuration du monde (world config YAML)'
+    )
+
     return LaunchDescription([
         # Définition des arguments de lancement
         declare_urdf_path,
         declare_robot_config_file,
         declare_include_realsense_launch,
         declare_gui,
+        declare_world_file,
         DeclareLaunchArgument(
             'max_attempts', default_value='2', description='Premier paramètre'
         ),

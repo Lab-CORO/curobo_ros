@@ -201,10 +201,6 @@ class MultiPointPlanner(SinglePlanner):
                 path_buffer_last_tstep=None,  # Will be set by retime_trajectory
             )
 
-            # 4. Appliquer l'interpolation Kunz-Stilman pour motion continue
-            # CRITIQUE: Cette méthode traite les waypoints comme via-points (passe à travers)
-            # et génère des profils de vitesse/accélération continus
-
             # Sauvegarder la trajectoire originale au cas où Kunz-Stilman échoue
             original_combined_trajectory = combined_trajectory
 
