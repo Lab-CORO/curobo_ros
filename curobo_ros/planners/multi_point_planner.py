@@ -12,6 +12,8 @@ import torch
 from curobo.types.robot import JointState
 from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig, MotionGenResult
+from curobo.util.trajectory import InterpolateType
+from curobo.rollout.cost.pose_cost import PoseCostMetric
 
 from .single_planner import SinglePlanner
 
@@ -107,6 +109,35 @@ class MultiPointPlanner(SinglePlanner):
         time_dilation_factor = config.get('time_dilation_factor', 0.5)
         connect_waypoints = config.get('connect_waypoints', False)
 
+        # Prepare per-waypoint constraints
+        waypoint_constraints = []
+        if (hasattr(goal_request, 'trajectories_contraints') and
+            goal_request.trajectories_contraints):
+
+            # Validation
+            if len(goal_request.trajectories_contraints) % 6 != 0:
+                self.node.get_logger().error(
+                    f"trajectories_contraints length ({len(goal_request.trajectories_contraints)}) "
+                    f"must be multiple of 6"
+                )
+                # Continue without constraints
+            elif len(goal_request.trajectories_contraints) // 6 != len(waypoints):
+                self.node.get_logger().error(
+                    f"trajectories_contraints has {len(goal_request.trajectories_contraints)//6} "
+                    f"constraint vectors but {len(waypoints)} waypoints"
+                )
+                # Continue without constraints
+            else:
+                # Extract constraint vectors (one per waypoint)
+                for i in range(len(waypoints)):
+                    start_idx = i * 6
+                    end_idx = start_idx + 6
+                    constraint_vec = list(goal_request.trajectories_contraints[start_idx:end_idx])
+                    waypoint_constraints.append(constraint_vec)
+
+                self.node.get_logger().info(
+                    f"MultiPointPlanner: {len(waypoint_constraints)} constraint vectors loaded"
+                )
 
         # Plan through waypoints sequentially, stacking trajectories
         # Based on curobo pose_sequence_example.py
@@ -129,6 +160,28 @@ class MultiPointPlanner(SinglePlanner):
             waypoint_pos = waypoint.position.cpu().tolist() if hasattr(waypoint.position, 'cpu') else list(waypoint.position)
             current_pos = current_state.position[0].cpu().tolist()
 
+            # Check for constraint for this waypoint
+            pose_cost_metric = None
+            if waypoint_constraints and i < len(waypoint_constraints):
+                constraint_vec = waypoint_constraints[i]
+
+                # Check if at least one constraint is active
+                if any(c == 1 for c in constraint_vec):
+
+                    # Convert to PyTorch tensor (CuRobo requires torch.Tensor for .clone())
+                    hold_vec_tensor = torch.tensor(
+                        constraint_vec,
+                        dtype=torch.float32
+                    )
+
+                    pose_cost_metric = PoseCostMetric(
+                        hold_vec_weight=hold_vec_tensor,
+                        hold_partial_pose=False  # Just constrain specified axes
+                    )
+
+                    self.node.get_logger().info(
+                        f"MultiPointPlanner: Constraint {constraint_vec} applied to waypoint {i}"
+                    )
 
             # Plan to this waypoint
             result = self.motion_gen.plan_single(
@@ -138,6 +191,7 @@ class MultiPointPlanner(SinglePlanner):
                     max_attempts=max_attempts,
                     timeout=timeout / len(waypoints),  # Divide timeout across segments
                     time_dilation_factor=time_dilation_factor,
+                    pose_cost_metric=pose_cost_metric,  # Pass constraint if defined
                 ),
             )
 
@@ -172,10 +226,6 @@ class MultiPointPlanner(SinglePlanner):
 
         # If using continuous motion mode: Apply Kunz-Stilman interpolation for truly continuous trajectory
         if connect_waypoints:
-            from curobo.wrap.reacher.motion_gen import MotionGenResult
-            from curobo.util.trajectory import InterpolateType
-            import torch
-
 
             # 1. Rendre la trajectoire contiguë (requis après .stack())
             combined_trajectory = combined_trajectory.clone()

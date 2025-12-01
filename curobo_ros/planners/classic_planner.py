@@ -9,6 +9,7 @@ then executes it in open-loop fashion.
 from typing import Optional
 
 import torch
+import numpy as np
 from curobo.types.robot import JointState
 from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig, MotionGenResult
@@ -98,6 +99,32 @@ class ClassicPlanner(SinglePlanner):
         timeout = config.get('timeout', 5.0)
         time_dilation_factor = config.get('time_dilation_factor', 0.5)
 
+        # Check for constraints
+        pose_cost_metric = None
+        if (hasattr(goal_request, 'trajectory_constraints') and
+            goal_request.trajectory_constraints and
+            len(goal_request.trajectory_constraints) == 6):
+
+            # Check if at least one constraint is active
+            if any(c == 1 for c in goal_request.trajectory_constraints):
+                from curobo.rollout.cost.pose_cost import PoseCostMetric
+
+                # Convert to PyTorch tensor (CuRobo requires torch.Tensor for .clone())
+                hold_vec = torch.tensor(
+                    goal_request.trajectory_constraints,
+                    dtype=torch.float32
+                )
+
+                # Create PoseCostMetric with hold_vec_weight
+                pose_cost_metric = PoseCostMetric(
+                    hold_vec_weight=hold_vec,
+                    hold_partial_pose=False  # Just constrain specified axes
+                )
+
+                self.node.get_logger().info(
+                    f"ClassicPlanner: Constraints enabled {hold_vec.tolist()}"
+                )
+
         self.node.get_logger().info(
             f"Planning with max_attempts={max_attempts}, "
             f"timeout={timeout}s, time_dilation={time_dilation_factor}"
@@ -111,6 +138,7 @@ class ClassicPlanner(SinglePlanner):
                 max_attempts=max_attempts,
                 timeout=timeout,
                 time_dilation_factor=time_dilation_factor,
+                pose_cost_metric=pose_cost_metric,  # Pass constraint if defined
             ),
         )
 
