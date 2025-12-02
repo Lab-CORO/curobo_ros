@@ -176,7 +176,7 @@ class MultiPointPlanner(SinglePlanner):
 
                     pose_cost_metric = PoseCostMetric(
                         hold_vec_weight=hold_vec_tensor,
-                        hold_partial_pose=False  # Just constrain specified axes
+                        hold_partial_pose=True  # Just constrain specified axes
                     )
 
                     self.node.get_logger().info(
