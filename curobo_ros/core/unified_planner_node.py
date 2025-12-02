@@ -221,16 +221,23 @@ class UnifiedPlannerNode(Node):
                 response.message = "No planner selected"
                 return response
 
-            # Get robot state
-            current_joint_pose = self.robot_context.get_joint_pose()
-            start_state = JointState.from_position(
-                torch.Tensor([current_joint_pose])
-                .to(device=self.tensor_args.device)
-            )
+            # Get robot state - check if start pose is provided in request
+            if hasattr(request, 'start_pose') and request.start_pose.position:
+                # Use start_pose from request (works for both classic and multipoint)
+                start_joint_pose = list(request.start_pose.position)
+                self.get_logger().info(
+                    f"📍 Using start position from request: {[f'{x:.3f}' for x in start_joint_pose]}"
+                )
+            else:
+                # Fall back to current robot position
+                start_joint_pose = self.robot_context.get_joint_pose()
+                self.get_logger().info(
+                    f"📍 Using robot current position for planning: {[f'{x:.3f}' for x in start_joint_pose]}"
+                )
 
-            # Log current robot position for debugging position tracking issues
-            self.get_logger().info(
-                f"📍 Robot start position for planning: {[f'{x:.3f}' for x in current_joint_pose]}"
+            start_state = JointState.from_position(
+                torch.Tensor([start_joint_pose])
+                .to(device=self.tensor_args.device)
             )
 
             # Build config from parameters
