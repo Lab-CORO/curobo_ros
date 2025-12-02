@@ -33,7 +33,7 @@ Contrôle du robot Doosan M1013 réel.
 
 **Usage:**
 ```bash
-ros2 param set /curobo_gen_traj robot_type "doosan_m1013"
+ros2 param set /unified_planner robot_type "doosan_m1013"
 ```
 
 ---
@@ -52,7 +52,7 @@ ros2 param set /curobo_gen_traj robot_type "doosan_m1013"
 
 **Usage:**
 ```bash
-ros2 param set /curobo_gen_traj robot_type "emulator"
+ros2 param set /unified_planner robot_type "emulator"
 ```
 
 **Avantages:**
@@ -133,8 +133,8 @@ def select_strategy(self, node, time_dilation_factor):
 ### Étape 3: Tester
 
 ```bash
-ros2 param set /curobo_gen_traj robot_type "my_robot"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "my_robot"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 ---
@@ -171,16 +171,16 @@ Le changement de stratégie :
 
 ```bash
 # 1. Modifier le paramètre
-ros2 param set /curobo_gen_traj robot_type "<strategy_name>"
+ros2 param set /unified_planner robot_type "<strategy_name>"
 
 # 2. Activer le changement
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 ### Obtenir la stratégie actuelle
 
 ```bash
-ros2 service call /curobo_gen_traj/get_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/get_robot_strategy std_srvs/srv/Trigger
 ```
 
 ---

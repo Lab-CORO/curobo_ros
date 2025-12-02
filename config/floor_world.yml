@@ -1,0 +1,9 @@
+blox:
+  world_map:
+    pose: [0, 0, 0, 1, 0, 0, 0]
+    "integrator_type": "occupancy"
+
+cuboid:
+  floor:
+    dims: [10.0, 10.0, 0.1] # x, y, z
+    pose: [0.0, 0.0, -0.1, 1, 0, 0, 0.0] # x, y, z, qx, qy, qz, qw

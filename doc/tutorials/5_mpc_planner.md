@@ -1,7 +1,9 @@
 # Tutorial: Using the MPC Planner
- 
+
+> **📋 Implementation Status**: This tutorial describes the planned MPC planner functionality. The MPC planner architecture is fully specified and documented, but the implementation is currently in progress. This document serves as both a specification for developers and a preview of upcoming features for users.
+
 Model Predictive Control (MPC) enables **real-time reactive trajectory planning** that can adapt to dynamic obstacles and disturbances.
- 
+
 ---
  
 ## What is MPC?
@@ -99,7 +101,7 @@ MPC has several tunable parameters:
 How close to the goal before stopping (in meters):
  
 ```bash
-ros2 param set /trajectory_planner mpc_convergence_threshold 0.01
+ros2 param set /unified_planner mpc_convergence_threshold 0.01
 ```
  
 - **Smaller values** (0.001): Higher precision, longer execution
@@ -111,7 +113,7 @@ ros2 param set /trajectory_planner mpc_convergence_threshold 0.01
 Maximum number of MPC iterations:
  
 ```bash
-ros2 param set /trajectory_planner mpc_max_iterations 1000
+ros2 param set /unified_planner mpc_max_iterations 1000
 ```
  
 - **More iterations**: Can handle complex scenes, slower
@@ -123,7 +125,7 @@ ros2 param set /trajectory_planner mpc_max_iterations 1000
 Planning horizon length (number of future steps):
  
 ```bash
-ros2 param set /trajectory_planner mpc_horizon 10
+ros2 param set /unified_planner mpc_horizon 10
 ```
  
 - **Longer horizon**: Better long-term planning, more computation
@@ -135,7 +137,7 @@ ros2 param set /trajectory_planner mpc_horizon 10
 How often MPC replans (Hz):
  
 ```bash
-ros2 param set /trajectory_planner mpc_control_frequency 100
+ros2 param set /unified_planner mpc_control_frequency 100
 ```
  
 - **Higher frequency**: More reactive, more GPU usage
@@ -256,7 +258,7 @@ ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/Sen
  
 ```bash
 # Monitor MPC iterations
-ros2 topic echo /trajectory_planner/mpc_stats
+ros2 topic echo /unified_planner/mpc_stats
  
 # Expected output:
 # iterations: 87
@@ -376,7 +378,7 @@ Warning: MPC failed to converge after 1000 iterations
 **Solutions:**
 1. Increase `max_iterations`:
    ```bash
-   ros2 param set /trajectory_planner mpc_max_iterations 2000
+   ros2 param set /unified_planner mpc_max_iterations 2000
    ```
  
 2. Check goal is reachable:
@@ -387,7 +389,7 @@ Warning: MPC failed to converge after 1000 iterations
  
 3. Relax convergence threshold:
    ```bash
-   ros2 param set /trajectory_planner mpc_convergence_threshold 0.02
+   ros2 param set /unified_planner mpc_convergence_threshold 0.02
    ```
  
 ### Issue 2: Jerky Motion
@@ -397,17 +399,17 @@ Warning: MPC failed to converge after 1000 iterations
 **Solutions:**
 1. Decrease control frequency:
    ```bash
-   ros2 param set /trajectory_planner mpc_control_frequency 50
+   ros2 param set /unified_planner mpc_control_frequency 50
    ```
  
 2. Increase horizon length:
    ```bash
-   ros2 param set /trajectory_planner mpc_horizon 15
+   ros2 param set /unified_planner mpc_horizon 15
    ```
  
 3. Tune time_dilation_factor:
    ```bash
-   ros2 param set /trajectory_planner time_dilation_factor 0.3  # Slower, smoother
+   ros2 param set /unified_planner time_dilation_factor 0.3  # Slower, smoother
    ```
  
 ### Issue 3: High GPU Usage
@@ -417,12 +419,12 @@ Warning: MPC failed to converge after 1000 iterations
 **Solutions:**
 1. Reduce control frequency:
    ```bash
-   ros2 param set /trajectory_planner mpc_control_frequency 30
+   ros2 param set /unified_planner mpc_control_frequency 30
    ```
  
 2. Shorten horizon:
    ```bash
-   ros2 param set /trajectory_planner mpc_horizon 5
+   ros2 param set /unified_planner mpc_horizon 5
    ```
  
 3. Use classic planner for static environments:
@@ -437,12 +439,12 @@ Warning: MPC failed to converge after 1000 iterations
 **Solutions:**
 1. Increase control frequency:
    ```bash
-   ros2 param set /trajectory_planner mpc_control_frequency 150
+   ros2 param set /unified_planner mpc_control_frequency 150
    ```
  
 2. Reduce collision voxel size (finer detection):
    ```bash
-   ros2 param set /trajectory_planner voxel_size 0.005
+   ros2 param set /unified_planner voxel_size 0.005
    ```
  
 3. Adjust MPC weights (favor obstacle avoidance):
@@ -525,7 +527,7 @@ Tune only if needed!
 Always monitor MPC performance:
  
 ```bash
-ros2 topic echo /trajectory_planner/mpc_stats
+ros2 topic echo /unified_planner/mpc_stats
 ```
  
 Look for:
@@ -567,7 +569,10 @@ if not result.success:
 ---
  
 ## References
- 
+
 - [MPC Overview](https://en.wikipedia.org/wiki/Model_predictive_control)
 - [cuRobo Documentation](https://curobo.org/)
-- [Real-time Trajectory Optimization](https://doi.org/10.1109/ICRA.2021.XXXXXX)
+- [Unified Planner Architecture](../concepts/unified_planner.md) - Overall planner framework design
+- [MPC Implementation Guide](../concepts/mpc_implementation_guide.md) - Technical guide for developers
+
+**For Developers**: If you're implementing the MPC planner, see the [MPC Implementation Guide](../concepts/mpc_implementation_guide.md) for detailed technical specifications, code templates, and testing strategies.

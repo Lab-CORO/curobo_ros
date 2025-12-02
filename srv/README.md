@@ -87,10 +87,10 @@ Le service fonctionne actuellement ainsi :
 
 ```bash
 # 1. Set parameter
-ros2 param set /curobo_gen_traj robot_type "ur5e"
+ros2 param set /unified_planner robot_type "ur5e"
 
 # 2. Trigger strategy switch
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 **Avantages du workaround:**
@@ -148,18 +148,18 @@ def set_robot_strategy_callback(self, node, request, response):
 ros2 launch curobo_ros gen_traj.launch.py
 
 # Terminal 2: Changer de stratégie
-ros2 param set /curobo_gen_traj robot_type "ghost"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "ghost"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 
 # Vérifier
-ros2 service call /curobo_gen_traj/get_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/get_robot_strategy std_srvs/srv/Trigger
 ```
 
 ### Test avec SetRobotStrategy (futur)
 
 ```bash
 # Une seule commande suffit
-ros2 service call /curobo_gen_traj/set_robot_strategy curobo_msgs/srv/SetRobotStrategy "{strategy_name: 'ghost'}"
+ros2 service call /unified_planner/set_robot_strategy curobo_msgs/srv/SetRobotStrategy "{strategy_name: 'ghost'}"
 ```
 
 ---

@@ -35,7 +35,7 @@ Think of it as a "smart motion planner" that uses your GPU to compute safe paths
 
 | Concept | Description | Example |
 |---------|-------------|---------|
-| **Node** | An executable program that does one job | `curobo_gen_traj` (plans trajectories) |
+| **Node** | An executable program that does one job | `unified_planner` (plans trajectories) |
 | **Topic** | A named data stream (publish/subscribe) | `/joint_states` (robot joint positions) |
 | **Service** | Request/response communication | `/generate_trajectory` (ask for a path) |
 | **Action** | Long-running task with feedback | `/send_trajectrory` (execute a trajectory) |
@@ -54,7 +54,7 @@ ros2 topic list
 ros2 topic echo /joint_states
 
 # Call a service
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "{...}"
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "{...}"
 
 # Check node parameters
 ros2 param list
@@ -175,7 +175,7 @@ bash start_docker_x86.sh
 ### 2. Launch the System
 ```bash
 # Inside container
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros unified_planner.launch.py
 ```
 
 This starts:
@@ -186,7 +186,7 @@ This starts:
 ### 3. Request a Trajectory
 ```bash
 # In another terminal (docker exec)
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
@@ -195,7 +195,7 @@ cuRobo plans a path, and you see it in RViz!
 ### 4. Add Obstacles
 ```bash
 # Add a box obstacle
-ros2 service call /curobo_gen_traj/add_object curobo_msgs/srv/AddObject \
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
   "{name: 'box1', type: 0, dimensions: {x: 0.2, y: 0.2, z: 0.2}, ...}"
 ```
 

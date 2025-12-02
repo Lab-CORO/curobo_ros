@@ -23,7 +23,7 @@ Le système `RobotContext` permet de **changer dynamiquement** la stratégie de 
 
 ```bash
 # Via service ROS
-ros2 service call /curobo_gen_traj/get_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/get_robot_strategy std_srvs/srv/Trigger
 ```
 
 **Response:**
@@ -40,10 +40,10 @@ Pour changer de stratégie, il faut :
 
 ```bash
 # Étape 1: Modifier le paramètre
-ros2 param set /curobo_gen_traj robot_type "ur5e"
+ros2 param set /unified_planner robot_type "ur5e"
 
 # Étape 2: Activer le changement
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 **Response:**
@@ -58,20 +58,20 @@ message: "Strategy switched from 'doosan_m1013' to 'ur5e'"
 
 ```bash
 # 1. Modifier le paramètre
-ros2 param set /curobo_gen_traj robot_type "ghost"
+ros2 param set /unified_planner robot_type "ghost"
 
 # 2. Appliquer le changement
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 #### Passer d'un robot réel à l'émulateur
 
 ```bash
 # 1. Modifier le paramètre
-ros2 param set /curobo_gen_traj robot_type "emulator"
+ros2 param set /unified_planner robot_type "emulator"
 
 # 2. Appliquer le changement
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 ---
@@ -85,7 +85,7 @@ ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
 
 # Script pour changer de stratégie robot dynamiquement
 
-NODE_NAME="/curobo_gen_traj"
+NODE_NAME="/unified_planner"
 NEW_STRATEGY="$1"
 
 if [ -z "$NEW_STRATEGY" ]; then
@@ -144,11 +144,11 @@ class StrategyManager(Node):
         # Clients pour les services
         self.get_strategy_client = self.create_client(
             Trigger,
-            '/curobo_gen_traj/get_robot_strategy'
+            '/unified_planner/get_robot_strategy'
         )
         self.set_strategy_client = self.create_client(
             Trigger,
-            '/curobo_gen_traj/set_robot_strategy'
+            '/unified_planner/set_robot_strategy'
         )
 
         # Attendre que les services soient disponibles
@@ -191,7 +191,7 @@ class StrategyManager(Node):
         # Alternativement, utiliser 'ros2 param set' via subprocess
         import subprocess
         result = subprocess.run(
-            ['ros2', 'param', 'set', '/curobo_gen_traj', 'robot_type', new_strategy],
+            ['ros2', 'param', 'set', '/unified_planner', 'robot_type', new_strategy],
             capture_output=True,
             text=True
         )
@@ -307,7 +307,7 @@ Si vous sélectionnez une stratégie non implémentée (ex: `ur5e` actuellement)
 
 **Exemple:**
 ```bash
-$ ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+$ ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 **Response:**
@@ -352,14 +352,14 @@ Le robot sera visible et bougera selon les trajectoires générées.
 
 ```bash
 # 1. Démarrer avec émulateur
-ros2 param set /curobo_gen_traj robot_type "emulator"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "emulator"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 
 # 2. Générer une trajectoire
-ros2 service call /curobo_gen_traj/generate_trajectory ...
+ros2 service call /unified_planner/generate_trajectory ...
 
 # 3. Exécuter (le robot bouge dans RViz)
-ros2 action send_goal /curobo_gen_traj/send_trajectrory curobo_msgs/action/SendTrajectory "{}"
+ros2 action send_goal /unified_planner/send_trajectrory curobo_msgs/action/SendTrajectory "{}"
 
 # 4. Observer dans RViz
 rviz2
@@ -374,13 +374,13 @@ rviz2
 #### Logs de l'émulateur
 
 ```
-[INFO] [curobo_gen_traj]: ✅ Emulator strategy initialized - Publishing to /joint_states
-[INFO] [curobo_gen_traj]: 🚀 Emulator: Starting trajectory execution (250 points)
-[INFO] [curobo_gen_traj]: Emulator: 20.0% complete (50/250) - 1.00s
-[INFO] [curobo_gen_traj]: Emulator: 40.0% complete (100/250) - 2.00s
-[INFO] [curobo_gen_traj]: Emulator: 60.0% complete (150/250) - 3.00s
-[INFO] [curobo_gen_traj]: Emulator: 80.0% complete (200/250) - 4.00s
-[INFO] [curobo_gen_traj]: ✅ Emulator: Trajectory completed in 5.00s
+[INFO] [unified_planner]: ✅ Emulator strategy initialized - Publishing to /joint_states
+[INFO] [unified_planner]: 🚀 Emulator: Starting trajectory execution (250 points)
+[INFO] [unified_planner]: Emulator: 20.0% complete (50/250) - 1.00s
+[INFO] [unified_planner]: Emulator: 40.0% complete (100/250) - 2.00s
+[INFO] [unified_planner]: Emulator: 60.0% complete (150/250) - 3.00s
+[INFO] [unified_planner]: Emulator: 80.0% complete (200/250) - 4.00s
+[INFO] [unified_planner]: ✅ Emulator: Trajectory completed in 5.00s
 ```
 
 #### Avantages de l'émulateur
@@ -412,25 +412,25 @@ rviz2
 ros2 run rqt_console rqt_console
 
 # Filtrer par node
-# Filter: /curobo_gen_traj
+# Filter: /unified_planner
 ```
 
 **Logs typiques lors d'un changement:**
 ```
-[INFO] [curobo_gen_traj]: Switching strategy from 'doosan_m1013' to 'ghost'...
-[INFO] [curobo_gen_traj]: Previous robot strategy stopped
-[INFO] [curobo_gen_traj]: ✅ Strategy switched from 'doosan_m1013' to 'ghost'
+[INFO] [unified_planner]: Switching strategy from 'doosan_m1013' to 'ghost'...
+[INFO] [unified_planner]: Previous robot strategy stopped
+[INFO] [unified_planner]: ✅ Strategy switched from 'doosan_m1013' to 'ghost'
 ```
 
 ### Services disponibles
 
 ```bash
 # Lister tous les services du node
-ros2 service list | grep curobo_gen_traj
+ros2 service list | grep unified_planner
 
 # Devrait inclure:
-# /curobo_gen_traj/set_robot_strategy
-# /curobo_gen_traj/get_robot_strategy
+# /unified_planner/set_robot_strategy
+# /unified_planner/get_robot_strategy
 ```
 
 ### Paramètres disponibles
@@ -440,7 +440,7 @@ ros2 service list | grep curobo_gen_traj
 ros2 param list | grep robot
 
 # Devrait inclure:
-# /curobo_gen_traj:
+# /unified_planner:
 #   robot_type
 ```
 
@@ -511,8 +511,8 @@ def select_strategy(self, node, time_dilation_factor):
 
 ```bash
 # Tester le changement
-ros2 param set /curobo_gen_traj robot_type "ur5e"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "ur5e"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 ---
@@ -523,8 +523,8 @@ ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
 
 ```bash
 # Développer et tester sans robot
-ros2 param set /curobo_gen_traj robot_type "ghost"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "ghost"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 
 # Tout fonctionne, mais uniquement visualisation dans RViz
 ```
@@ -533,12 +533,12 @@ ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
 
 ```bash
 # Tester avec émulateur d'abord
-ros2 param set /curobo_gen_traj robot_type "emulator"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "emulator"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 
 # Une fois validé, passer au robot réel
-ros2 param set /curobo_gen_traj robot_type "doosan_m1013"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "doosan_m1013"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 ### 3. Multi-robots
@@ -546,14 +546,14 @@ ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
 ```bash
 # Basculer entre différents robots sans redémarrer
 # Robot 1 (Doosan)
-ros2 param set /curobo_gen_traj robot_type "doosan_m1013"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "doosan_m1013"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 
 # ... travailler avec Doosan ...
 
 # Robot 2 (UR5e)
-ros2 param set /curobo_gen_traj robot_type "ur5e"
-ros2 service call /curobo_gen_traj/set_robot_strategy std_srvs/srv/Trigger
+ros2 param set /unified_planner robot_type "ur5e"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 ```
 
 ---

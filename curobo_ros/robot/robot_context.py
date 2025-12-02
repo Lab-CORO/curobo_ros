@@ -239,3 +239,16 @@ class RobotContext:
                 return False
             return self.robot_strategy.get_send_to_robot()
 
+    def get_robot_state(self):
+        '''
+        Get the current robot state.
+        Thread-safe during strategy switching.
+
+        Returns:
+            RobotState enum value (IDLE, RUNNING, STOPPED, ERROR)
+        '''
+        with self.strategy_lock:
+            if self.robot_strategy is None:
+                return RobotState.IDLE
+            return self.robot_strategy.robot_state
+

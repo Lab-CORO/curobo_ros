@@ -17,6 +17,27 @@ To use curobo_ros with your robot, you need:
 2. **Configuration YAML** - cuRobo-specific parameters (joint limits, collision spheres, etc.)
 3. **Robot package** (optional) - ROS package containing URDF and meshes
 
+### Two Approaches for Robot Configuration
+
+This tutorial covers **two methods** to generate the configuration YAML:
+
+#### 🚀 Method 1: RViz Plugin (Recommended)
+- **Uses**: curobo_robot_setup RViz2 plugin
+- **Time**: ~15-30 minutes
+- **Pros**: Interactive visual editor, drag-and-drop spheres, real-time feedback, no extra software
+- **Cons**: None (RViz2 included with ROS 2)
+- **Best for**: **Everyone** - fastest and easiest method
+
+#### ✍️ Method 2: Manual
+- **Uses**: Text editor + trial and error
+- **Time**: ~2-4 hours
+- **Pros**: No additional installation, good for understanding concepts
+- **Cons**: Time-consuming, requires iteration, prone to errors
+- **Best for**: Only if RViz is unavailable or for educational purposes
+
+**Quick Decision:**
+- Use Method 1 (RViz plugin) unless you have a specific reason not to!
+
 ---
 
 ## Example: Doosan M1013
@@ -84,7 +105,7 @@ ros2 launch curobo_doosan display.launch.py
 
 ```bash
 # Launch curobo_ros with Doosan M1013 config
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   robot_config_file:=$(ros2 pkg prefix curobo_doosan)/config/m1013.yml
 ```
 
@@ -102,7 +123,7 @@ docker exec -it x86docker bash
 source /home/ros2_ws/install/setup.bash
 
 # Generate a trajectory
-ros2 service call /curobo_gen_traj/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
@@ -169,9 +190,270 @@ ik_solver:
 
 ## Creating Configuration for Your Robot
 
-Follow these steps to create a configuration for your own robot:
+You have **two approaches** to create a robot configuration:
 
-### Step 1: Prepare Your URDF
+1. **🚀 Automated (Recommended)**: Use cuRobo + Isaac Sim to generate collision spheres automatically
+2. **✍️ Manual**: Create configuration file by hand with custom collision spheres
+
+We'll cover both approaches below.
+
+---
+
+## Method 1: Using curobo_robot_setup RViz Plugin (Recommended)
+
+This method uses the **curobo_robot_setup** RViz2 plugin to interactively create collision spheres and generate configurations directly in RViz. This is the **simplest and fastest** way to configure a new robot - no additional software required!
+
+### Why This Method?
+
+- ✅ **No extra software**: Works entirely in RViz2 (already included in ROS 2)
+- ✅ **Interactive**: Visual feedback with draggable sphere markers
+- ✅ **Fast iteration**: Adjust spheres in real-time and see results immediately
+- ✅ **Integrated**: Part of your ROS 2 workspace, easy to version control
+- ✅ **Lightweight**: No 30GB Isaac Sim download needed
+
+### Prerequisites
+
+- ROS 2 (Humble or later)
+- RViz2 (included with ROS 2)
+- Your robot URDF file
+
+### Step 1: Install curobo_robot_setup Plugin
+
+```bash
+# Navigate to your ROS 2 workspace
+cd ~/ros2_ws/src
+
+# Clone the curobo_robot_setup repository
+git clone https://github.com/Lab-CORO/curobo_robot_setup.git
+
+# Build the package
+cd ~/ros2_ws
+colcon build --packages-select curobo_robot_setup
+
+# Source the workspace
+source install/setup.bash
+```
+
+**Installation time**: ~2-3 minutes
+
+### Step 2: Launch RViz2
+
+```bash
+# Launch RViz2
+rviz2
+```
+
+### Step 3: Add the CuRobo Setup Panel
+
+In RViz2:
+1. Go to **Panels** menu (top bar)
+2. Click **Add New Panel**
+3. Select **CuRoboSetupPanel** from the list
+4. Click **OK**
+
+A new panel appears (usually on the right side) with three tabs.
+
+### Step 4: Load Your Robot URDF (Tab 1)
+
+In the **CuRoboSetupPanel**:
+
+1. **Select Tab 1: "URDF Loading"**
+2. Click **"Browse"** or **"Load URDF"** button
+3. Navigate to your robot's URDF file
+4. Click **"Open"**
+
+**Result**: Your robot appears in the RViz 3D viewport!
+
+**Visual Check**:
+- ✅ Robot model loads correctly
+- ✅ All links are visible
+- ✅ Joints are connected properly
+
+### Step 5: Define Collision Spheres (Tab 2)
+
+This is where the magic happens! Interactively add collision spheres to your robot.
+
+1. **Select Tab 2: "Collision Spheres"**
+
+2. **For each link**:
+
+   a. **Select link from dropdown**
+      - Example: `link1`, `link2`, etc.
+
+   b. **Click "Add Sphere"**
+      - A sphere appears on the link
+      - An interactive marker appears in RViz
+
+   c. **Adjust sphere position**:
+      - **Method 1 (Interactive)**: Drag the marker in RViz 3D view
+      - **Method 2 (Precise)**: Enter coordinates in the panel
+        - X: Forward/backward
+        - Y: Left/right
+        - Z: Up/down
+
+   d. **Adjust sphere radius**:
+      - Drag the radius handle, or
+      - Enter value in the "Radius" field
+      - Recommended: 0.05 - 0.15 meters depending on link size
+
+   e. **Add more spheres**:
+      - Click "Add Sphere" again for the same link
+      - Repeat until link is well-covered
+      - Guideline: 2-5 spheres per link
+
+   f. **Visual verification**:
+      - Spheres should overlap slightly (10-20%)
+      - Coverage should extend along entire link
+      - No large gaps between spheres
+
+3. **Repeat for all links**
+
+**Tips**:
+- Start with larger spheres, refine later
+- Use fewer spheres for better performance
+- Make spheres slightly larger than geometry (safety margin)
+
+### Step 6: Configure Robot Parameters (Tab 3)
+
+1. **Select Tab 3: "Configuration"**
+
+2. **Set kinematic parameters**:
+   - **Base Link**: Enter name of robot base (e.g., `base_link`)
+   - **End-Effector Link**: Enter name of EE (e.g., `tool0`, `ee_link`)
+
+3. **Configure joint limits** (optional):
+   - Adjust position, velocity, acceleration limits per joint
+   - Default values are extracted from URDF
+
+4. **Set retract position** (optional):
+   - Default "safe" joint configuration
+   - Used for warmup and reset
+
+5. **Adjust optimization weights** (optional):
+   - Default weights work well for most robots
+   - Advanced users can tune for specific behaviors
+
+### Step 7: Export Configuration
+
+1. Click **"Export YAML"** button
+2. Choose save location and filename
+   - Example: `~/ros2_ws/src/my_robot_config/config/my_robot.yml`
+3. Click **"Save"**
+
+**Result**: A complete cuRobo configuration file is generated!
+
+### Step 8: Verify Configuration File
+
+Open the generated YAML file to verify:
+
+```bash
+cat ~/ros2_ws/src/my_robot_config/config/my_robot.yml
+```
+
+**Expected structure**:
+```yaml
+robot:
+  kinematics:
+    urdf_path: "path/to/your/robot.urdf"
+    base_link: "base_link"
+    ee_link: "tool0"
+    collision_link_names: [link1, link2, link3, link4, link5, link6]
+
+  cspace:
+    joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+    position_limits:
+      - [-3.14, 3.14]
+      - [-2.0, 2.0]
+      # ... extracted from URDF
+    velocity_limits: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+    acceleration_limits: [15.0, 15.0, 15.0, 15.0, 15.0, 15.0]
+    jerk_limits: [500.0, 500.0, 500.0, 500.0, 500.0, 500.0]
+
+  collision_spheres:
+    link1:
+      - center: [0.0, 0.0, 0.1]
+        radius: 0.08
+      - center: [0.0, 0.0, 0.2]
+        radius: 0.07
+    link2:
+      - center: [0.15, 0.0, 0.0]
+        radius: 0.06
+    # ... more links
+```
+
+### Step 9: Test with curobo_ros
+
+Now use your configuration with curobo_ros:
+
+```bash
+# Inside Docker container (or your ROS 2 environment)
+ros2 launch curobo_ros unified_planner.launch.py \
+  robot_config_file:=/path/to/my_robot.yml
+```
+
+**Success!** Your robot is configured and ready for motion planning.
+
+---
+
+### curobo_robot_setup Tips & Tricks
+
+#### Efficient Sphere Placement
+
+**For cylindrical links**:
+- Place spheres along the cylinder axis
+- Use 3-5 spheres depending on length
+- Radius slightly larger than cylinder radius
+
+**For box-like links**:
+- Place spheres at corners and center
+- 4-6 spheres for good coverage
+
+**For complex shapes**:
+- Use more smaller spheres
+- Aim for 80-90% geometry coverage
+- Don't worry about perfect coverage (some gaps OK)
+
+#### Keyboard Shortcuts (in RViz)
+
+- **Ctrl + Mouse**: Rotate view
+- **Shift + Mouse**: Pan view
+- **Scroll**: Zoom in/out
+- **G**: Toggle grid
+- **R**: Reset view
+
+#### Troubleshooting curobo_robot_setup
+
+**Panel doesn't appear**:
+```bash
+# Rebuild and re-source
+cd ~/ros2_ws
+colcon build --packages-select curobo_robot_setup --cmake-clean-cache
+source install/setup.bash
+rviz2
+```
+
+**URDF doesn't load**:
+- Check URDF is valid: `check_urdf my_robot.urdf`
+- Ensure mesh paths are correct (absolute or relative to URDF)
+- Check RViz console for error messages
+
+**Spheres not visible**:
+- Check "Interactive Markers" display is enabled in RViz
+- Verify correct TF frame is set
+- Try zooming out (spheres might be very large/small)
+
+**Cannot drag markers**:
+- Click directly on the marker (not just near it)
+- Ensure "Interact" mode is active (press `i` key)
+- Check marker scale in display properties
+
+---
+
+## Method 2: Manual Configuration
+
+Follow these steps to create a configuration manually (useful if you don't have Isaac Sim):
+
+### Manual Step 1: Prepare Your URDF
 
 Requirements:
 - Valid URDF with `<robot>` tag
@@ -190,7 +472,7 @@ Requirements:
 </joint>
 ```
 
-### Step 2: Extract Joint Limits from URDF
+### Manual Step 2: Extract Joint Limits from URDF
 
 You can use this Python script:
 
@@ -227,7 +509,7 @@ def extract_joint_limits(urdf_path):
 extract_joint_limits('path/to/your_robot.urdf')
 ```
 
-### Step 3: Define Collision Spheres
+### Manual Step 3: Define Collision Spheres Manually
 
 Collision spheres approximate your robot's geometry for fast GPU collision checking.
 
@@ -239,7 +521,7 @@ Collision spheres approximate your robot's geometry for fast GPU collision check
 
 **Tools to help:**
 - Visualize in RViz with collision sphere markers
-- Use `ros2 topic echo /curobo_gen_traj/collision_spheres`
+- Use `ros2 topic echo /unified_planner/collision_spheres`
 - Iterate until coverage looks good
 
 **Example approach:**
@@ -262,7 +544,7 @@ collision_spheres:
 
 **Tip**: Start with fewer, larger spheres. Refine later for better performance.
 
-### Step 4: Set Acceleration/Jerk Limits
+### Manual Step 4: Set Acceleration/Jerk Limits
 
 If your URDF doesn't specify these:
 
@@ -281,7 +563,7 @@ jerk_limits: [500.0, 500.0, 500.0, 500.0, 500.0, 500.0]
 **Too high**: Robot may not track trajectory accurately
 **Too low**: Unnecessarily slow motion
 
-### Step 5: Create the YAML File
+### Manual Step 5: Create the YAML File
 
 ```bash
 # Create config file
@@ -316,11 +598,11 @@ robot:
     # ... etc
 ```
 
-### Step 6: Test Your Configuration
+### Manual Step 6: Test Your Configuration
 
 ```bash
 # Launch with your config
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   robot_config_file:=/home/ros2_ws/src/curobo_ros/config/my_robot.yml
 ```
 
@@ -400,7 +682,7 @@ setup(
 colcon build --packages-select my_robot_curobo
 source install/setup.bash
 
-ros2 launch curobo_ros gen_traj.launch.py \
+ros2 launch curobo_ros unified_planner.launch.py \
   robot_config_file:=$(ros2 pkg prefix my_robot_curobo)/config/my_robot.yml
 ```
 
@@ -429,10 +711,10 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 
 **Iterate**:
 1. Launch node
-2. View spheres: `ros2 topic echo /curobo_gen_traj/collision_spheres`
+2. View spheres: `ros2 topic echo /unified_planner/collision_spheres`
 3. Visualize in RViz (MarkerArray display)
 4. Adjust config file
-5. Reload: `ros2 service call /curobo_gen_traj/update_motion_gen_config std_srvs/srv/Trigger`
+5. Reload: `ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger`
 
 ### Planning is slow
 
@@ -444,14 +726,40 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 
 ---
 
+## Comparison: RViz Plugin vs Manual Configuration
+
+| Aspect | RViz Plugin (curobo_robot_setup) | Manual |
+|--------|----------------------------------|--------|
+| **Time** | 15-30 minutes | 2-4 hours |
+| **Accuracy** | High (visual verification + draggable markers) | Medium (trial and error) |
+| **Prerequisites** | RViz2 (included in ROS 2) | None (just text editor) |
+| **Learning Curve** | Easy (familiar RViz interface) | Steep (needs understanding) |
+| **Iteration** | Very fast (real-time adjustment) | Slow (edit, test, repeat) |
+| **Coverage** | Excellent (interactive visual feedback) | Variable (depends on experience) |
+| **Installation** | 2 minutes (one git clone + colcon build) | N/A |
+| **Best For** | **All users** - simple, fast, integrated | Only if RViz unavailable |
+
+**Recommendation**: Use the RViz plugin method. It's faster, easier, and provides better visual feedback than manual configuration.
+
+---
+
 ## Summary
 
 **You've learned:**
 
 - ✅ How to import a robot package (Doosan M1013 example)
 - ✅ Understanding configuration file structure
-- ✅ Creating configuration for your own robot
-- ✅ Defining collision spheres
+- ✅ **Method 1**: Interactive configuration with curobo_robot_setup RViz plugin
+  - Installing the RViz plugin
+  - Loading URDF in RViz
+  - Adding and adjusting collision spheres interactively
+  - Configuring robot parameters
+  - Exporting complete configuration YAML
+- ✅ **Method 2**: Manual configuration creation
+  - Extracting joint limits from URDF
+  - Manually defining collision spheres
+  - Setting acceleration and jerk limits
+- ✅ Creating a dedicated robot package
 - ✅ Testing and troubleshooting
 
 ---
@@ -471,6 +779,8 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 - `config/ur5e.yml` - Universal Robots UR5e (if available)
 
 **Useful Links:**
-- cuRobo robot configuration: [curobo.org/robot_configuration.html](https://curobo.org/robot_configuration.html)
-- URDF tutorials: [wiki.ros.org/urdf/Tutorials](http://wiki.ros.org/urdf/Tutorials)
-- Lab-CORO robots: [github.com/Lab-CORO](https://github.com/Lab-CORO)
+- **curobo_robot_setup Plugin**: [github.com/Lab-CORO/curobo_robot_setup](https://github.com/Lab-CORO/curobo_robot_setup)
+- **cuRobo Robot Configuration Tutorial**: [curobo.org/tutorials/1_robot_configuration.html](https://curobo.org/tutorials/1_robot_configuration.html)
+- **cuRobo GitHub Repository**: [github.com/NVlabs/curobo](https://github.com/NVlabs/curobo)
+- **URDF Tutorials**: [wiki.ros.org/urdf/Tutorials](http://wiki.ros.org/urdf/Tutorials)
+- **Lab-CORO Robot Packages**: [github.com/Lab-CORO](https://github.com/Lab-CORO)

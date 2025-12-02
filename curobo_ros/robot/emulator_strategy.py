@@ -69,14 +69,11 @@ class EmulatorStrategy(JointCommandStrategy):
         )
         self.execution_thread.start()
 
-        self.node.get_logger().info(f"🚀 Emulator: Starting trajectory execution ({len(self.position_command)} points)")
-
     def _execute_trajectory(self):
         '''
         Thread function that simulates trajectory execution by publishing joint states.
         '''
         try:
-            start_time = time.time()
             total_points = len(self.position_command)
 
             while self.command_index < total_points and not self.stop_execution.is_set():
@@ -101,25 +98,16 @@ class EmulatorStrategy(JointCommandStrategy):
                 self.command_index += 1
                 self.trajectory_progression = self.command_index / total_points
 
-                # Log progress periodically
-                if self.command_index % 50 == 0 or self.command_index == total_points:
-                    elapsed = time.time() - start_time
-                    self.node.get_logger().info(
-                        f"Emulator: {self.trajectory_progression*100:.1f}% complete "
-                        f"({self.command_index}/{total_points}) - {elapsed:.2f}s"
-                    )
-
                 # Wait for next timestep
                 time.sleep(self.dt)
+
+            # Set robot state to IDLE
+            self.robot_state = RobotState.IDLE
 
             # Trajectory complete
             if not self.stop_execution.is_set():
                 self.trajectory_progression = 1.0
                 self.robot_state = RobotState.IDLE
-                elapsed = time.time() - start_time
-                self.node.get_logger().info(f"✅ Emulator: Trajectory completed in {elapsed:.2f}s")
-            else:
-                self.node.get_logger().info("⚠️ Emulator: Trajectory execution stopped")
 
         except Exception as e:
             self.node.get_logger().error(f"❌ Emulator execution error: {e}")
@@ -138,6 +126,24 @@ class EmulatorStrategy(JointCommandStrategy):
         Return the joint names of the emulated robot.
         '''
         return self.joint_names
+
+    def wait_for_execution_complete(self, timeout=5.0):
+        '''
+        Wait for the trajectory execution thread to complete.
+
+        This ensures that the robot's current_joint_positions is fully updated
+        before the next planning operation reads it.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default: 5.0)
+
+        Returns:
+            True if thread completed, False if timeout occurred
+        '''
+        if self.execution_thread is not None and self.execution_thread.is_alive():
+            self.execution_thread.join(timeout=timeout)
+            return not self.execution_thread.is_alive()
+        return True
 
     def stop_robot(self):
         '''
