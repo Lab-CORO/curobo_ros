@@ -516,10 +516,10 @@ See full troubleshooting guide: [troubleshooting.md](../troubleshooting.md)
 
 ## Next Steps
 
-- **[Getting Started](../getting_started.md)** - Complete setup walkthrough
-- **[Your First Trajectory](../tutorials/1_first_trajectory.md)** - Try the system
-- **[Adding Your Robot](../tutorials/2_adding_your_robot.md)** - Integrate your robot
-- **[Troubleshooting](../troubleshooting.md)** - Common issues
+- **[Installation Guide](installation.md)** - Complete setup walkthrough
+- **[Your First Trajectory](../tutorials/01-first-trajectory.md)** - Try the system
+- **[Adding Your Robot](../tutorials/02-adding-your-robot.md)** - Integrate your robot
+- **[Troubleshooting](troubleshooting.md)** - Common issues
 
 ---
 

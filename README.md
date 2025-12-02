@@ -14,7 +14,7 @@ GPU-accelerated motion planning for **ROS 2** — powered by [cuRobo](https://cu
 
 ## Quick Start
 
-**New to ROS or Docker?** Start here: [Introduction](doc/concepts/introduction.md) | [Docker Workflow](doc/concepts/docker_workflow.md)
+**New to ROS or Docker?** Start here: [Introduction](doc/getting-started/introduction.md) | [Docker Workflow](doc/getting-started/docker-workflow.md)
 
 ```bash
 # 1. Clone repository (requires ~30 GB disk space)
@@ -39,36 +39,38 @@ ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/Trajector
   "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
-See the [Getting Started Guide](doc/getting_started.md) for detailed instructions.
+See the [Getting Started Guide](doc/getting-started/) for detailed instructions.
 
 ---
 
 ## Documentation
 
+**📖 [Complete Documentation](doc/)** - Full documentation hub with learning paths
+
 ### 🚀 Getting Started
-- **[Introduction](doc/concepts/introduction.md)** - What is ROS, Docker, and cuRobo? (Start here if you're new!)
-- **[Docker Workflow](doc/concepts/docker_workflow.md)** - How to work efficiently with Docker containers
-- **[Getting Started](doc/getting_started.md)** - Complete setup guide from installation to first trajectory
-- **[Troubleshooting](doc/troubleshooting.md)** - Common issues and solutions
+- **[Introduction](doc/getting-started/introduction.md)** - What is ROS, Docker, and cuRobo? (Start here if you're new!)
+- **[Docker Workflow](doc/getting-started/docker-workflow.md)** - How to work efficiently with Docker containers
+- **[Installation Guide](doc/getting-started/installation.md)** - Complete setup guide from installation to first trajectory
+- **[Troubleshooting](doc/getting-started/troubleshooting.md)** - Common issues and solutions
 
 ### 📚 Step-by-Step Tutorials
-1. **[Your First Trajectory](doc/tutorials/1_first_trajectory.md)** - Generate trajectories, add obstacles, tune parameters
-2. **[Adding Your Robot](doc/tutorials/2_adding_your_robot.md)** - Integrate your robot (Doosan M1013 example)
-3. **[Managing Obstacles](doc/tutorials/adding_collision_objects.md)** - Dynamic obstacle management and collision checking
-4. **[Dynamic Strategy Switching](doc/tutorials/4_dynamic_strategy_switching.md)** - Switch between real robot, emulator, and simulation
-5. **[MPC Planner](doc/tutorials/5_mpc_planner.md)** - Real-time reactive trajectory planning with Model Predictive Control
-6. **[IK/FK Services](doc/tutorials/ik_fk_services.md)** - Use inverse and forward kinematics services
-7. **[Point Cloud Obstacle Detection](doc/tutorials/pointcloud_obstacle_detection.md)** - Integrate cameras for dynamic obstacle detection
+1. **[Your First Trajectory](doc/tutorials/01-first-trajectory.md)** - Generate trajectories, add obstacles, tune parameters
+2. **[Adding Your Robot](doc/tutorials/02-adding-your-robot.md)** - Integrate your robot (Doosan M1013 example)
+3. **[Managing Obstacles](doc/tutorials/03-collision-objects.md)** - Dynamic obstacle management and collision checking
+4. **[Dynamic Strategy Switching](doc/tutorials/04-strategy-switching.md)** - Switch between real robot, emulator, and simulation
+5. **[MPC Planner](doc/tutorials/05-mpc-planner.md)** - Real-time reactive trajectory planning with Model Predictive Control
+6. **[IK/FK Services](doc/tutorials/06-ik-fk-services.md)** - Use inverse and forward kinematics services
+7. **[Point Cloud Obstacle Detection](doc/tutorials/07-pointcloud-detection.md)** - Integrate cameras for dynamic obstacle detection
 
 ### 📖 Concepts & Reference
-- **[Unified Planner Architecture](doc/concepts/unified_planner.md)** - Flexible planning framework supporting multiple algorithms
+- **[Unified Planner Architecture](doc/concepts/unified-planner.md)** - Flexible planning framework supporting multiple algorithms
 - **[Parameters Guide](doc/concepts/parameters.md)** - Understand `voxel_size`, `time_dilation_factor`, and all parameters
-- **[Async Warmup](doc/concepts/warmup_async.md)** - GPU optimization and asynchronous initialization
-- **[ROS Interfaces](doc/concepts/ros_interfaces.md)** - Complete reference of services, topics, and actions
+- **[ROS Interfaces](doc/concepts/ros-interfaces.md)** - Complete reference of services, topics, and actions
 - **[Architecture](doc/concepts/architecture.md)** - System architecture and class diagrams
+- **[RViz Plugin](doc/concepts/rviz-plugin.md)** - Interactive trajectory visualization
 
 ### 🤖 Examples
-- **[Doosan M1013 Example](doc/tutorials/doosan_example.md)** - Complete example with Doosan collaborative robot
+- **[Doosan M1013 Example](doc/tutorials/examples/doosan-m1013.md)** - Complete example with Doosan collaborative robot
 
 ---
 
@@ -170,7 +172,7 @@ Contributions are welcome! Please:
 3. Make your changes
 4. Submit a pull request
 
-For robot integration, see [Adding Your Robot Tutorial](doc/tutorials/2_adding_your_robot.md).
+For robot integration, see [Adding Your Robot Tutorial](doc/tutorials/02-adding-your-robot.md).
 
 ---
 

@@ -30,9 +30,8 @@ Plus complete examples: Doosan M1013, camera integration
 - Unified planner architecture
 - ROS 2 interfaces (API reference)
 - Parameters guide
-- Collision detection
-- GPU optimization
 - RViz plugin
+- MPC implementation guide
 
 ### 🤖 [Robots](robots/)
 **Robot integration** - Robot-specific documentation
@@ -75,7 +74,7 @@ Historical documentation and migration plans
 1. [System Architecture](concepts/architecture.md)
 2. [Unified Planner](concepts/unified-planner.md)
 3. [Tutorial 5: MPC Planner](tutorials/05-mpc-planner.md)
-4. [GPU Optimization](concepts/gpu-optimization.md)
+4. [Parameters Guide](concepts/parameters.md)
 
 ## 🗺️ Documentation Map
 

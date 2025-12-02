@@ -18,15 +18,15 @@ curobo_ros offers **two Docker workflows**:
 **Choose DEV if**: You want to contribute to or modify curobo_ros source code.  
 **Choose PROD if**: You want to use curobo_ros as a dependency in your robot project.
 
-**This guide covers DEV mode.** For PROD mode, see [Docker Workflow Guide](concepts/docker_workflow.md#workflow-prod-mode).
+**This guide covers DEV mode.** For PROD mode, see [Docker Workflow Guide](docker-workflow.md#workflow-prod-mode).
 
 ---
 
 ## Before You Begin
 
 **New to ROS or Docker?** We recommend reading these guides first:
-- [Introduction to curobo_ros](concepts/introduction.md) - Explains ROS, Docker, and cuRobo
-- [Docker Workflow Guide](concepts/docker_workflow.md) - DEV vs PROD modes explained
+- [Introduction to curobo_ros](introduction.md) - Explains ROS, Docker, and cuRobo
+- [Docker Workflow Guide](docker-workflow.md) - DEV vs PROD modes explained
 
 ---
 
@@ -55,7 +55,7 @@ docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
 ## 2. Clone the Repository (DEV Mode Only)
 
-**Note**: Skip this step if using PROD mode (see [Docker Workflow Guide](concepts/docker_workflow.md)).
+**Note**: Skip this step if using PROD mode (see [Docker Workflow Guide](docker-workflow.md)).
 
 ```bash
 # Create ROS 2 workspace
@@ -138,7 +138,7 @@ Select `1` for DEV mode (this guide).
 
 ## 4. Start the Container
 
-**⚠️ Important**: Run this script to **create** the container. After creation, use `docker start` + `docker exec` (see [Docker Workflow Guide](concepts/docker_workflow.md)).
+**⚠️ Important**: Run this script to **create** the container. After creation, use `docker start` + `docker exec` (see [Docker Workflow Guide](docker-workflow.md)).
 
 ```bash
 cd ~/ros2_ws/src/curobo_ros/docker
@@ -178,7 +178,7 @@ You'll often need multiple terminals (one for the node, one for calling services
 docker exec -it curobo_ampere_dev bash  # Use your actual container name
 ```
 
-See the [Docker Workflow Guide](concepts/docker_workflow.md) for details.
+See the [Docker Workflow Guide](docker-workflow.md) for details.
 
 ---
 
@@ -332,7 +332,7 @@ ros2 run curobo_ros unified_planner
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 ```
  
-See [Unified Planner Concepts](concepts/unified_planner.md) for details.
+See [Unified Planner Concepts](../concepts/unified-planner.md) for details.
  
 ---
  
@@ -377,24 +377,24 @@ You should see:
 ### Tutorials – Hands-on Guides
  
 **Getting Started:**
-- [First Trajectory](tutorials/1_first_trajectory.md) - Detailed first trajectory walkthrough
-- [Adding Your Robot](tutorials/2_adding_your_robot.md) - Integrate custom robots
- 
+- [First Trajectory](../tutorials/01-first-trajectory.md) - Detailed first trajectory walkthrough
+- [Adding Your Robot](../tutorials/02-adding-your-robot.md) - Integrate custom robots
+
 **Working with Obstacles:**
-- [Collision Objects](tutorials/adding_collision_objects.md) - Static obstacle management
-- [Point Cloud Detection](tutorials/pointcloud_obstacle_detection.md) - Camera-based obstacles
- 
+- [Collision Objects](../tutorials/03-collision-objects.md) - Static obstacle management
+- [Point Cloud Detection](../tutorials/07-pointcloud-detection.md) - Camera-based obstacles
+
 **Advanced Features:**
-- [Dynamic Strategy Switching](tutorials/dynamic_strategy_switching.md) - Switch between robot modes
-- [MPC Planner](tutorials/5_mpc_planner.md) - Real-time reactive planning
-- [IK/FK Services](tutorials/ik_fk_services.md) - Kinematics services
+- [Strategy Switching](../tutorials/04-strategy-switching.md) - Switch between robot modes
+- [MPC Planner](../tutorials/05-mpc-planner.md) - Real-time reactive planning
+- [IK/FK Services](../tutorials/06-ik-fk-services.md) - Kinematics services
  
 ### Concepts – Deep Dives
- 
-- **[Unified Planner](concepts/unified_planner.md)** - Multiple planning strategies
-- **[Architecture](concepts/architecture.md)** - System design patterns
-- **[ROS Interfaces](concepts/ros_interfaces.md)** - Services, topics, actions
-- **[RViz Plugin](concepts/rviz_plugin.md)** - Interactive visualization
+
+- **[Unified Planner](../concepts/unified-planner.md)** - Multiple planning strategies
+- **[Architecture](../concepts/architecture.md)** - System design patterns
+- **[ROS Interfaces](../concepts/ros-interfaces.md)** - Services, topics, actions
+- **[RViz Plugin](../concepts/rviz-plugin.md)** - Interactive visualization
  
 ### Troubleshooting
  

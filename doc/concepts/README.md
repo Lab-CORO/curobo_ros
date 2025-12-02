@@ -11,8 +11,7 @@ Deep dive into curobo_ros architecture, design patterns, and technical concepts.
 
 ### Planning & Control
 - **[Parameters Guide](parameters.md)** - Understand and tune all planning parameters
-- **[Collision Detection](collision-detection.md)** - Voxel-based GPU collision checking (BLOX)
-- **[GPU Optimization](gpu-optimization.md)** - Asynchronous warmup and GPU memory management
+- **[MPC Implementation](mpc-implementation.md)** - Model Predictive Control implementation guide
 
 ### Visualization
 - **[RViz Plugin](rviz-plugin.md)** - Interactive trajectory preview and visualization
@@ -28,8 +27,7 @@ Understanding how the system works:
 ### For Advanced Users
 Deep technical knowledge:
 - [Unified Planner Architecture](unified-planner.md) - Multiple planning algorithms
-- [Collision Detection](collision-detection.md) - How collision checking works
-- [GPU Optimization](gpu-optimization.md) - Performance optimization
+- [MPC Implementation](mpc-implementation.md) - Model Predictive Control guide
 
 ### For Integrators
 System integration:
@@ -45,19 +43,17 @@ System integration:
 
 **Optimizing performance?** Focus on:
 1. [Parameters Guide](parameters.md) - Tuning parameters
-2. [GPU Optimization](gpu-optimization.md) - GPU efficiency
-3. [Collision Detection](collision-detection.md) - Voxel size tuning
 
 **Implementing advanced features?** Read:
 1. [Unified Planner Architecture](unified-planner.md) - Multi-algorithm framework
-2. [Development Guide](../development/) - Implementation details
+2. [MPC Implementation](mpc-implementation.md) - MPC planner guide
 
 ## 🔗 Related Documentation
 
 - **Tutorials**: [Step-by-step guides](../tutorials/) to learn by doing
-- **Development**: [Technical implementation details](../development/) for contributors
 - **Examples**: [Real-world examples](../tutorials/examples/) of complete systems
+- **Robots**: [Robot integration guides](../robots/)
 
 ---
 
-[← Back to Documentation Home](../README.md) | [Tutorials](../tutorials/) | [Development →](../development/)
+[← Back to Documentation Home](../README.md) | [Tutorials](../tutorials/) | [Robots →](../robots/)
