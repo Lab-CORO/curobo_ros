@@ -79,8 +79,8 @@ Real-world integration examples:
 
 After completing the tutorials:
 - Explore [Concepts](../concepts/) for deeper technical understanding
-- Read [Development Guide](../development/) to contribute or extend functionality
 - Check [Robot Integration](../robots/) for specific robot configurations
+- Read [MPC Implementation](../concepts/mpc-implementation.md) for advanced planning
 
 ---
 

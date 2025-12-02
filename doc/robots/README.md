@@ -11,22 +11,18 @@ Documentation for integrating robots with curobo_ros.
   - Features: Real robot control, emulator support, collision avoidance
 
 ### In Development
-- **[Universal Robots](universal-robots.md)** - UR5e, UR10e, UR16e
+- **Universal Robots** - UR5e, UR10e, UR16e
   - Status: 🚧 In progress
   - Expected: Q1 2026
 
 ### Custom Integration
-- **[Custom Robot Guide](custom-robot.md)** - Integrate any robot with URDF and configuration files
+See [Tutorial: Adding Your Robot](../tutorials/02-adding-your-robot.md) for step-by-step integration guide
 
 ## 📚 Integration Documentation
 
 ### Getting Started
-1. **[Custom Robot Guide](custom-robot.md)** - Step-by-step guide to integrate your robot
-2. **[Robot Configuration](robot-configuration.md)** - Detailed configuration reference
-
-### Robot-Specific Guides
-- **[Doosan M1013](doosan-m1013.md)** - Complete integration example
-- **[Universal Robots](universal-robots.md)** - UR series robots
+1. **[Adding Your Robot Tutorial](../tutorials/02-adding-your-robot.md)** - Step-by-step guide to integrate your robot
+2. **[Doosan M1013 Example](doosan-m1013.md)** - Complete integration reference
 
 ## 🎯 Integration Quick Start
 
@@ -43,7 +39,7 @@ Documentation for integrating robots with curobo_ros.
 4. Test IK/FK
 5. Generate first trajectory
 
-See [Custom Robot Guide](custom-robot.md) for detailed steps.
+See [Adding Your Robot Tutorial](../tutorials/02-adding-your-robot.md) for detailed steps.
 
 ### 3. Tools Available
 - **curobo_robot_setup** - RViz plugin for interactive robot configuration
@@ -73,7 +69,7 @@ kinematics:
 - End-effector offset
 - Custom joint limits
 
-See [Robot Configuration](robot-configuration.md) for complete reference.
+See [Adding Your Robot Tutorial](../tutorials/02-adding-your-robot.md) for configuration details.
 
 ## 🔧 Integration Workflow
 
@@ -139,7 +135,7 @@ Work in progress:
 - MoveIt 2 compatibility
 - Real-time control
 
-[See status →](universal-robots.md)
+Status: 🚧 In development (Q1 2026)
 
 ## 📖 Advanced Topics
 
@@ -167,8 +163,8 @@ See [Point Cloud Detection Tutorial](../tutorials/07-pointcloud-detection.md).
 ## 🔗 Related Documentation
 
 - **Tutorial**: [Adding Your Robot](../tutorials/02-adding-your-robot.md)
+- **Tutorial**: [Strategy Switching](../tutorials/04-strategy-switching.md)
 - **Concepts**: [System Architecture](../concepts/architecture.md)
-- **Development**: [Robot Strategies API](../development/api-reference/robot-strategies.md)
 
 ## 💡 Integration Tips
 
@@ -187,4 +183,4 @@ See [Point Cloud Detection Tutorial](../tutorials/07-pointcloud-detection.md).
 
 ---
 
-[← Back to Documentation Home](../README.md) | [Development](../development/) | [Archive →](../archive/)
+[← Back to Documentation Home](../README.md) | [Tutorials](../tutorials/) | [Concepts →](../concepts/)

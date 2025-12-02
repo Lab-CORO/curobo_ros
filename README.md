@@ -107,7 +107,7 @@ See the [Getting Started Guide](doc/getting-started/) for detailed instructions.
 |-------|--------|---------|
 | **Doosan M1013** | ✅ Full support | [curobo_doosan](https://github.com/Lab-CORO/curobo_doosan) |
 | **Universal Robots UR5e** | ⚠️ In progress | - |
-| **Custom robots** | ✅ Via YAML config | [Tutorial](doc/tutorials/2_adding_your_robot.md) |
+| **Custom robots** | ✅ Via YAML config | [Tutorial](doc/tutorials/02-adding-your-robot.md) |
 
 ---
 
@@ -160,7 +160,7 @@ See [Architecture](doc/concepts/architecture.md) for details.
 | `/curobo_ik/ik_pose` | Service | Solve inverse kinematics |
 | `/curobo_fk/fk_poses` | Service | Solve forward kinematics |
 
-See [ROS Interfaces](doc/concepts/ros_interfaces.md) for complete reference.
+See [ROS Interfaces](doc/concepts/ros-interfaces.md) for complete reference.
 
 ---
 
