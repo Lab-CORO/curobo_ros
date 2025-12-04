@@ -235,19 +235,19 @@ Before starting, make sure you have:
 
 Ready to get started?
 
-1. **[Docker Workflow Guide](docker_workflow.md)** - Learn how to work with Docker containers
-2. **[Getting Started](../getting_started.md)** - Set up and run your first trajectory
-3. **[Parameters Guide](parameters.md)** - Understand important configuration parameters
+1. **[Docker Workflow Guide](docker-workflow.md)** - Learn how to work with Docker containers
+2. **[Installation Guide](installation.md)** - Set up and run your first trajectory
+3. **[Parameters Guide](../concepts/parameters.md)** - Understand important configuration parameters
 
 ---
 
 ## Getting Help
 
-- **Troubleshooting**: See [troubleshooting.md](../troubleshooting.md) for common issues
+- **Troubleshooting**: See [troubleshooting.md](troubleshooting.md) for common issues
 - **ROS 2 Documentation**: [docs.ros.org](https://docs.ros.org/en/humble/)
 - **cuRobo Documentation**: [curobo.org](https://curobo.org)
 - **Docker Documentation**: [docs.docker.com](https://docs.docker.com/)
 
 ---
 
-**Let's begin!** → [Docker Workflow Guide](docker_workflow.md)
+**Let's begin!** → [Docker Workflow Guide](docker-workflow.md)

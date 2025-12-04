@@ -107,7 +107,7 @@ docker rm x86docker
 bash start_docker_x86.sh
 ```
 
-See also: [Docker Workflow Guide](concepts/docker_workflow.md#troubleshooting-docker-issues)
+See also: [Docker Workflow Guide](docker-workflow.md#troubleshooting-docker-issues)
 
 ---
 
