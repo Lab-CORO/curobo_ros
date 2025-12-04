@@ -114,6 +114,8 @@ class ConfigWrapper:
                         camera_topic = camera.get("topic", "")
                         camera_frame_id = camera.get("frame_id", "")
                         camera_info = camera.get("camera_info", '')
+                        camera_intrinsics = camera.get("intrinsics", None)
+                        camera_extrinsics = camera.get("extrinsics", None)
 
                         # Get pixel_size parameter if available (for point cloud cameras)
                         pixel_size = 0.01  # Default
@@ -127,7 +129,9 @@ class ConfigWrapper:
                             topic=camera_topic,
                             camera_info=camera_info,
                             frame_id=camera_frame_id,
-                            pixel_size=pixel_size
+                            pixel_size=pixel_size,
+                            intrinsics=camera_intrinsics,
+                            extrinsics=camera_extrinsics
                         )
 
                     self.node.get_logger().info(f"Successfully loaded {len(camera_config['cameras'])} camera(s)")

@@ -37,7 +37,7 @@ class PointCloudCameraStrategy(CameraStrategy):
     depth represents the Z-coordinate of points.
     """
 
-    def __init__(self, node, name, topic='', camera_info=[], frame_id='', pixel_size=0.01, bounds=None):
+    def __init__(self, node, name, topic='', camera_info=[], frame_id='', pixel_size=0.01, bounds=None, intrinsics=None, extrinsics=None):
         """
         Initialize the PointCloud to orthographic depth image strategy.
 
@@ -49,8 +49,10 @@ class PointCloudCameraStrategy(CameraStrategy):
             pixel_size: Size of each pixel in meters (default: 1cm for good resolution)
             bounds: Workspace bounds as [min_x, max_x, min_y, max_y, min_z, max_z]
                    If None, uses default [-1.5, 1.5, -1.5, 1.5, -1.5, 1.5]
+            intrinsics: Optional camera intrinsics from config (not used for point clouds)
+            extrinsics: Optional camera extrinsics from config (list)
         """
-        super().__init__(node, name, topic, camera_info, frame_id)
+        super().__init__(node, name, topic, camera_info, frame_id, intrinsics, extrinsics)
 
         # Paramètres
         # self.node.declare_parameter('voxel_size', 0.02)
@@ -97,14 +99,48 @@ class PointCloudCameraStrategy(CameraStrategy):
         )
 
 
-        # TODO Get the camera pose from frame_id
-        self.camera_pose = Pose(
-                        position=self.tensor_args.to_device([0, 0, 0]),
-                        quaternion=self.tensor_args.to_device([1, 0, 0, 0]),
-                    )
+        # Parse extrinsics from config
+        self.camera_pose_static = self._parse_extrinsics(extrinsics)
+
+        if self.camera_pose_static is not None:
+            self.camera_pose = self.camera_pose_static
+            node.get_logger().info("Point cloud: using extrinsics from config")
+        else:
+            # Try TF lookup as fallback
+            try:
+                from tf2_ros import TransformException
+                t = self.tf_buffer.lookup_transform(
+                    "base_link",
+                    self._frame_id,
+                    rclpy.time.Time())
+
+                translation = t.transform.translation
+                position = [translation.x, translation.y, translation.z]
+
+                rotation_msg = t.transform.rotation
+                quat_ros = [rotation_msg.x, rotation_msg.y,
+                           rotation_msg.z, rotation_msg.w]
+
+                from scipy.spatial.transform import Rotation
+                rot = Rotation.from_quat(quat_ros)
+                quat_scipy = rot.as_quat()
+
+                camera_pose_list = position + [quat_scipy[3], quat_scipy[0],
+                                               quat_scipy[1], quat_scipy[2]]
+                self.camera_pose = Pose.from_list(camera_pose_list,
+                                                  tensor_args=self.tensor_args)
+                node.get_logger().info("Point cloud: using extrinsics from TF")
+            except Exception as ex:
+                node.get_logger().warn(
+                    f'Could not get transform for {self._frame_id}: {ex}. Using identity pose.')
+                # Fallback to identity pose
+                self.camera_pose = Pose(
+                    position=self.tensor_args.to_device([0, 0, 0]),
+                    quaternion=self.tensor_args.to_device([1, 0, 0, 0])
+                )
 
 
-        
+
         self.node.get_logger().info(f'✅ Nœud démarré')
         self.node.get_logger().info(f'   Topic: {topic}')
         self.node.get_logger().info(f'   Grille fixe: {grid_size}')

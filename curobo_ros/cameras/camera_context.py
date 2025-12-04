@@ -28,7 +28,7 @@ class CameraContext:
         self.cameras: Dict[str, CameraStrategy] = {}
         self._device = torch.device('cuda')
 
-    def add_camera(self, camera_name, camera_type, topic, camera_info, frame_id, **kwargs):
+    def add_camera(self, camera_name, camera_type, topic, camera_info, frame_id, intrinsics=None, extrinsics=None, **kwargs):
         """
         Add a camera strategy to the context.
 
@@ -38,6 +38,8 @@ class CameraContext:
             topic: ROS topic for the camera data
             camera_info: Camera intrinsics (for depth cameras)
             frame_id: Frame ID for the camera
+            intrinsics: Optional camera intrinsics from config (list or dict)
+            extrinsics: Optional camera extrinsics from config (list)
             **kwargs: Additional parameters for specific camera strategies
         """
         # Create the appropriate camera strategy based on type
@@ -52,7 +54,9 @@ class CameraContext:
                 camera_info=camera_info,
                 frame_id=frame_id,
                 pixel_size=pixel_size,
-                bounds=bounds
+                bounds=bounds,
+                intrinsics=intrinsics,
+                extrinsics=extrinsics
             )
 
         elif camera_type == 'depth_camera':
@@ -65,7 +69,9 @@ class CameraContext:
                 camera_name=camera_name,
                 topic=topic,
                 camera_info_topic=camera_info_topic,
-                frame_id=frame_id                
+                frame_id=frame_id,
+                intrinsics=intrinsics,
+                extrinsics=extrinsics
             )
 
         else:

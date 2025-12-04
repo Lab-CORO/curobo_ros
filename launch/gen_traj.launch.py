@@ -134,6 +134,7 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
             parameters=[{
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
+                'cameras_config_file': LaunchConfiguration('cameras_config_file'),
                 'base_link': base_link,
                 'world_file': LaunchConfiguration('world_file')
             }]
@@ -206,12 +207,16 @@ def generate_launch_description():
         default_value='',
         description='Chemin vers le fichier URDF du robot (si vide, chargé depuis robot_config_file)'
     )
-
     # Déclaration de l'argument robot_config_file
     declare_robot_config_file = DeclareLaunchArgument(
         'robot_config_file',
-        default_value=default_robot_config,
+        default_value='',
         description='Chemin vers le fichier de configuration YAML du robot'
+    )
+    declare_camera_config_file = DeclareLaunchArgument(
+        'cameras_config_file',
+        default_value=default_cameras_config,
+        description='Chemin vers le fichier de configuration YAML des cameras'
     )
 
     declare_include_realsense_launch = DeclareLaunchArgument(
@@ -236,6 +241,7 @@ def generate_launch_description():
         # Définition des arguments de lancement
         declare_urdf_path,
         declare_robot_config_file,
+        declare_camera_config_file,
         declare_include_realsense_launch,
         declare_gui,
         declare_world_file,
