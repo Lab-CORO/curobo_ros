@@ -215,7 +215,7 @@ def generate_launch_description():
     )
     declare_camera_config_file = DeclareLaunchArgument(
         'cameras_config_file',
-        default_value=default_cameras_config,
+        default_value='',
         description='Chemin vers le fichier de configuration YAML des cameras'
     )
 
