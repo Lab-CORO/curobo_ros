@@ -11,6 +11,7 @@ from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCPlanner
 from .multi_point_planner import MultiPointPlanner
+from .joint_space_planner import JointSpacePlanner
 
 class PlannerFactory:
     """
@@ -28,7 +29,7 @@ class PlannerFactory:
         'model_predictive_control': MPCPlanner,  # Alias
         # Future planners can be added here:
         'multi_point': MultiPointPlanner,
-        # 'joint_space': JointSpacePlanner,
+        'joint_space': JointSpacePlanner,
         # 'grasp': GraspPlanner,
         # 'batch': BatchPlanner,
         # 'constrained': ConstrainedPlanner,

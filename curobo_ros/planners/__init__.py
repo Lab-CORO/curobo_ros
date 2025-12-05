@@ -12,6 +12,8 @@ from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 from .single_planner import SinglePlanner
 from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCPlanner
+from .multi_point_planner import MultiPointPlanner
+from .joint_space_planner import JointSpacePlanner
 from .planner_factory import PlannerFactory, PlannerManager
 
 __all__ = [
@@ -21,6 +23,8 @@ __all__ = [
     'SinglePlanner',
     'ClassicPlanner',
     'MPCPlanner',
+    'MultiPointPlanner',
+    'JointSpacePlanner',
     'PlannerFactory',
     'PlannerManager',
 ]

@@ -334,6 +334,8 @@ class UnifiedPlannerNode(Node):
             1 = MPC
             2 = BATCH
             3 = CONSTRAINED
+            4 = MULTIPOINT
+            5 = JOINT_SPACE
         """
         try:
             # Get current planner before switching
@@ -352,6 +354,8 @@ class UnifiedPlannerNode(Node):
                     planner_type = 'constrained'
                 case SetPlanner.Request.MULTIPOINT:
                     planner_type = 'multi_point'
+                case SetPlanner.Request.JOINT_SPACE:
+                    planner_type = 'joint_space'
                 case _:
                     response.success = False
                     response.message = f"Unknown planner type: {request.planner_type}"
