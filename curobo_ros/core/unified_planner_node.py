@@ -14,6 +14,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from std_srvs.srv import Trigger
+from sensor_msgs.msg import JointState as JointStateMsg
 from curobo_msgs.srv import TrajectoryGeneration, SetPlanner
 from curobo_msgs.action import SendTrajectory, MpcMove
 
@@ -258,14 +259,53 @@ class UnifiedPlannerNode(Node):
             response.success = result.success
             response.message = result.message
 
-            if result.success:
+            # Populate trajectory and dt fields
+            if result.success and result.trajectory is not None:
+                # Get trajectory from result
+                traj = result.trajectory
+
+                # Get interpolation dt
+                if hasattr(planner, 'motion_gen') and planner.motion_gen is not None:
+                    response.dt = float(planner.motion_gen.interpolation_dt)
+                else:
+                    response.dt = 0.03  # Default fallback
+
+                # Convert cuRobo JointState to ROS2 sensor_msgs/JointState[]
+                trajectory_msgs = []
+                n_waypoints = len(traj.position)
+
+                for i in range(n_waypoints):
+                    waypoint = JointStateMsg()
+
+                    # Set joint names if available
+                    if hasattr(traj, 'joint_names') and traj.joint_names is not None:
+                        waypoint.name = list(traj.joint_names)
+
+                    # Convert tensors to lists
+                    waypoint.position = traj.position[i].cpu().tolist()
+                    waypoint.velocity = traj.velocity[i].cpu().tolist()
+
+                    trajectory_msgs.append(waypoint)
+
+                response.trajectory = trajectory_msgs
+
                 self.get_logger().info(
-                    f"Planning succeeded: {result.message}"
+                    f"Planning succeeded: {result.message} "
+                    f"(trajectory: {n_waypoints} waypoints, dt: {response.dt}s)"
                 )
             else:
-                self.get_logger().error(
-                    f"Planning failed: {result.message}"
-                )
+                # Empty trajectory for failed planning
+                response.trajectory = []
+                response.dt = 0.0
+
+                if result.success:
+                    self.get_logger().info(
+                        f"Planning succeeded: {result.message}"
+                    )
+                else:
+                    self.get_logger().error(
+                        f"Planning failed: {result.message}"
+                    )
 
             return response
 
@@ -276,6 +316,8 @@ class UnifiedPlannerNode(Node):
 
             response.success = False
             response.message = f"Error: {str(e)}"
+            response.trajectory = []
+            response.dt = 0.0
             return response
 
     def execute_callback(self, goal_handle):
