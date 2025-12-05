@@ -93,8 +93,8 @@ Each example includes a troubleshooting section for common issues.
 - [Troubleshooting](../../getting-started/troubleshooting.md)
 
 ### After Integration
-- [Optimization Guide](../../development/optimization-guide.md)
-- [Testing Guide](../../development/testing-guide.md)
+- 
+- 
 
 ## 🤝 Share Your Example
 
@@ -105,7 +105,7 @@ Have you integrated curobo_ros with another robot or setup? We'd love to add you
 3. Add troubleshooting tips
 4. Submit a pull request
 
-See [Contributing Guide](../../development/contributing.md).
+See .
 
 ---
 

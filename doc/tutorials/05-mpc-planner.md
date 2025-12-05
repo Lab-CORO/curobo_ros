@@ -32,7 +32,7 @@ Model Predictive Control (MPC) enables **real-time reactive trajectory planning*
  
 Before starting this tutorial:
  
-1. Complete [Tutorial 1: First Trajectory](1_first_trajectory.md)
+1. Complete [Tutorial 1: First Trajectory](01-first-trajectory.md)
 2. Ensure you have:
    - NVIDIA GPU with CUDA support
    - curobo_ros installed and configured
@@ -561,10 +561,7 @@ if not result.success:
  
 ## Next Steps
  
-- [Batch Planner Tutorial](6_batch_planner.md) - Multiple trajectory generation
-- [Constrained Planning](7_constrained_planning.md) - Custom constraints
-- [Unified Planner Concepts](../concepts/unified_planner.md) - Deep dive into architecture
-- [Performance Optimization](../concepts/warmup_async.md) - GPU optimization
+- [Unified Planner Concepts](../concepts/unified-planner.md) - Deep dive into architecture
  
 ---
  
@@ -572,7 +569,7 @@ if not result.success:
 
 - [MPC Overview](https://en.wikipedia.org/wiki/Model_predictive_control)
 - [cuRobo Documentation](https://curobo.org/)
-- [Unified Planner Architecture](../concepts/unified_planner.md) - Overall planner framework design
-- [MPC Implementation Guide](../concepts/mpc_implementation_guide.md) - Technical guide for developers
+- [Unified Planner Architecture](../concepts/unified-planner.md) - Overall planner framework design
+- [MPC Implementation Guide](../concepts/mpc-implementation.md) - Technical guide for developers
 
-**For Developers**: If you're implementing the MPC planner, see the [MPC Implementation Guide](../concepts/mpc_implementation_guide.md) for detailed technical specifications, code templates, and testing strategies.
+**For Developers**: If you're implementing the MPC planner, see the [MPC Implementation Guide](../concepts/mpc-implementation.md) for detailed technical specifications, code templates, and testing strategies.

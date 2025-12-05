@@ -8,7 +8,7 @@ The `unified_planner` node handles motion planning. You can launch it with:
 ros2 launch curobo_ros unified_planner.launch.py
 ```
 
-> ⚠️ On first launch, you may encounter the “missing symbol: ucm\_set\_global\_opts” error. The workaround is in [Troubleshooting](../troubleshooting.md#2-missing-symbol-ucm_set_global_opts), though a permanent fix is currently pending.
+> ⚠️ On first launch, you may encounter the “missing symbol: ucm\_set\_global\_opts” error. The workaround is in [Troubleshooting](../../getting-started/troubleshooting.md), though a permanent fix is currently pending.
 
 Once the node is running, interact with it using the `/unified_planner/generate_trajectory` ROS 2 service. You send a `geometry_msgs/Pose`; the node returns success or error. If successful, the trajectory is published to the `/trajectory` topic, which you can visualize in RViz using the **trajectory\_preview** plugin.
 
@@ -30,8 +30,8 @@ To execute the tragectory generated, an action server is available. To execute a
 
 ## ▶️ Up Next
 
-* [Adding collision objects](adding_collision_objects.md)
-* [Inverse & forward kinematics services](ik_fk_services.md)
+* [Adding Collision Objects](../03-collision-objects.md)
+* [IK/FK Services](../06-ik-fk-services.md)
 
 
 

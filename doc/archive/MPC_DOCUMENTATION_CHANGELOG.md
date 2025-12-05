@@ -14,7 +14,7 @@ This changelog documents the comprehensive MPC (Model Predictive Control) docume
 
 ## 📝 New Documentation Files
 
-### 1. **MPC Planner Tutorial** (`doc/tutorials/5_mpc_planner.md`)
+### 1. **MPC Planner Tutorial** (`doc/tutorials/05-mpc-planner.md`)
 - **Status**: ✅ Complete (573 lines)
 - **Purpose**: End-user tutorial for using the MPC planner
 - **Contents**:
@@ -30,7 +30,7 @@ This changelog documents the comprehensive MPC (Model Predictive Control) docume
   - Best practices and performance optimization
   - Real-world tuning examples for different applications
 
-### 2. **Unified Planner Architecture** (`doc/concepts/unified_planner.md`)
+### 2. **Unified Planner Architecture** (`doc/concepts/unified-planner.md`)
 - **Status**: ✅ Complete (524+ lines, extended to 630+ lines)
 - **Purpose**: Technical specification of the unified planner framework
 - **Contents**:
@@ -46,7 +46,7 @@ This changelog documents the comprehensive MPC (Model Predictive Control) docume
   - Troubleshooting guide
   - Future extensions
 
-### 3. **MPC Implementation Guide** (`doc/concepts/mpc_implementation_guide.md`)
+### 3. **MPC Implementation Guide** (`doc/concepts/mpc-implementation.md`)
 - **Status**: ✅ New (complete technical specification)
 - **Purpose**: Detailed technical guide for developers implementing MPC
 - **Contents**:
@@ -73,7 +73,7 @@ This changelog documents the comprehensive MPC (Model Predictive Control) docume
 ### 1. **README.md**
 - **Changes**:
   - ✅ Added MPC Planner tutorial to tutorials section (#5)
-  - ✅ Fixed broken tutorial link: `3_adding_obstacles.md` → `adding_collision_objects.md`
+  - ✅ Fixed broken tutorial link: `03-collision-objects.md` → `adding_collision_objects.md`
   - ✅ Fixed IK/FK tutorial link: `6_ik_fk_services.md` → `ik_fk_services.md`
   - ✅ Added Point Cloud Obstacle Detection tutorial (#7)
   - ✅ Added Unified Planner Architecture to Concepts section
@@ -83,13 +83,13 @@ This changelog documents the comprehensive MPC (Model Predictive Control) docume
     - Added "MPC Real-Time Planning" with implementation status note
     - Clearly marked MPC as "specification ready, implementation planned"
 
-### 2. **doc/tutorials/5_mpc_planner.md**
+### 2. **doc/tutorials/05-mpc-planner.md**
 - **Changes**:
   - ✅ Added implementation status banner at the top
   - ✅ Added developer-focused references section
   - ✅ Cross-linked to MPC Implementation Guide
 
-### 3. **doc/concepts/unified_planner.md**
+### 3. **doc/concepts/unified-planner.md**
 - **Changes**:
   - ✅ Added implementation status banner at the top
   - ✅ Added comprehensive "Implementation Roadmap" section:
@@ -121,9 +121,9 @@ Enhanced document interconnection:
 ```
 doc/
 ├── tutorials/
-│   ├── 1_first_trajectory.md
-│   ├── 2_adding_your_robot.md
-│   ├── 4_dynamic_strategy_switching.md  (broken #3 reference)
+│   ├── 01-first-trajectory.md
+│   ├── 02-adding-your-robot.md
+│   ├── 04-strategy-switching.md  (broken #3 reference)
 │   └── (MPC tutorial missing)
 └── concepts/
     ├── architecture.md
@@ -135,18 +135,18 @@ doc/
 ```
 doc/
 ├── tutorials/
-│   ├── 1_first_trajectory.md
-│   ├── 2_adding_your_robot.md
+│   ├── 01-first-trajectory.md
+│   ├── 02-adding-your-robot.md
 │   ├── adding_collision_objects.md  (fixed reference)
-│   ├── 4_dynamic_strategy_switching.md
-│   ├── 5_mpc_planner.md  ⭐ NEW (573 lines)
+│   ├── 04-strategy-switching.md
+│   ├── 05-mpc-planner.md  ⭐ NEW (573 lines)
 │   ├── ik_fk_services.md  (fixed reference)
 │   └── pointcloud_obstacle_detection.md
 └── concepts/
     ├── architecture.md
     ├── parameters.md
-    ├── unified_planner.md  ⭐ NEW (630+ lines)
-    ├── mpc_implementation_guide.md  ⭐ NEW (complete spec)
+    ├── unified-planner.md  ⭐ NEW (630+ lines)
+    ├── mpc-implementation.md  ⭐ NEW (complete spec)
     └── warmup_async.md
 ```
 
@@ -294,8 +294,8 @@ All MPC-related documents now clearly indicate implementation status:
 ## 📞 Contact / Questions
 
 For questions about this documentation:
-- Review the [MPC Implementation Guide](concepts/mpc_implementation_guide.md)
-- Check [Unified Planner Architecture](concepts/unified_planner.md)
+- Review the [MPC Implementation Guide](concepts/mpc-implementation.md)
+- Check [Unified Planner Architecture](concepts/unified-planner.md)
 - Refer to existing robot strategy pattern
 - Open GitHub issue with `[Documentation]` or `[MPC]` tag
 

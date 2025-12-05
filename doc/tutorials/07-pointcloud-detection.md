@@ -279,5 +279,5 @@ self.camera_context.add_camera('realsense', realsense_camera)
 
 - [Robot Segmentation](../core/robot_segmentation.py)
 - [Camera Strategies](../../curobo_ros/cameras/)
-- [Motion Generation](./doosan_example.md)
-- [Adding Collision Objects](./adding_collision_objects.md)
+- [Doosan Example](./examples/doosan-m1013.md)
+- [Adding Collision Objects](./03-collision-objects.md)

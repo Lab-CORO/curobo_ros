@@ -546,8 +546,8 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 
 ## Next Steps
 
-- **[Dynamic Strategy Switching](4_dynamic_strategy_switching.md)** - Control different robot types
-- **[Camera Integration](5_camera_pointcloud.md)** - Detect obstacles automatically with cameras
+- **[Dynamic Strategy Switching](04-strategy-switching.md)** - Control different robot types
+- **[Camera Integration](07-pointcloud-detection.md)** - Detect obstacles automatically with cameras
 - **[Parameters Guide](../concepts/parameters.md)** - Tune collision checking parameters
 
 ---

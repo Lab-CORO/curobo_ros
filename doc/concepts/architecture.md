@@ -90,7 +90,7 @@ classDiagram
 - **Manager Pattern**: Runtime planner switching
 - **Type-safe**: Enum-based planner selection
  
-For details, see [Unified Planner Documentation](unified_planner.md).
+For details, see **[Unified Planner Documentation](unified-planner.md)**.
  
 ---
  

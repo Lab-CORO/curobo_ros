@@ -608,4 +608,17 @@ ros2 param set /unified_planner planner_type my_custom
 
 ---
 
+## 🔗 Related Documentation
+
+- **[System Architecture](architecture.md)** - Overall system design and components
+- **[Parameters Guide](parameters.md)** - Configure planner behavior
+- **[MPC Implementation](mpc-implementation.md)** - Deep dive into MPC
+- **[ROS Interfaces](ros-interfaces.md)** - Complete API reference
+- **[Tutorial: MPC Planner](../tutorials/05-mpc-planner.md)** - Step-by-step MPC usage
+- **[Tutorial: Point Cloud Detection](../tutorials/07-pointcloud-detection.md)** - Camera integration tutorial
+- **[Example: Camera Integration](../tutorials/examples/camera-integration.md)** - Complete camera setup
+- **[Example: Doosan M1013](../tutorials/examples/doosan-m1013.md)** - Real robot integration
+
+---
+
 **Status**: ✅ Fully Implemented (Classic, MultiPoint planners operational, MPC framework ready)
