@@ -8,38 +8,51 @@ The Unified Planner Architecture provides a flexible framework for supporting mu
 
 ### Class Hierarchy
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   TrajectoryPlanner (ABC)                   │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  + plan(start, goal, config) -> PlannerResult       │   │
-│  │  + execute(robot_context) -> bool                    │   │
-│  │  + get_execution_mode() -> ExecutionMode             │   │
-│  │  + get_planner_name() -> str                         │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                            △
-                            │
-          ┌─────────────────┴──────────────────┐
-          │                                    │
-┌─────────┴──────────┐              ┌──────────┴─────────┐
-│   SinglePlanner    │              │    MPCPlanner      │
-│    (Abstract)      │              │                    │
-│                    │              │  Mode: CLOSED_LOOP │
-│ Shared MotionGen   │              │  Uses: MpcSolver   │
-│ Mode: OPEN_LOOP    │              └────────────────────┘
-└─────────┬──────────┘
-          │
-          │ Children share same MotionGen instance
-          │
-    ┌─────┴─────┬──────────────┬───────────────┐
-    │           │              │               │
-┌───┴────────┐ ┌┴─────────┐  ┌┴──────────┐   ┌┴───────────┐
-│  Classic   │ │MultiPoint│  │JointSpace │   │   Grasp    │
-│  Planner   │ │ Planner  │  │ Planner   │   │  Planner   │
-│            │ │          │  │ (future)  │   │  (future)  │
-│Single pose │ │Waypoints │  │           │   │            │
-└────────────┘ └──────────┘  └───────────┘   └────────────┘
+```mermaid
+classDiagram
+    class TrajectoryPlanner {
+        <<abstract>>
+        +plan(start, goal, config) PlannerResult
+        +execute(robot_context) bool
+        +get_execution_mode() ExecutionMode
+        +get_planner_name() str
+    }
+
+    class SinglePlanner {
+        <<abstract>>
+        -_shared_motion_gen MotionGen
+        +Mode: OPEN_LOOP
+    }
+
+    class MPCPlanner {
+        -mpc_solver MpcSolver
+        +Mode: CLOSED_LOOP
+    }
+
+    class ClassicPlanner {
+        +Single pose planning
+    }
+
+    class MultiPointPlanner {
+        +Waypoints planning
+    }
+
+    class JointSpacePlanner {
+        +Future planner
+    }
+
+    class GraspPlanner {
+        +Future planner
+    }
+
+    TrajectoryPlanner <|-- SinglePlanner
+    TrajectoryPlanner <|-- MPCPlanner
+    SinglePlanner <|-- ClassicPlanner
+    SinglePlanner <|-- MultiPointPlanner
+    SinglePlanner <|-- JointSpacePlanner
+    SinglePlanner <|-- GraspPlanner
+
+    note for SinglePlanner "All children share\nsame MotionGen instance"
 ```
 
 ### Execution Modes
@@ -62,43 +75,53 @@ The Unified Planner Architecture provides a flexible framework for supporting mu
 
 Creates planner instances dynamically:
 
-```
-┌──────────────────────────────────────────────────────┐
-│              PlannerFactory                          │
-│  ┌────────────────────────────────────────────────┐  │
-│  │  Registry:                                     │  │
-│  │    'classic' → ClassicPlanner                  │  │
-│  │    'mpc' → MPCPlanner                          │  │
-│  │    'multi_point' → MultiPointPlanner           │  │
-│  │    ... (extensible)                            │  │
-│  └────────────────────────────────────────────────┘  │
-│                                                      │
-│  + create_planner(type, node, config)                │
-│  + get_available_planners() -> list                  │
-│  + register_planner(name, class)                     │
-└──────────────────────────────────────────────────────┘
+```mermaid
+classDiagram
+    class PlannerFactory {
+        <<static>>
+        -_registry: dict
+        +create_planner(type, node, config) TrajectoryPlanner
+        +get_available_planners() list
+        +register_planner(name, class) void
+    }
+
+    class Registry {
+        'classic' → ClassicPlanner
+        'mpc' → MPCPlanner
+        'multi_point' → MultiPointPlanner
+        ... (extensible)
+    }
+
+    PlannerFactory o-- Registry
+    PlannerFactory ..> ClassicPlanner : creates
+    PlannerFactory ..> MPCPlanner : creates
+    PlannerFactory ..> MultiPointPlanner : creates
 ```
 
 ### PlannerManager
 
 Manages planner lifecycle and caching:
 
-```
-┌──────────────────────────────────────────────────────┐
-│              PlannerManager                          │
-│  ┌────────────────────────────────────────────────┐  │
-│  │  Planner Cache:                                │  │
-│  │    'classic' → ClassicPlanner instance         │  │
-│  │    'mpc' → MPCPlanner instance                 │  │
-│  │    'multi_point' → MultiPointPlanner instance  │  │
-│  │                                                │  │
-│  │  Current: ClassicPlanner                       │  │
-│  └────────────────────────────────────────────────┘  │
-│                                                      │
-│  + get_planner(type) -> planner (cached)             │
-│  + set_current_planner(type)                         │
-│  + get_current_planner() -> planner                  │
-└──────────────────────────────────────────────────────┘
+```mermaid
+classDiagram
+    class PlannerManager {
+        -_planner_cache: dict
+        -_current_planner: TrajectoryPlanner
+        +get_planner(type) TrajectoryPlanner
+        +set_current_planner(type) void
+        +get_current_planner() TrajectoryPlanner
+    }
+
+    class PlannerCache {
+        'classic' → ClassicPlanner instance
+        'mpc' → MPCPlanner instance
+        'multi_point' → MultiPointPlanner instance
+    }
+
+    PlannerManager o-- PlannerCache
+    PlannerManager --> PlannerFactory : uses
+
+    note for PlannerManager "No re-initialization\nFast switching (~0ms)"
 ```
 
 **Benefits**:
@@ -179,62 +202,36 @@ result = planner.plan(
 
 ### Planning Flow
 
-```
-┌──────────────┐
-│  ROS2 Client │
-└──────┬───────┘
-       │ Service Call
-       ▼
-┌─────────────────────────────────────────┐
-│      UnifiedPlannerNode                 │
-│  ┌───────────────────────────────────┐  │
-│  │     PlannerManager                │  │
-│  │  ┌─────────────────────────────┐  │  │
-│  │  │  Current: ClassicPlanner    │  │  │
-│  │  └─────────────┬───────────────┘  │  │
-│  └────────────────┼──────────────────┘  │
-│                   │                     │
-│                   ▼                     │
-│  ┌─────────────────────────────────┐   │
-│  │  ClassicPlanner.plan()          │   │
-│  │    └─> MotionGen.plan_single()  │   │
-│  │         (shared instance)        │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────┐
-│ PlannerResult│ (success, trajectory, metadata)
-└──────────────┘
+```mermaid
+flowchart TD
+    A[ROS2 Client] -->|Service Call| B[UnifiedPlannerNode]
+    B --> C[PlannerManager]
+    C --> D[Current: ClassicPlanner]
+    D --> E[ClassicPlanner.plan]
+    E --> F[MotionGen.plan_single<br/>shared instance]
+    F --> G[PlannerResult<br/>success, trajectory, metadata]
+
+    style B fill:#e1f5ff
+    style D fill:#fff4e1
+    style F fill:#e8f5e9
 ```
 
 ### Execution Flow
 
-```
-┌──────────────┐
-│  ROS2 Client │
-└──────┬───────┘
-       │ Action Goal
-       ▼
-┌─────────────────────────────────────────┐
-│      UnifiedPlannerNode                 │
-│                                         │
-│  planner.execute(robot_context)         │
-│       │                                 │
-│       ▼                                 │
-│  ┌──────────────────────────────────┐   │
-│  │  Open-Loop: Send trajectory      │   │
-│  │  Closed-Loop: MPC control loop   │   │
-│  └──────────────┬───────────────────┘   │
-│                 │                       │
-└─────────────────┼───────────────────────┘
-                  │
-                  ▼
-         ┌─────────────────┐
-         │  RobotContext   │
-         │  (sends to      │
-         │   robot/emulator)│
-         └─────────────────┘
+```mermaid
+flowchart TD
+    A[ROS2 Client] -->|Action Goal| B[UnifiedPlannerNode]
+    B --> C[planner.execute robot_context]
+    C --> D{Execution Mode}
+    D -->|OPEN_LOOP| E[Send complete trajectory]
+    D -->|CLOSED_LOOP| F[MPC control loop<br/>iterative replanning]
+    E --> G[RobotContext]
+    F --> G
+    G --> H[Robot / Emulator]
+
+    style D fill:#fff4e1
+    style E fill:#e8f5e9
+    style F fill:#ffe1e1
 ```
 
 ---
@@ -295,26 +292,20 @@ unified_planner:
 
 All `SinglePlanner` children share the **same MotionGen instance**:
 
-```
-┌────────────────────────────────────────────────────┐
-│         ConfigWrapperMotion                        │
-│  ┌──────────────────────────────────────────────┐  │
-│  │  MotionGen (warmup once, ~3-5 seconds)      │  │
-│  └──────────────────────────────────────────────┘  │
-└────────────────────┬───────────────────────────────┘
-                     │ set_motion_gen()
-                     ▼
-         ┌─────────────────────────┐
-         │  SinglePlanner._shared  │ (class variable)
-         └───────────┬─────────────┘
-                     │
-        ┌────────────┼───────────┐
-        │            │           │
-        ▼            ▼           ▼
-   ┌─────────┐ ┌──────────┐ ┌─────────┐
-   │Classic  │ │MultiPoint│ │JointSpace│
-   │Planner  │ │ Planner  │ │ Planner  │
-   └─────────┘ └──────────┘ └─────────┘
+```mermaid
+flowchart TD
+    A[ConfigWrapperMotion] --> B[MotionGen<br/>warmup once ~3-5 seconds]
+    B -->|set_motion_gen| C[SinglePlanner._shared<br/>class variable]
+    C --> D[ClassicPlanner]
+    C --> E[MultiPointPlanner]
+    C --> F[JointSpacePlanner]
+
+    style A fill:#e1f5ff
+    style B fill:#ffe1e1
+    style C fill:#fff4e1
+    style D fill:#e8f5e9
+    style E fill:#e8f5e9
+    style F fill:#e8f5e9
 ```
 
 **Benefits**:
@@ -393,32 +384,42 @@ def generate_launch_description():
 
 The camera system provides dynamic obstacle detection using the **Strategy Pattern** to support different camera types.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  CameraStrategy (ABC)                   │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  + __init__(node, name, topic, camera_info, ...)│   │
-│  │  + set_update_callback(callback)                 │   │
-│  │  + _update_callback(msg) [abstract]              │   │
-│  │  # TF2 integration for camera pose               │   │
-│  │  # ROS2 subscription management                  │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-                           △
-                           │
-         ┌─────────────────┴──────────────────┐
-         │                                    │
-┌────────┴──────────────┐         ┌───────────┴────────────┐
-│ DepthMapCameraStrategy│         │PointCloudCameraStrategy│
-│                       │         │                        │
-│  For: RealSense D435  │         │  For: Segmented PCD    │
-│  Input: Depth Image   │         │  Input: PointCloud2    │
-│  Output: CameraObs    │         │  Output: VoxelGrid     │
-│                       │         │                        │
-│  + callback_depth_map │         │  + pointcloud_callback │
-│  + intrinsics matrix  │         │  + FastVoxelBuilder    │
-│  + TF2 pose lookup    │         │  + ESDF computation    │
-└───────────────────────┘         └────────────────────────┘
+```mermaid
+classDiagram
+    class CameraStrategy {
+        <<abstract>>
+        #node: Node
+        #name: str
+        #tf_buffer: Buffer
+        +__init__(node, name, topic, camera_info, frame_id)
+        +set_update_callback(callback)
+        +_update_callback(msg)*
+    }
+
+    class DepthMapCameraStrategy {
+        -depth_map: Tensor
+        -intrinsics: Tensor
+        +callback_depth_map(msg)
+        +For: RealSense D435
+        +Input: Depth Image
+        +Output: CameraObservation
+    }
+
+    class PointCloudCameraStrategy {
+        -current_voxelgrid: VoxelGrid
+        -builder: FastVoxelGridBuilder
+        +pointcloud_callback(msg)
+        +For: Segmented PCD
+        +Input: PointCloud2
+        +Output: VoxelGrid + ESDF
+    }
+
+    CameraStrategy <|-- DepthMapCameraStrategy
+    CameraStrategy <|-- PointCloudCameraStrategy
+
+    note for CameraStrategy "TF2 integration\nROS2 subscriptions"
+    note for DepthMapCameraStrategy "Intrinsics matrix\nTF2 pose lookup"
+    note for PointCloudCameraStrategy "FastVoxelBuilder\nESDF computation"
 ```
 
 ### Strategy Implementations
@@ -427,46 +428,27 @@ The camera system provides dynamic obstacle detection using the **Strategy Patte
 **Use case**: RGB-D cameras (Intel RealSense, Azure Kinect)
 
 **Data Flow**:
-```
-┌──────────────────┐
-│  Depth Camera    │
-│  (RealSense D435)│
-└────────┬─────────┘
-         │
-         ├─> /camera/depth/image_rect_raw (sensor_msgs/Image)
-         └─> /camera/depth/camera_info (sensor_msgs/CameraInfo)
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  DepthMapCameraStrategy                 │
-│  ┌───────────────────────────────────┐  │
-│  │ 1. Get intrinsics from CameraInfo │  │
-│  │    - Extract K matrix [fx,fy,cx,cy]│ │
-│  │    - Create 3x3 intrinsics tensor │  │
-│  │                                   │  │
-│  │ 2. Convert depth image to tensor  │  │
-│  │    - 16UC1 (mm) → float (m)       │  │
-│  │    - 32FC1 → float (m)            │  │
-│  │    - Move to GPU                  │  │
-│  │                                   │  │
-│  │ 3. Lookup camera pose via TF2     │  │
-│  │    - Transform: base_link → camera│  │
-│  │    - Convert to cuRobo format     │  │
-│  │                                   │  │
-│  │ 4. Create CameraObservation       │  │
-│  │    - depth_image                  │  │
-│  │    - intrinsics                   │  │
-│  │    - pose                         │  │
-│  └───────────────────────────────────┘  │
-└─────────────────┬───────────────────────┘
-                  │
-                  ▼
-         ┌─────────────────────┐
-         │  WorldModel          │
-         │  + add_camera_frame()│
-         │  + process_frames()  │
-         │  + update_blox_hashes│
-         └─────────────────────┘
+```mermaid
+flowchart TD
+    A[Depth Camera<br/>RealSense D435] --> B1[/camera/depth/image_rect_raw]
+    A --> B2[/camera/depth/camera_info]
+
+    B1 --> C[DepthMapCameraStrategy]
+    B2 --> C
+
+    C --> D1[1. Get intrinsics from CameraInfo<br/>Extract K matrix fx,fy,cx,cy<br/>Create 3x3 intrinsics tensor]
+    D1 --> D2[2. Convert depth image to tensor<br/>16UC1 mm → float m<br/>32FC1 → float m<br/>Move to GPU]
+    D2 --> D3[3. Lookup camera pose via TF2<br/>Transform: base_link → camera<br/>Convert to cuRobo format]
+    D3 --> D4[4. Create CameraObservation<br/>depth_image + intrinsics + pose]
+
+    D4 --> E[WorldModel]
+    E --> F1[add_camera_frame]
+    E --> F2[process_frames]
+    E --> F3[update_blox_hashes]
+
+    style A fill:#e1f5ff
+    style C fill:#fff4e1
+    style E fill:#e8f5e9
 ```
 
 **Configuration**:
@@ -489,46 +471,24 @@ camera:
 **Use case**: Pre-processed point clouds (robot segmentation)
 
 **Data Flow**:
-```
-┌──────────────────┐
-│  Point Cloud     │
-│  (Segmented)     │
-└────────┬─────────┘
-         │
-         └─> /masked_point_cloud (sensor_msgs/PointCloud2)
-         │
-         ▼
-┌──────────────────────────────────────────┐
-│  PointCloudCameraStrategy                │
-│  ┌────────────────────────────────────┐  │
-│  │ 1. Convert PointCloud2 → NumPy    │  │
-│  │    - Extract XYZ coordinates      │  │
-│  │    - Filter NaN/invalid points    │  │
-│  │                                   │  │
-│  │ 2. FastVoxelGridBuilder           │  │
-│  │    - Discretize points to voxels  │  │
-│  │    - Fixed grid (100x100x100)     │  │
-│  │    - Vectorized operations        │  │
-│  │                                   │  │
-│  │ 3. Compute ESDF                   │  │
-│  │    - Distance transform           │  │
-│  │    - Positive = inside obstacle   │  │
-│  │    - Negative = free space        │  │
-│  │                                   │  │
-│  │ 4. Create VoxelGrid               │  │
-│  │    - Feature tensor (ESDF)        │  │
-│  │    - Grid dimensions & voxel_size │  │
-│  │    - Pose (origin)                │  │
-│  └────────────────────────────────────┘  │
-└──────────────────┬───────────────────────┘
-                   │
-                   ▼
-          ┌─────────────────────┐
-          │  WorldModel          │
-          │  + update_voxel_data │
-          │  + load_collision_   │
-          │    model()           │
-          └─────────────────────┘
+```mermaid
+flowchart TD
+    A[Point Cloud<br/>Segmented] --> B[/masked_point_cloud<br/>PointCloud2]
+
+    B --> C[PointCloudCameraStrategy]
+
+    C --> D1[1. Convert PointCloud2 → NumPy<br/>Extract XYZ coordinates<br/>Filter NaN/invalid points]
+    D1 --> D2[2. FastVoxelGridBuilder<br/>Discretize points to voxels<br/>Fixed grid 100x100x100<br/>Vectorized operations]
+    D2 --> D3[3. Compute ESDF<br/>Distance transform<br/>Positive = inside obstacle<br/>Negative = free space]
+    D3 --> D4[4. Create VoxelGrid<br/>Feature tensor ESDF<br/>Grid dimensions & voxel_size<br/>Pose origin]
+
+    D4 --> E[WorldModel]
+    E --> F1[update_voxel_data]
+    E --> F2[load_collision_model]
+
+    style A fill:#e1f5ff
+    style C fill:#fff4e1
+    style E fill:#e8f5e9
 ```
 
 **Configuration**:
@@ -560,34 +520,21 @@ camera:
 
 ### Integration with Planning
 
-```
-┌────────────────┐
-│  Camera Data   │
-└───────┬────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│  CameraStrategy                 │
-│  (DepthMap or PointCloud)       │
-└───────┬─────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│  WorldModel                     │
-│  - add_camera_frame() or        │
-│  - update_voxel_data()          │
-└───────┬─────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│  MotionGen / MpcSolver          │
-│  (Planner uses updated world)   │
-└───────┬─────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│  Collision-Free Trajectory      │
-└─────────────────────────────────┘
+```mermaid
+flowchart TD
+    A[Camera Data] --> B[CameraStrategy<br/>DepthMap or PointCloud]
+    B --> C[WorldModel]
+    C --> D1[add_camera_frame]
+    C --> D2[update_voxel_data]
+    D1 --> E
+    D2 --> E[MotionGen / MpcSolver<br/>Planner uses updated world]
+    E --> F[Collision-Free Trajectory]
+
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#ffe1e1
+    style E fill:#e8f5e9
+    style F fill:#c8e6c9
 ```
 
 **Key Points**:
