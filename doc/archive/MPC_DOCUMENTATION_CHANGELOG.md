@@ -73,7 +73,7 @@ This changelog documents the comprehensive MPC (Model Predictive Control) docume
 ### 1. **README.md**
 - **Changes**:
   - ✅ Added MPC Planner tutorial to tutorials section (#5)
-  - ✅ Fixed broken tutorial link: `3_adding_obstacles.md` → `adding_collision_objects.md`
+  - ✅ Fixed broken tutorial link: `03-collision-objects.md` → `adding_collision_objects.md`
   - ✅ Fixed IK/FK tutorial link: `6_ik_fk_services.md` → `ik_fk_services.md`
   - ✅ Added Point Cloud Obstacle Detection tutorial (#7)
   - ✅ Added Unified Planner Architecture to Concepts section
@@ -122,8 +122,8 @@ Enhanced document interconnection:
 doc/
 ├── tutorials/
 │   ├── 1_first_trajectory.md
-│   ├── 2_adding_your_robot.md
-│   ├── 4_dynamic_strategy_switching.md  (broken #3 reference)
+│   ├── 02-adding-your-robot.md
+│   ├── 04-strategy-switching.md  (broken #3 reference)
 │   └── (MPC tutorial missing)
 └── concepts/
     ├── architecture.md
@@ -136,9 +136,9 @@ doc/
 doc/
 ├── tutorials/
 │   ├── 1_first_trajectory.md
-│   ├── 2_adding_your_robot.md
+│   ├── 02-adding-your-robot.md
 │   ├── adding_collision_objects.md  (fixed reference)
-│   ├── 4_dynamic_strategy_switching.md
+│   ├── 04-strategy-switching.md
 │   ├── 5_mpc_planner.md  ⭐ NEW (573 lines)
 │   ├── ik_fk_services.md  (fixed reference)
 │   └── pointcloud_obstacle_detection.md

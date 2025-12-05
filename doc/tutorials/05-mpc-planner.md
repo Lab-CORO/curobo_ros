@@ -561,7 +561,7 @@ if not result.success:
  
 ## Next Steps
  
-- [Batch Planner Tutorial](6_batch_planner.md) - Multiple trajectory generation
+
 - [Constrained Planning](7_constrained_planning.md) - Custom constraints
 - [Unified Planner Concepts](../concepts/unified_planner.md) - Deep dive into architecture
 - [Performance Optimization](../concepts/warmup_async.md) - GPU optimization

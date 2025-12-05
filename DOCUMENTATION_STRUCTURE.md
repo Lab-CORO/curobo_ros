@@ -22,7 +22,7 @@ doc/
 
 ### Files Migrated to doc/getting-started/
 - `doc/troubleshooting.md` → `getting-started/troubleshooting.md`
-- `doc/getting_started.md` → `getting-started/installation.md`
+- `doc/getting-started/installation.md` → `getting-started/installation.md`
 - `doc/concepts/introduction.md` → `getting-started/introduction.md`
 - `doc/concepts/docker_workflow.md` → `getting-started/docker-workflow.md`
 
@@ -35,9 +35,9 @@ doc/
 
 ### Tutorials Renamed (01-07)
 - `1_first_trajectory.md` → `01-first-trajectory.md`
-- `2_adding_your_robot.md` → `02-adding-your-robot.md`
+- `02-adding-your-robot.md` → `02-adding-your-robot.md`
 - `adding_collision_objects.md` → `03-collision-objects.md`
-- `4_dynamic_strategy_switching.md` → `04-strategy-switching.md`
+- `04-strategy-switching.md` → `04-strategy-switching.md`
 - `5_mpc_planner.md` → `05-mpc-planner.md`
 - `ik_fk_services.md` → `06-ik-fk-services.md`
 - `pointcloud_obstacle_detection.md` → `07-pointcloud-detection.md`
@@ -128,7 +128,7 @@ root/
 ├── TESTING_PLANNERS.md (FR)
 ├── DOOSAN_DEPENDENCIES.md
 └── doc/
-    ├── getting_started.md
+    ├── getting-started/installation.md
     ├── troubleshooting.md
     ├── concepts/
     │   ├── introduction.md

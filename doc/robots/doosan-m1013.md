@@ -201,7 +201,7 @@ urdf = Command(['cat ', PathJoinSubstitution([
 
 ### Fichiers de documentation
 - `README.md:20` - Lien vers tutoriel doosan
-- `doc/getting_started.md:70` - Lien vers tutoriel doosan
+- `doc/getting-started/installation.md:70` - Lien vers tutoriel doosan
 - `doc/tutorials/doosan_example.md` - **Tutoriel complet** sur le Doosan M1013
 - `doc/concepts/ros_interfaces.md:33` - Documentation du paramètre `robot_config_file`
 - `doc/concepts/architecture.md:24,33,41` - Diagrammes incluant `DoosanControl`

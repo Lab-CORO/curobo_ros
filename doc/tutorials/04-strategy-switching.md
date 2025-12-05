@@ -626,8 +626,8 @@ During switch:
 
 ## Next Steps
 
-- **[Your First Trajectory](1_first_trajectory.md)** - Generate trajectories with different strategies
-- **[Adding Your Robot](2_adding_your_robot.md)** - Create configuration for your robot
+- **[Your First Trajectory](01-first-trajectory.md)** - Generate trajectories with different strategies
+- **[Adding Your Robot](02-adding-your-robot.md)** - Create configuration for your robot
 - **[Architecture](../concepts/architecture.md)** - Understand system architecture
 
 ---

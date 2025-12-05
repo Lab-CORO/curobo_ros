@@ -46,7 +46,7 @@ Historical documentation and migration plans
 ## 🎯 Quick Navigation
 
 ### I want to...
-- **Install curobo_ros** → [Getting Started](getting-started/)
+- **Install curobo_ros** → [Getting Started](getting-started/installation.md)
 - **Generate my first trajectory** → [Tutorial 1](tutorials/01-first-trajectory.md)
 - **Integrate my robot** → [Tutorial 2](tutorials/02-adding-your-robot.md)
 - **Understand the architecture** → [Concepts: Architecture](concepts/architecture.md)
@@ -60,7 +60,7 @@ Historical documentation and migration plans
 ## 📖 Learning Paths
 
 ### Path 1: New User (Beginner)
-1. [Getting Started](getting-started/)
+1. [Getting Started](getting-started/installation.md)
 2. [Tutorial 1: Your First Trajectory](tutorials/01-first-trajectory.md)
 3. [Tutorial 3: Collision Objects](tutorials/03-collision-objects.md)
 
@@ -96,6 +96,6 @@ doc/
 
 ---
 
-**Quick Links**: [Getting Started](getting-started/) | [Tutorials](tutorials/) | [Concepts](concepts/) | [Robots](robots/)
+**Quick Links**: [Getting Started](getting-started/installation.md) | [Tutorials](tutorials/) | [Concepts](concepts/) | [Robots](robots/)
 
 [← Back to Project README](../README.md)

@@ -324,7 +324,7 @@ ros2 param set /unified_planner timeout 2.0
 ros2 launch curobo_ros unified_planner.launch.py robot_config_file:=path/to/your_robot.yml
 ```
 
-See [Adding Your Robot Tutorial](../tutorials/2_adding_your_robot.md) for details.
+See [Adding Your Robot Tutorial](../tutorials/02-adding-your-robot.md) for details.
 
 ---
 
@@ -545,5 +545,5 @@ ros2 param set /unified_planner time_dilation_factor 0.8  # faster
 ## Next Steps
 
 - **[Your First Trajectory](../tutorials/1_first_trajectory.md)** - Practice using parameters
-- **[Adding Your Robot](../tutorials/2_adding_your_robot.md)** - Configure parameters for your robot
+- **[Adding Your Robot](../tutorials/02-adding-your-robot.md)** - Configure parameters for your robot
 - **[Troubleshooting](../troubleshooting.md)** - Solutions to common parameter-related issues

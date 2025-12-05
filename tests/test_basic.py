@@ -149,7 +149,7 @@ def main():
         print("       \"{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}\"")
         print("\n  2. Read the tutorials:")
         print("     - doc/tutorials/1_first_trajectory.md")
-        print("     - doc/tutorials/2_adding_your_robot.md")
+        print("     - doc/tutorials/02-adding-your-robot.md")
         exit_code = 0
     else:
         print("⚠️  Some tests failed. Please check the output above for details.")

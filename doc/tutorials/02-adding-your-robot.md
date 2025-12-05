@@ -766,8 +766,8 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 
 ## Next Steps
 
-- **[Managing Obstacles](3_adding_obstacles.md)** - Add obstacles to avoid collisions
-- **[Dynamic Strategy Switching](4_dynamic_strategy_switching.md)** - Switch between robot control modes
+- **[Managing Obstacles](03-collision-objects.md)** - Add obstacles to avoid collisions
+- **[Dynamic Strategy Switching](04-strategy-switching.md)** - Switch between robot control modes
 - **[Parameters Guide](../concepts/parameters.md)** - Tune performance parameters
 
 ---

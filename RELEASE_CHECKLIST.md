@@ -83,7 +83,7 @@ self.collision_cache = {'obb': 100, 'blox': 10} # TODO: make this configurable
 
 **Fichiers obsolètes dans mpc**:
 - Liens vers `doc/concepts/introduction.md` (maintenant `getting-started/introduction.md`)
-- Liens vers `doc/getting_started.md` (maintenant `getting-started/installation.md`)
+- Liens vers `doc/getting-started/installation.md` (maintenant `getting-started/installation.md`)
 - Liens vers `doc/tutorials/1_first_trajectory.md` (maintenant `01-first-trajectory.md`)
 - Référence à `doc/concepts/warmup_async.md` (supprimé)
 

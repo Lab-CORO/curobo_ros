@@ -44,7 +44,7 @@
 
 ### Phase 1: Robot Setup Tutorial (Priority: HIGH)
 
-**File**: `doc/tutorials/2_adding_your_robot.md`
+**File**: `doc/tutorials/02-adding-your-robot.md`
 
 **Current State**:
 - Method 1: Isaac Sim (8 steps, ~1 hour, requires 30GB Isaac Sim)
@@ -125,7 +125,7 @@ ros2 service call /unified_planner/generate_trajectory ...
 
 ### Phase 3: Getting Started Guide (Priority: HIGH)
 
-**File**: `doc/getting_started.md`
+**File**: `doc/getting-started/installation.md`
 
 **Changes**:
 - Update launch command
@@ -136,8 +136,8 @@ ros2 service call /unified_planner/generate_trajectory ...
 
 **Files to update** (15 files):
 1. `doc/tutorials/1_first_trajectory.md` - Update all examples
-2. `doc/tutorials/2_adding_your_robot.md` - Replace Isaac Sim section
-3. `doc/tutorials/4_dynamic_strategy_switching.md`
+2. `doc/tutorials/02-adding-your-robot.md` - Replace Isaac Sim section
+3. `doc/tutorials/04-strategy-switching.md`
 4. `doc/tutorials/adding_collision_objects.md` - Many service calls
 5. `doc/tutorials/doosan_example.md`
 6. `doc/tutorials/dynamic_strategy_switching.md`
@@ -174,8 +174,8 @@ Update architecture diagrams and explanations to reflect unified planner.
 ### Node Name Updates
 - [ ] README.md Quick Start section
 - [ ] README.md documentation links
-- [ ] getting_started.md launch commands
-- [ ] getting_started.md service examples
+- [ ] getting-started/installation.md launch commands
+- [ ] getting-started/installation.md service examples
 - [ ] Tutorial 1: First Trajectory
 - [ ] Tutorial 2: Adding Your Robot
 - [ ] Tutorial 4: Dynamic Strategy Switching

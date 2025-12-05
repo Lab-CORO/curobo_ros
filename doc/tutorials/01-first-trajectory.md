@@ -11,7 +11,7 @@ This tutorial walks you through generating your first motion plan with curobo_ro
 
 ## Prerequisites
 
-- Completed [Getting Started Guide](../getting_started.md)
+- Completed [Getting Started Guide](../getting-started/installation.md)
 - unified_planner node is running
 - RViz is open
 
@@ -475,10 +475,10 @@ python3 my_trajectory_client.py
 
 ## Next Steps
 
-- **[Adding Your Robot](2_adding_your_robot.md)** - Integrate your own robot (Doosan M1013 example)
-- **[Managing Obstacles](3_adding_obstacles.md)** - Advanced obstacle management
+- **[Adding Your Robot](02-adding-your-robot.md)** - Integrate your own robot (Doosan M1013 example)
+- **[Managing Obstacles](03-collision-objects.md)** - Advanced obstacle management
 - **[Parameters Guide](../concepts/parameters.md)** - Deep dive into all parameters
-- **[Dynamic Strategy Switching](4_dynamic_strategy_switching.md)** - Switch between robot modes
+- **[Dynamic Strategy Switching](04-strategy-switching.md)** - Switch between robot modes
 
 ---
 
