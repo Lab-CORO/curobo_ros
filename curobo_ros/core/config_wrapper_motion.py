@@ -67,8 +67,8 @@ class ConfigWrapperMotion(ConfigWrapper):
         # TODO Have these values be able to be overwritten in a launch file
         # Motion generation parameters
         self.trajopt_tsteps = 32
-        self.collision_cache = {'obb': 100, 'blox': 10} # TODO: make this configurable as ros param
-        self.collision_checker_type = CollisionCheckerType.BLOX
+        # Note: collision_checker_type and collision_cache are now managed by ObstacleManager
+        # Default is CollisionCheckerType.BLOX, can be changed via property setter
         self.use_cuda_graph = True
         self.num_trajopt_seeds = 12 
         self.num_graph_seeds = 12
@@ -161,9 +161,180 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         return response
 
+    def _restore_obstacles_to_world_checker(self, node):
+        """
+        Restore all saved obstacles to the world checker after recreation.
+
+        This method is called after creating a new MotionGen to re-add all
+        obstacles that were stored in cuboid_list and mesh_list.
+        """
+        from curobo.geom.types import WorldConfig
+
+        # Build WorldConfig based on current checker type
+        if self.current_collision_checker == CollisionCheckerType.MESH:
+            # MESH checker: can handle both cuboids and meshes
+            world_cfg_to_add = WorldConfig(
+                cuboid=self.cuboid_list,
+                mesh=self.mesh_list,
+            )
+            self.node.get_logger().debug(
+                f"Restoring to MESH: {len(self.cuboid_list)} cuboids, {len(self.mesh_list)} meshes"
+            )
+        else:
+            # BLOX/PRIMITIVE: convert meshes to cuboids
+            combined_cuboids = self.cuboid_list.copy()
+            for mesh_obs in self.mesh_list:
+                cuboid = mesh_obs.get_cuboid()
+                combined_cuboids.append(cuboid)
+
+            world_cfg_to_add = WorldConfig(
+                cuboid=combined_cuboids,
+                mesh=[],
+            )
+            self.node.get_logger().debug(
+                f"Restoring to BLOX: {len(combined_cuboids)} cuboids (converted {len(self.mesh_list)} meshes)"
+            )
+
+        # Update the world_cfg reference
+        self.world_cfg = world_cfg_to_add
+
+        # Add obstacles to the motion_gen's world checker
+        node.motion_gen.update_world(world_cfg_to_add)
+
+        self.node.get_logger().info(
+            f"✅ Restored {len(self.cuboid_list)} cuboids and {len(self.mesh_list)} meshes"
+        )
+
+    def recreate_motion_gen(self, node):
+        """
+        Recreate MotionGen with new collision checker type.
+
+        IMPORTANT: This destroys the current motion_gen and creates a new one.
+        All GPU memory is released and reallocated.
+
+        Returns:
+            bool: True if recreation successful
+        """
+        from curobo.wrap.reacher.motion_gen import MotionGenConfig, MotionGen
+        from curobo_ros.planners.single_planner import SinglePlanner
+
+        self.node.get_logger().info(
+            f"Recreating MotionGen with checker: {self.collision_checker_type}"
+        )
+
+        # 0. Temporarily cancel the collision spheres timer to avoid CUDA graph conflicts
+        # During CUDA graph capture (warmup), no other CUDA operations can occur
+        timer_was_active = False
+        if hasattr(self, 'publish_collision_spheres_timer') and self.publish_collision_spheres_timer is not None:
+            self.node.get_logger().info("Pausing collision spheres timer during MotionGen recreation...")
+            self.publish_collision_spheres_timer.cancel()
+            timer_was_active = True
+
+        # 1. Clear current motion_gen
+        if hasattr(node, 'motion_gen') and node.motion_gen is not None:
+            node.motion_gen.world_coll_checker.clear_cache()
+            del node.motion_gen
+            node.motion_gen = None
+
+        # 2. Update collision cache
+        # Note: This delegates to ObstacleManager._update_collision_cache()
+        # Ensures cache is synchronized before recreating MotionGen
+        self._update_collision_cache()
+
+        # 3. Recreate MotionGen with new checker type
+        try:
+            # Use the same parameters as in set_motion_gen_config()
+            motion_gen_config = MotionGenConfig.load_from_robot_config(
+                self.robot_cfg,
+                self.world_cfg,
+                node.tensor_args,
+                trajopt_tsteps=self.trajopt_tsteps,
+                collision_cache=self.collision_cache,
+                collision_checker_type=self.collision_checker_type,
+                use_cuda_graph=self.use_cuda_graph,
+                num_trajopt_seeds=self.num_trajopt_seeds,
+                num_graph_seeds=self.num_graph_seeds,
+                interpolation_steps=10000,
+                collision_activation_distance=node.get_parameter(
+                    'collision_activation_distance').get_parameter_value().double_value,
+                self_collision_check=self.self_collision_check,
+                maximum_trajectory_dt=self.maximum_trajectory_dt,
+            )
+
+            # Create new MotionGen
+            node.motion_gen = MotionGen(motion_gen_config)
+
+            # Warmup (important!)
+            # CRITICAL: No other CUDA operations can occur during warmup (CUDA graph capture)
+            self.node.get_logger().info("Warming up new MotionGen...")
+            node.motion_gen.warmup(
+                enable_graph=True,
+                warmup_js_trajopt=False,
+            )
+
+            # Update shared instance for all planners
+            SinglePlanner.set_motion_gen(node.motion_gen)
+
+            # Update current checker
+            self.current_collision_checker = self.collision_checker_type
+
+            # Re-add all saved obstacles to the new world checker
+            self.node.get_logger().info(
+                f"Re-adding {len(self.cuboid_list)} cuboids and {len(self.mesh_list)} meshes to new checker..."
+            )
+            self._restore_obstacles_to_world_checker(node)
+
+            # Restore collision spheres timer if it was active
+            if timer_was_active:
+                from functools import partial
+                self.node.get_logger().info("Resuming collision spheres timer...")
+                self.publish_collision_spheres_timer = self.node.create_timer(
+                    0.5, partial(self.publish_collision_spheres, self.node)
+                )
+
+            self.node.get_logger().info(
+                f"MotionGen recreated successfully with {self.collision_checker_type}"
+            )
+
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"Failed to recreate MotionGen: {e}")
+            import traceback
+            self.node.get_logger().error(traceback.format_exc())
+
+            # Restore timer even on failure
+            if timer_was_active:
+                from functools import partial
+                self.node.get_logger().info("Restoring collision spheres timer after error...")
+                self.publish_collision_spheres_timer = self.node.create_timer(
+                    0.5, partial(self.publish_collision_spheres, self.node)
+                )
+
+            return False
+
     def update_world_config(self, node):
-        node.motion_gen.world_coll_checker.clear_cache()
-        node.motion_gen.update_world(self.world_cfg)
+        """
+        Update world configuration based on current collision checker.
+
+        This is called when obstacles are added/removed manually (not during checker switch).
+        """
+        # Clear cache if safe to do so
+        # For BLOX checker, _blox_mapper is only created after first update_world() call
+        if hasattr(node.motion_gen.world_coll_checker, '_blox_mapper'):
+            if node.motion_gen.world_coll_checker._blox_mapper is not None:
+                node.motion_gen.world_coll_checker.clear_cache()
+        else:
+            # For MESH/PRIMITIVE checkers, clear_cache is always safe
+            node.motion_gen.world_coll_checker.clear_cache()
+
+        # Restore obstacles using the shared method
+        self._restore_obstacles_to_world_checker(node)
+
+        self.node.get_logger().info(
+            f"Updated world: {len(self.cuboid_list)} cuboids, {len(self.mesh_list)} meshes "
+            f"(checker: {self.current_collision_checker})"
+        )
 
     
 
