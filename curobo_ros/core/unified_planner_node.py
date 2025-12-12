@@ -70,8 +70,13 @@ class UnifiedPlannerNode(Node):
         self.config_wrapper_motion = ConfigWrapperMotion(self, self.robot_context)
         self.config_wrapper_mpc = None  # Created on-demand when MPC is first used
 
-        # Shared world_cfg for all planners
-        self.shared_world_cfg = self.config_wrapper_motion.world_cfg
+        # Shared world_cfg for all planners - references ObstacleManager's world_cfg
+        # This is a reference, not a copy, so all planners see the same obstacles
+        self.shared_world_cfg = self.config_wrapper_motion.obstacle_manager.get_world_cfg()
+
+        # IMPORTANT: shared_world_cfg is a reference to obstacle_manager.world_cfg.
+        # When obstacles are added/removed via ROS services, all planners automatically
+        # see the changes after update_world_config() is called.
 
         # Initialize solvers (created on-demand)
         self.motion_gen = None
@@ -442,6 +447,9 @@ class UnifiedPlannerNode(Node):
 
             self.get_logger().info(
                 f"✅ Planner switch: {previous_name} → {planner.get_planner_name()}"
+            )
+            self.get_logger().info(
+                f"Updated world: {self.config_wrapper_motion.obstacle_manager.get_world_cfg()} cuboids, meshes"
             )
 
         except Exception as e:

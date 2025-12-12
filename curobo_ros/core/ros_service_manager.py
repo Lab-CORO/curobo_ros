@@ -109,7 +109,7 @@ class RosServiceManager:
         # Update world configuration to propagate obstacle to cuRobo world_model
         if response.success and self.config_wrapper is not None:
             self.config_wrapper.update_world_config(node)
-
+            
         return response
 
     def _callback_remove_object(self, node, request: RemoveObject, response):

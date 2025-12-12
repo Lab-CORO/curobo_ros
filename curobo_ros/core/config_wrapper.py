@@ -51,7 +51,12 @@ class ConfigWrapper(ABC):
         )
 
         # Phase 4: ObstacleManager - Manage obstacles (before RosServiceManager)
-        self.obstacle_manager = ObstacleManager(node, self.config_manager)
+        # Pass initial world_cfg from ConfigManager to ObstacleManager
+        self.obstacle_manager = ObstacleManager(
+            node,
+            self.config_manager,
+            initial_world_cfg=self.config_manager.get_world_config()
+        )
 
         # Phase 5: CameraSystemManager - Manage cameras
         # Declare camera config parameter
@@ -86,13 +91,29 @@ class ConfigWrapper(ABC):
 
     @property
     def world_cfg(self):
-        """Get world configuration from ConfigManager"""
-        return self.config_manager.world_cfg
+        """
+        Get world configuration from ObstacleManager (single source of truth).
+
+        This property provides backward-compatible access to the authoritative
+        world_cfg maintained by ObstacleManager.
+        """
+        return self.obstacle_manager.get_world_cfg()
 
     @world_cfg.setter
     def world_cfg(self, value):
-        """Set world configuration in ConfigManager"""
-        self.config_manager.world_cfg = value
+        """
+        Set world configuration in ObstacleManager.
+
+        DEPRECATED: Direct assignment is discouraged. Use ObstacleManager methods
+        (add_object, remove_object, etc.) to modify world_cfg.
+
+        This setter is kept for backward compatibility only.
+        """
+        self.obstacle_manager.world_cfg = value
+        self.node.get_logger().warning(
+            "Direct world_cfg assignment is deprecated. "
+            "Use obstacle_manager methods instead."
+        )
 
     @property
     def robot_cfg(self):
@@ -111,13 +132,13 @@ class ConfigWrapper(ABC):
 
     @property
     def cuboid_list(self):
-        """Get cuboid obstacle list from ObstacleManager"""
-        return self.obstacle_manager.cuboid_list
+        """Get cuboid obstacle list from ObstacleManager's WorldConfig"""
+        return self.obstacle_manager.world_cfg.cuboid
 
     @property
     def mesh_list(self):
-        """Get mesh obstacle list from ObstacleManager"""
-        return self.obstacle_manager.mesh_list
+        """Get mesh obstacle list from ObstacleManager's WorldConfig"""
+        return self.obstacle_manager.world_cfg.mesh
 
     @property
     def obstacle_names(self):

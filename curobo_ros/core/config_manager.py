@@ -9,11 +9,14 @@ import torch
 
 class ConfigManager:
     """
-    Manages all configuration loading for robot and world.
+    Manages configuration loading for robot and world.
     Responsible for:
     - Loading ROS parameters
-    - Loading world configuration from YAML
+    - Loading INITIAL world configuration from YAML (passed to ObstacleManager)
     - Loading robot configuration from YAML
+
+    Note: world_cfg is loaded here but ownership transfers to ObstacleManager.
+          Use obstacle_manager.get_world_cfg() to access the authoritative version.
     """
 
     def __init__(self, node):
@@ -96,7 +99,16 @@ class ConfigManager:
         self.node.get_logger().info(f'Loaded robot config from: {robot_config_file}')
 
     def get_world_config(self) -> WorldConfig:
-        """Get the world configuration"""
+        """
+        Get the INITIAL world configuration loaded from file/defaults.
+
+        IMPORTANT: This returns the initial configuration only.
+        For the authoritative world_cfg with obstacles, use:
+            obstacle_manager.get_world_cfg()
+
+        Returns:
+            WorldConfig: Initial world configuration (without runtime obstacles)
+        """
         return self.world_cfg
 
     def get_robot_config(self) -> RobotConfig:

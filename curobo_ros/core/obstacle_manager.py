@@ -19,23 +19,53 @@ class ObstacleManager:
     - Computing voxel grids for collision checking
     """
 
-    def __init__(self, node, config_manager):
+    def __init__(self, node, config_manager, initial_world_cfg: 'WorldConfig' = None):
         """
         Initialize obstacle manager.
 
         Args:
             node: ROS2 node instance
-            config_manager: ConfigManager for accessing world_cfg
+            config_manager: ConfigManager for accessing configuration
+            initial_world_cfg: Optional initial WorldConfig from ConfigManager
         """
+        from curobo.geom.types import WorldConfig
+
         self.node = node
         self.config_manager = config_manager
 
-        # Separate lists for different obstacle types
-        # This allows us to preserve mesh geometry when using MESH collision checker
-        # and convert to cuboids when using BLOX collision checker
-        self.cuboid_list = []  # Stores cuboid and primitive obstacles
-        self.mesh_list = []    # Stores mesh obstacles with full geometry
-        self.obstacle_names = []  # Track all obstacle names for uniqueness check
+        # Initialize world_cfg - either from initial config or create empty
+        if initial_world_cfg is not None:
+            # Use provided world_cfg as base, preserving any blox/voxel settings
+            self.world_cfg = initial_world_cfg
+            # Ensure obstacle lists are initialized
+            if self.world_cfg.cuboid is None:
+                self.world_cfg.cuboid = []
+            if self.world_cfg.mesh is None:
+                self.world_cfg.mesh = []
+            if self.world_cfg.capsule is None:
+                self.world_cfg.capsule = []
+            if self.world_cfg.cylinder is None:
+                self.world_cfg.cylinder = []
+            if self.world_cfg.sphere is None:
+                self.world_cfg.sphere = []
+            node.get_logger().info(
+                "ObstacleManager initialized with world_cfg from ConfigManager"
+            )
+        else:
+            # Create empty world_cfg (backward compatibility)
+            self.world_cfg = WorldConfig(
+                mesh=[],
+                cuboid=[],
+                capsule=[],
+                cylinder=[],
+                sphere=[],
+            )
+            node.get_logger().info(
+                "ObstacleManager initialized with empty world_cfg"
+            )
+
+        # Track all obstacle names for uniqueness validation
+        self.obstacle_names = []
 
         # Collision checker configuration
         # Default collision checker (can be changed dynamically)
@@ -103,7 +133,7 @@ class ObstacleManager:
                     dims=extracted_dimensions,
                     color=extracted_color,
                 )
-                self.cuboid_list.append(obstacle)
+                self.world_cfg.cuboid.append(obstacle)
                 self.obstacle_names.append(request.name)
 
             case request.CAPSULE:
@@ -115,7 +145,7 @@ class ObstacleManager:
                     radius=extracted_dimensions[0],
                     color=extracted_color,
                 ).get_cuboid()
-                self.cuboid_list.append(obstacle)
+                self.world_cfg.cuboid.append(obstacle)
                 self.obstacle_names.append(request.name)
 
             case request.CYLINDER:
@@ -126,7 +156,7 @@ class ObstacleManager:
                     height=extracted_dimensions[1],
                     color=extracted_color,
                 ).get_cuboid()
-                self.cuboid_list.append(obstacle)
+                self.world_cfg.cuboid.append(obstacle)
                 self.obstacle_names.append(request.name)
 
             case request.SPHERE:
@@ -136,7 +166,7 @@ class ObstacleManager:
                     radius=extracted_dimensions[0],
                     color=extracted_color,
                 ).get_cuboid()
-                self.cuboid_list.append(obstacle)
+                self.world_cfg.cuboid.append(obstacle)
                 self.obstacle_names.append(request.name)
 
             case request.MESH:
@@ -154,7 +184,7 @@ class ObstacleManager:
                     file_path=request.mesh_file_path,
                     scale=extracted_dimensions
                 )
-                self.mesh_list.append(obstacle)
+                self.world_cfg.mesh.append(obstacle)
                 self.obstacle_names.append(request.name)
 
                 node.get_logger().info(
@@ -175,22 +205,22 @@ class ObstacleManager:
         """
         Remove an object from the world configuration.
         The object is removed based on the name requested.
-        Searches both cuboid_list and mesh_list.
+        Searches both world_cfg.cuboid and world_cfg.mesh.
         """
         found = False
 
         # Search in cuboid list
-        for i, obs in enumerate(self.cuboid_list):
+        for i, obs in enumerate(self.world_cfg.cuboid):
             if obs.name == request.name:
-                self.cuboid_list.pop(i)
+                self.world_cfg.cuboid.pop(i)
                 found = True
                 break
 
         # Search in mesh list if not found in cuboid list
         if not found:
-            for i, obs in enumerate(self.mesh_list):
+            for i, obs in enumerate(self.world_cfg.mesh):
                 if obs.name == request.name:
-                    self.mesh_list.pop(i)
+                    self.world_cfg.mesh.pop(i)
                     found = True
                     break
 
@@ -216,27 +246,38 @@ class ObstacleManager:
     def remove_all_objects(self, node, request: Trigger, response):
         """
         Remove all objects from the world configuration.
-        Since cuRobo only supports Cuboid object manipulation, it only needs to remove objects of that type.
+        Clears both cuboid and mesh obstacles from self.world_cfg.
         """
-        world_cfg = self.config_manager.world_cfg
+        # Clear all obstacles from the world configuration
+        num_cuboids = len(self.world_cfg.cuboid)
+        num_meshes = len(self.world_cfg.mesh)
 
-        # Get objects to remove
-        # Targeting only Cuboids protects any Blox that may have been added by cameras
-        for world_object in world_cfg.cuboid:
-            world_cfg.remove_obstacle(world_object.name)
-
-        # Empty the list of cuboids that lingers in the world config
-        world_cfg.cuboid = []
+        self.world_cfg.cuboid = []
+        self.world_cfg.mesh = []
+        self.obstacle_names = []
 
         response.success = True
-        response.message = 'All objects removed successfully'
+        response.message = f'All objects removed successfully ({num_cuboids} cuboids, {num_meshes} meshes)'
+
+        node.get_logger().info(
+            f"Cleared all obstacles: {num_cuboids} cuboids, {num_meshes} meshes"
+        )
+
         return response
 
     def get_obstacles(self, node, request: Trigger, response):
-        """Get list of all obstacle names"""
-        world_cfg = self.config_manager.world_cfg
-        for world_object in world_cfg.objects:
-            response.message = response.message + world_object.name
+        """
+        Get list of all obstacle names from ObstacleManager's world_cfg.
+
+        Returns:
+            Trigger.Response with message containing all obstacle names
+        """
+        # Use our own world_cfg (single source of truth)
+        # Don't use config_manager.world_cfg (that's just the initial template)
+        for world_object in self.world_cfg.objects:
+            response.message = response.message + world_object.name + "\n"
+
+        response.success = True
         return response
 
     def get_voxel_grid(self, node, request: GetVoxelGrid, response):
@@ -321,10 +362,10 @@ class ObstacleManager:
         - MESH checker: Uses OBB (Oriented Bounding Box) + mesh cache
         - BLOX/PRIMITIVE checkers: Use OBB + blox voxel cache
         """
-        if self.collision_checker_type == CollisionCheckerType.MESH:
-            self.collision_cache = {'obb': 100, 'mesh': 10}
-        else:  # BLOX or PRIMITIVE
-            self.collision_cache = {'obb': 100, 'blox': 10}
+        # if self.collision_checker_type == CollisionCheckerType.MESH:
+        self.collision_cache = {'obb': 100, 'mesh': 10, 'blox': 10}
+        # else:  # BLOX or PRIMITIVE
+            # self.collision_cache = {'obb': 100, }
 
     def set_collision_checker_type(self, checker_type):
         """
@@ -345,8 +386,35 @@ class ObstacleManager:
     def get_all_obstacles_for_world_config(self):
         """
         Get all obstacles for world config update.
-        Returns cuboid_list + mesh_list (or converted based on checker type).
+        Returns all obstacles from world_cfg (cuboid + mesh).
         """
-        # This method can be extended to handle mesh-to-cuboid conversion
-        # when using BLOX checker, as done in ConfigWrapperMotion
-        return self.cuboid_list + self.mesh_list
+        # Return all obstacles from the world configuration
+        return self.world_cfg.cuboid + self.world_cfg.mesh
+
+    def get_world_cfg(self):
+        """
+        Get the current WorldConfig (single source of truth).
+
+        This is the authoritative world configuration that includes all obstacles.
+        All other classes should use this getter instead of direct access.
+
+        Returns:
+            WorldConfig: The current world configuration with all obstacles
+
+        Thread Safety:
+            Returns the reference to the internal world_cfg. Python's GIL provides
+            sufficient protection for read operations. Modifications should only
+            happen through ObstacleManager's methods (add_object, remove_object, etc.)
+        """
+        return self.world_cfg
+
+    def update_voxel_size(self, voxel_size: float):
+        """
+        Update voxel size in world_cfg.blox configuration.
+
+        Args:
+            voxel_size: New voxel size in meters
+        """
+        if self.world_cfg.blox is not None and len(self.world_cfg.blox) > 0:
+            self.world_cfg.blox[0].voxel_size = voxel_size
+            self.node.get_logger().info(f"Updated voxel size to {voxel_size}m")
