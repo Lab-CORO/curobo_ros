@@ -1,6 +1,6 @@
 from functools import partial
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance
+from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache
 from visualization_msgs.msg import MarkerArray, Marker
 
 
@@ -39,6 +39,7 @@ class RosServiceManager:
         self.remove_all_objects_srv = None
         self.get_voxel_map_srv = None
         self.get_collision_distance_srv = None
+        self.set_collision_cache_srv = None
 
         # Publisher for collision spheres visualization
         self.publish_collision_spheres_pub = None
@@ -87,6 +88,12 @@ class RosServiceManager:
             GetCollisionDistance,
             self.node.get_name() + '/get_collision_distance',
             partial(self._callback_get_collision_distance, self.node)
+        )
+
+        self.set_collision_cache_srv = self.node.create_service(
+            SetCollisionCache,
+            self.node.get_name() + '/set_collision_cache',
+            partial(self._callback_set_collision_cache, self.node)
         )
 
         # Create publisher for collision spheres
@@ -152,6 +159,10 @@ class RosServiceManager:
         For now, raise NotImplementedError as in original ConfigWrapper.
         """
         raise NotImplementedError
+
+    def _callback_set_collision_cache(self, node, request: SetCollisionCache, response):
+        """Delegate set_collision_cache service to ObstacleManager"""
+        return self.obstacle_manager.set_collision_cache(node, request, response)
 
     def publish_collision_spheres(self, node):
         """
