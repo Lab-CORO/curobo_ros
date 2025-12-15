@@ -87,11 +87,10 @@ class ObstacleManager:
         # Collision checker configuration
         # Default collision checker (can be changed dynamically)
         self.collision_checker_type = CollisionCheckerType.BLOX
-        self.current_collision_checker = self.collision_checker_type
+
 
         # Adaptive collision cache based on checker type
-        self.collision_cache = None
-        self._update_collision_cache()
+        self.collision_cache = {'obb': 100, 'mesh': 10, 'blox': 10}
 
     def add_object(self, node, request: AddObject, response):
         """
@@ -259,7 +258,7 @@ class ObstacleManager:
 
                     node.get_logger().info(
                         f"Added MESH obstacle '{request.name}' "
-                        f"(mesh + {len(cubes)} cuboids, checker: {self.current_collision_checker})"
+                        f"(mesh + {len(cubes)} cuboids, checker: {self.collision_checker_type})"
                     )
 
                 except Exception as e:
@@ -463,34 +462,6 @@ class ObstacleManager:
 
         return response
 
-    def _update_collision_cache(self):
-        """
-        Update collision cache based on checker type.
-
-        Different collision checkers require different cache configurations:
-        - MESH checker: Uses OBB (Oriented Bounding Box) + mesh cache
-        - BLOX/PRIMITIVE checkers: Use OBB + blox voxel cache
-        """
-        # if self.collision_checker_type == CollisionCheckerType.MESH:
-        self.collision_cache = {'obb': 1000, 'mesh': 10, 'blox': 10}
-        # else:  # BLOX or PRIMITIVE
-            # self.collision_cache = {'obb': 100, }
-
-    def set_collision_checker_type(self, checker_type):
-        """
-        Set the collision checker type and update cache accordingly.
-
-        Args:
-            checker_type: CollisionCheckerType enum value (MESH, BLOX, or PRIMITIVE)
-        """
-        self.collision_checker_type = checker_type
-        self.current_collision_checker = checker_type
-        self._update_collision_cache()
-
-        self.node.get_logger().info(
-            f"Collision checker type set to: {checker_type}, "
-            f"cache: {self.collision_cache}"
-        )
 
     def set_collision_cache(self, node, request: SetCollisionCache.Request, response: SetCollisionCache.Response):
         """

@@ -145,25 +145,12 @@ class ConfigWrapper(ABC):
         """Get obstacle names from ObstacleManager"""
         return self.obstacle_manager.obstacle_names
 
-    @property
-    def current_collision_checker(self):
-        """Get current collision checker type from ObstacleManager"""
-        return self.obstacle_manager.current_collision_checker
-
-    @current_collision_checker.setter
-    def current_collision_checker(self, value):
-        """Set current collision checker type in ObstacleManager"""
-        self.obstacle_manager.current_collision_checker = value
 
     @property
     def collision_checker_type(self):
         """Get collision checker type from ObstacleManager"""
         return self.obstacle_manager.collision_checker_type
 
-    @collision_checker_type.setter
-    def collision_checker_type(self, value):
-        """Set collision checker type in ObstacleManager (updates cache automatically)"""
-        self.obstacle_manager.set_collision_checker_type(value)
 
     @property
     def collision_cache(self):
@@ -199,9 +186,6 @@ class ConfigWrapper(ABC):
         """Delegate collision spheres publishing to RosServiceManager"""
         return self.ros_service_manager.publish_collision_spheres(node)
 
-    def _update_collision_cache(self):
-        """Update collision cache - delegates to ObstacleManager"""
-        self.obstacle_manager._update_collision_cache()
 
     # ==================== Abstract Methods ====================
     # These must be implemented by child classes (ConfigWrapperMotion, IK, MPC)

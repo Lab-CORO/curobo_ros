@@ -174,6 +174,9 @@ class ConfigWrapperMotion(ConfigWrapper):
         # Get authoritative world_cfg from ObstacleManager
         world_cfg = self.obstacle_manager.get_world_cfg()
 
+        # Clear collision cache before updating (similar to ConfigWrapperIK)
+        node.motion_gen.world_coll_checker.clear_cache()
+
         # Update MotionGen's world model
         node.motion_gen.update_world(world_cfg)
 
@@ -182,7 +185,7 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         self.node.get_logger().info(
             f"Updated world: {num_cuboids} cuboids, {num_meshes} meshes "
-            f"(checker: {self.current_collision_checker})"
+            f"(checker: {self.collision_checker_type})"
         )
 
     

@@ -15,7 +15,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from std_srvs.srv import Trigger
 from sensor_msgs.msg import JointState as JointStateMsg
-from curobo_msgs.srv import TrajectoryGeneration, SetPlanner, SetCollisionChecker
+from curobo_msgs.srv import TrajectoryGeneration, SetPlanner
 from curobo_msgs.action import SendTrajectory, MpcMove
 
 from curobo.types.base import TensorDeviceType
@@ -117,13 +117,6 @@ class UnifiedPlannerNode(Node):
             callback_group=MutuallyExclusiveCallbackGroup()
         )
 
-        # Service to switch collision checker (MESH/BLOX)
-        self.set_collision_checker_srv = self.create_service(
-            SetCollisionChecker,
-            f'{self.get_name()}/set_collision_checker',
-            self.set_collision_checker_callback,
-            callback_group=MutuallyExclusiveCallbackGroup()
-        )
 
         # Create action server (unified for all planner types)
         self._action_server = ActionServer(
@@ -463,108 +456,6 @@ class UnifiedPlannerNode(Node):
 
         return response
 
-    def set_collision_checker_callback(
-        self,
-        request: SetCollisionChecker.Request,
-        response: SetCollisionChecker.Response
-    ):
-        """
-        Switch collision checker type (MESH/BLOX/PRIMITIVE).
-
-        This recreates the entire MotionGen instance but preserves obstacles.
-
-        Usage:
-            ros2 service call /unified_planner/set_collision_checker curobo_msgs/srv/SetCollisionChecker "{checker_type: 1}"
-
-        Where:
-            0 = BLOX (voxel-based, good for point clouds)
-            1 = MESH (mesh-based, precise for mesh obstacles)
-            2 = PRIMITIVE (cuboids only, fastest)
-        """
-        try:
-            # Map request to CollisionCheckerType
-            from curobo.geom.sdf.world import CollisionCheckerType
-
-            match request.checker_type:
-                case SetCollisionChecker.Request.BLOX:
-                    new_checker = CollisionCheckerType.BLOX
-                    checker_name = "BLOX"
-                case SetCollisionChecker.Request.MESH:
-                    new_checker = CollisionCheckerType.MESH
-                    checker_name = "MESH"
-                case SetCollisionChecker.Request.PRIMITIVE:
-                    new_checker = CollisionCheckerType.PRIMITIVE
-                    checker_name = "PRIMITIVE"
-                case _:
-                    response.success = False
-                    response.message = f"Unknown checker type: {request.checker_type}"
-                    return response
-
-            # Get current checker
-            current_checker = self.config_wrapper_motion.current_collision_checker
-            current_name = str(current_checker).split('.')[-1] if current_checker else "None"
-
-            response.previous_checker = current_name
-
-            # Check if already using this checker
-            if current_checker == new_checker:
-                response.success = True
-                response.message = f"Already using {checker_name} checker"
-                response.current_checker = checker_name
-                response.num_obstacles_restored = (
-                    len(self.config_wrapper_motion.cuboid_list) +
-                    len(self.config_wrapper_motion.mesh_list)
-                )
-                return response
-
-            self.get_logger().info(
-                f"Switching collision checker: {current_name} → {checker_name}"
-            )
-
-            # Save obstacle counts before recreation
-            num_cuboids = len(self.config_wrapper_motion.cuboid_list)
-            num_meshes = len(self.config_wrapper_motion.mesh_list)
-
-            self.get_logger().info(
-                f"Saving {num_cuboids} cuboids and {num_meshes} meshes"
-            )
-
-            # Change checker type
-            self.config_wrapper_motion.collision_checker_type = new_checker
-
-            # Recreate MotionGen (obstacles are automatically restored inside)
-            success = self.config_wrapper_motion.recreate_motion_gen(self)
-
-            if not success:
-                response.success = False
-                response.message = "Failed to recreate MotionGen"
-                response.current_checker = current_name
-                response.num_obstacles_restored = 0
-                return response
-
-            # Update response
-            response.success = True
-            response.message = (
-                f"Successfully switched to {checker_name} checker. "
-                f"Restored {num_cuboids} cuboids and {num_meshes} meshes."
-            )
-            response.current_checker = checker_name
-            response.num_obstacles_restored = num_cuboids + num_meshes
-
-            self.get_logger().info(f"✅ {response.message}")
-
-            return response
-
-        except Exception as e:
-            self.get_logger().error(f"Error switching collision checker: {e}")
-            import traceback
-            self.get_logger().error(traceback.format_exc())
-
-            response.success = False
-            response.message = f"Error: {str(e)}"
-            response.current_checker = current_name if 'current_name' in locals() else "Unknown"
-            response.num_obstacles_restored = 0
-            return response
 
     def mpc_goal_callback(self, msg):
         """
