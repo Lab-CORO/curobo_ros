@@ -4,6 +4,18 @@
 ## Build script for curobo_ros Docker images
 ## Supports DEV (development) and PROD (production) modes
 ##
+## Usage:
+##   Interactive mode:  ./build_docker.sh
+##   Automated mode:    ./build_docker.sh <gpu_choice> <mode_choice>
+##
+## Arguments:
+##   gpu_choice:   1=Ampere, 2=Ada Lovelace, 3=Turing, 4=Volta
+##   mode_choice:  1=DEV, 2=PROD
+##
+## Examples:
+##   ./build_docker.sh 1 1    # Ampere GPU, DEV mode
+##   ./build_docker.sh 2 2    # Ada Lovelace GPU, PROD mode
+##
 
 set -e  # Exit on error
 
@@ -12,15 +24,25 @@ echo "  curobo_ros Docker Build Script"
 echo "======================================"
 echo ""
 
-# Step 1: Choose GPU architecture
-echo "Step 1/2: Choose your GPU architecture"
-echo "---------------------------------------"
-echo "1) Ampere (RTX 30XX series: 3060, 3070, 3080, 3090, A100)"
-echo "2) Ada Lovelace (RTX 40XX series: 4060, 4070, 4080, 4090)"
-echo "3) Turing (RTX 20XX series: 2060, 2070, 2080)"
-echo "4) Volta (Titan V, V100)"
-echo ""
-read -p "Enter the number corresponding to your GPU: " gpu_choice
+# Check if arguments are provided
+if [ $# -eq 2 ]; then
+    gpu_choice=$1
+    mode_choice=$2
+    echo "Using command-line arguments:"
+    echo "  GPU choice: $gpu_choice"
+    echo "  Mode choice: $mode_choice"
+    echo ""
+else
+    # Step 1: Choose GPU architecture
+    echo "Step 1/2: Choose your GPU architecture"
+    echo "---------------------------------------"
+    echo "1) Ampere (RTX 30XX series: 3060, 3070, 3080, 3090, A100)"
+    echo "2) Ada Lovelace (RTX 40XX series: 4060, 4070, 4080, 4090)"
+    echo "3) Turing (RTX 20XX series: 2060, 2070, 2080)"
+    echo "4) Volta (Titan V, V100)"
+    echo ""
+    read -p "Enter the number corresponding to your GPU: " gpu_choice
+fi
 
 # Set CUDA architecture based on choice
 case $gpu_choice in
@@ -53,20 +75,22 @@ esac
 
 echo ""
 
-# Step 2: Choose build mode
-echo "Step 2/2: Choose build mode"
-echo "-----------------------------"
-echo "1) DEV  - Development mode (for modifying curobo_ros internals)"
-echo "            → Full image with development tools"
-echo "            → Workspace mounted from host for live editing"
-echo "            → Size: ~25-30 GB"
-echo ""
-echo "2) PROD - Production mode (for using curobo_ros)"
-echo "            → Optimized image with curobo_ros pre-installed"
-echo "            → Mount your own workspace to use the package"
-echo "            → Size: ~15-20 GB (smaller)"
-echo ""
-read -p "Enter your choice (1 for DEV, 2 for PROD): " mode_choice
+# Step 2: Choose build mode (only if not provided as argument)
+if [ $# -ne 2 ]; then
+    echo "Step 2/2: Choose build mode"
+    echo "-----------------------------"
+    echo "1) DEV  - Development mode (for modifying curobo_ros internals)"
+    echo "            → Full image with development tools"
+    echo "            → Workspace mounted from host for live editing"
+    echo "            → Size: ~25-30 GB"
+    echo ""
+    echo "2) PROD - Production mode (for using curobo_ros)"
+    echo "            → Optimized image with curobo_ros pre-installed"
+    echo "            → Mount your own workspace to use the package"
+    echo "            → Size: ~15-20 GB (smaller)"
+    echo ""
+    read -p "Enter your choice (1 for DEV, 2 for PROD): " mode_choice
+fi
 
 case $mode_choice in
     1)
