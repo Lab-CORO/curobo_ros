@@ -127,7 +127,6 @@ echo "Image Tag:         $IMAGE_TAG"
 echo ""
 echo "⚠️  Note: This build will take 20-30 minutes and require ~30 GB disk space during build."
 echo ""
-read -p "Press Enter to start building, or Ctrl+C to cancel..."
 
 # Build the Docker image
 echo ""
