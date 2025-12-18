@@ -328,6 +328,442 @@ See [Adding Your Robot Tutorial](../tutorials/02-adding-your-robot.md) for detai
 
 ---
 
+## Collision Cache Parameters
+
+### What is Collision Cache?
+
+The **collision cache** defines GPU memory allocation for different collision checking methods. cuRobo supports three types of collision geometry, each with its own cache:
+
+1. **OBB Cache** - Oriented Bounding Boxes (cuboids, fused mesh cuboids)
+2. **Mesh Cache** - High-fidelity mesh representations
+3. **Blox Cache** - Voxelized representations (point clouds, depth images)
+
+**Critical Concept**: The cache size determines how many collision objects can be stored in GPU memory simultaneously. Exceeding the cache will cause planning failures.
+
+### The Three Collision Caches
+
+#### 1. OBB Cache (Oriented Bounding Boxes)
+
+**What it stores:**
+- Cuboid primitives added via `add_object` with `primitive_type: 0`
+- **Fused cuboids generated from mesh voxelization** (most common use)
+
+**Default Size:** `100`
+
+**When to increase:**
+- Adding many cuboid objects (>50)
+- **Adding mesh objects** (meshes are converted to multiple cuboids)
+- Error: "OBB cache exceeded"
+
+**Example - Mesh requires OBB cache:**
+```bash
+# Add mesh object
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'gear', primitive_type: 4, mesh_file_path: '/path/to/gear.stl', \
+    pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
+
+# Error: OBB cache exceeded!
+# Solution: Increase OBB cache
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 300, mesh: -1, blox: -1}"
+
+# Apply changes
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+**Why meshes need OBB cache:**
+Internally, meshes are voxelized into multiple cuboids for efficient collision checking. A single mesh might generate 50-200 cuboids depending on:
+- Mesh complexity
+- Voxel size (smaller voxel_size = more cuboids)
+- Mesh dimensions
+
+#### 2. Mesh Cache
+
+**What it stores:**
+- High-fidelity mesh representations for collision checking
+- Used when `collision_checker_type` is set to `MESH`
+
+**Default Size:** Not allocated by default
+
+**When to use:**
+- High-precision collision checking with complex geometry
+- When voxelization is too coarse
+- **Note**: MESH collision checker is slower than BLOX
+
+**Typical Usage:**
+```bash
+# Allocate mesh cache (if using MESH collision checker)
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: -1, mesh: 50, blox: -1}"
+
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+**Important**: Most users should use the default BLOX collision checker and not allocate mesh cache. Only use MESH collision checker for specialized high-precision applications.
+
+#### 3. Blox Cache
+
+**What it stores:**
+- Voxelized collision representations
+- Point cloud data from cameras
+- Depth image data
+- Pre-voxelized environments
+
+**Default Size:** `10`
+
+**When to increase:**
+- Using point cloud collision checking
+- Adding voxel grid representations
+- Multiple depth cameras
+- Error: "Blox cache exceeded"
+
+**Example - Point cloud usage:**
+```bash
+# For point cloud-based collision avoidance
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: -1, mesh: -1, blox: 50}"
+
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+### SetCollisionCache Service
+
+**Service Name:** `/unified_planner/set_collision_cache`
+**Service Type:** `curobo_msgs/srv/SetCollisionCache`
+
+**Request Parameters:**
+```
+int32 obb    # OBB cache size (-1 = no change)
+int32 mesh   # Mesh cache size (-1 = no change)
+int32 blox   # Blox cache size (-1 = no change)
+```
+
+**Important**: Use `-1` to keep existing cache size unchanged.
+
+**Example - Increase only OBB cache:**
+```bash
+# Only modify OBB cache, keep mesh and blox unchanged
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 200, mesh: -1, blox: -1}"
+
+# CRITICAL: Apply changes
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+### CRITICAL: update_motion_gen_config Required
+
+**After calling `set_collision_cache`, you MUST call `update_motion_gen_config` to apply changes.**
+
+```bash
+# Pattern for updating collision cache
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 300, mesh: -1, blox: -1}"
+
+# This call is REQUIRED
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+**Why**: The collision cache is part of the MotionGen configuration. Changes are staged in memory but not applied until `update_motion_gen_config` reloads the planner configuration.
+
+### Mesh Handling and Collision Cache
+
+**Key Concept**: When you add a mesh object using `add_object`, cuRobo stores it in **TWO** places:
+
+1. **world_cfg.mesh** - Original high-fidelity mesh
+2. **world_cfg.cuboid** - Voxelized cuboid approximations (for BLOX checker)
+
+**The voxelized cuboids consume OBB cache, NOT mesh cache.**
+
+#### How Mesh Voxelization Works
+
+```bash
+# 1. Add mesh object
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'part', primitive_type: 4, mesh_file_path: '/path/to/part.stl', \
+    pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
+```
+
+**Internal Process:**
+1. Load mesh from file
+2. Voxelize mesh using MeshBloxilization pipeline
+3. Fuse voxels into cuboids (e.g., 50-150 cuboids)
+4. Store original mesh in `world_cfg.mesh`
+5. Store cuboids in `world_cfg.cuboid` (named `part_cuboid_0`, `part_cuboid_1`, ...)
+6. Track mapping in `mesh_cuboid_mapping`
+
+**Result**: The mesh uses OBB cache for the generated cuboids.
+
+#### Estimating OBB Cache Needs for Meshes
+
+| Mesh Complexity | Voxel Size | Estimated Cuboids | Recommended OBB Cache |
+|----------------|------------|-------------------|----------------------|
+| Simple (box, cylinder) | 0.05 m | 10-30 | 150 |
+| Moderate (gear, bracket) | 0.05 m | 30-80 | 200 |
+| Complex (engine part) | 0.05 m | 80-200 | 300-500 |
+| Very complex (assembly) | 0.05 m | 200-500 | 600-1000 |
+
+**Note**: Smaller `voxel_size` values generate MORE cuboids per mesh.
+
+#### Example: Adding Multiple Meshes
+
+```bash
+# Scenario: Adding 3 complex meshes to scene
+
+# 1. Increase OBB cache (3 meshes × ~100 cuboids each + buffer)
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 400, mesh: -1, blox: -1}"
+
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# 2. Add first mesh
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'gear1', primitive_type: 4, mesh_file_path: '/path/to/gear.stl', \
+    pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
+
+# 3. Add second mesh
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'gear2', primitive_type: 4, mesh_file_path: '/path/to/gear.stl', \
+    pose: {position: {x: 0.5, y: 0.3, z: 0.3}, orientation: {w: 1.0}}}"
+
+# 4. Add third mesh
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'bracket', primitive_type: 4, mesh_file_path: '/path/to/bracket.stl', \
+    pose: {position: {x: 0.3, y: 0.0, z: 0.2}, orientation: {w: 1.0}}}"
+
+# 5. Verify obstacles added
+ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
+
+# Output:
+# message: "gear1, gear2, bracket"
+```
+
+### Relationship Between Parameters
+
+Several parameters interact with collision cache:
+
+#### voxel_size affects OBB cache needs
+
+```bash
+# Smaller voxel_size = more cuboids per mesh = higher OBB cache needed
+
+# Example with large voxels (fewer cuboids)
+ros2 param set /unified_planner voxel_size 0.08
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Can use smaller OBB cache
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 150, mesh: -1, blox: -1}"
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Example with small voxels (more cuboids)
+ros2 param set /unified_planner voxel_size 0.02
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Need larger OBB cache
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 500, mesh: -1, blox: -1}"
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+#### collision_checker_type affects which cache is used
+
+```bash
+# BLOX checker (default) - uses OBB and Blox caches
+# Most efficient, recommended for most applications
+
+# MESH checker - uses Mesh cache
+# Higher precision, slower, rarely needed
+```
+
+### Viewing Current Cache Settings
+
+```bash
+# Check collision_cache parameter
+ros2 param get /unified_planner collision_cache
+
+# Output example:
+# {'obb': 200, 'mesh': 0, 'blox': 10}
+```
+
+### Collision Cache Best Practices
+
+#### 1. Start with Conservative Sizes
+
+```bash
+# For scenes with meshes, start with larger OBB cache
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 300, mesh: -1, blox: -1}"
+
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+#### 2. Monitor for Cache Exceeded Errors
+
+Watch for errors like:
+- "OBB cache exceeded"
+- "Blox cache exceeded"
+- "Mesh cache exceeded"
+
+When you see these, increase the relevant cache size.
+
+#### 3. Balance Cache Size vs GPU Memory
+
+**Larger cache = more GPU memory used**
+
+Each cache type has different memory footprints:
+- **OBB**: ~100 bytes per entry
+- **Mesh**: ~1-10 KB per mesh (depends on mesh complexity)
+- **Blox**: ~1-50 MB per voxel grid (depends on voxel_size and grid dimensions)
+
+**Recommendations:**
+- **GPU with 4-6 GB VRAM**: OBB=200, Mesh=0, Blox=20
+- **GPU with 8-12 GB VRAM**: OBB=500, Mesh=0, Blox=50
+- **GPU with 16+ GB VRAM**: OBB=1000, Mesh=50, Blox=100
+
+#### 4. Adjust Cache Based on Scene Complexity
+
+| Scene Type | OBB Cache | Mesh Cache | Blox Cache |
+|------------|-----------|------------|------------|
+| Simple (few cuboids, no meshes) | 100 | 0 | 10 |
+| Moderate (1-3 meshes) | 200-300 | 0 | 10 |
+| Complex (5-10 meshes) | 500-800 | 0 | 10 |
+| With point clouds | 150 | 0 | 50 |
+| High-precision with mesh checker | 150 | 50 | 10 |
+
+#### 5. Remove Unused Objects
+
+```bash
+# Remove objects to free up cache
+ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject \
+  "{name: 'old_mesh'}"
+
+# This frees up OBB cache used by the mesh's cuboids
+```
+
+### Troubleshooting Collision Cache Issues
+
+#### Issue 1: "OBB cache exceeded" Error
+
+**Symptoms:**
+```
+Error: OBB cache exceeded, cannot add object
+Failed to add object 'my_mesh'
+```
+
+**Solution:**
+```bash
+# Increase OBB cache
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 400, mesh: -1, blox: -1}"
+
+# Apply changes
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Retry adding object
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject "{...}"
+```
+
+#### Issue 2: Cache Changes Not Taking Effect
+
+**Symptoms:** After calling `set_collision_cache`, still getting cache exceeded errors
+
+**Possible Causes:**
+- Forgot to call `update_motion_gen_config`
+- Called with wrong cache type
+
+**Solution:**
+```bash
+# Always follow this two-step pattern
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 500, mesh: -1, blox: -1}"
+
+# This second call is REQUIRED
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+#### Issue 3: GPU Out of Memory
+
+**Symptoms:**
+```
+CUDA error: out of memory
+RuntimeError: CUDA out of memory
+```
+
+**Possible Causes:**
+- Cache sizes set too large for available GPU memory
+- Too many meshes with small voxel_size
+
+**Solutions:**
+```bash
+# Option 1: Reduce cache sizes
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 150, mesh: -1, blox: 10}"
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Option 2: Increase voxel_size (fewer cuboids per mesh)
+ros2 param set /unified_planner voxel_size 0.08
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Option 3: Remove unnecessary meshes
+ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
+```
+
+#### Issue 4: Mesh Adds Successfully But Not Visible in Planning
+
+**Symptoms:** Mesh added without errors, but planner doesn't avoid it
+
+**Possible Causes:**
+- Mesh file path incorrect
+- Mesh scale/pose incorrect
+- Collision checker not seeing the mesh cuboids
+
+**Solution:**
+```bash
+# 1. Verify mesh was added
+ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
+
+# 2. Check voxel grid includes mesh
+ros2 service call /unified_planner/get_voxel_grid std_srvs/srv/Trigger
+
+# 3. Verify OBB cache has space for cuboids
+ros2 param get /unified_planner collision_cache
+```
+
+### Complete Example: Scene with Multiple Meshes and Point Cloud
+
+```bash
+# Scenario: Robot workspace with 5 meshes + point cloud camera
+
+# Step 1: Configure collision cache for complex scene
+ros2 service call /unified_planner/set_collision_cache \
+  curobo_msgs/srv/SetCollisionCache "{obb: 600, mesh: -1, blox: 50}"
+
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Step 2: Add mesh objects
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'table', primitive_type: 4, mesh_file_path: '/meshes/table.stl', \
+    pose: {position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}"
+
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'wall', primitive_type: 4, mesh_file_path: '/meshes/wall.stl', \
+    pose: {position: {x: -0.3, y: 0.0, z: 0.5}, orientation: {w: 1.0}}}"
+
+# ... add 3 more meshes ...
+
+# Step 3: Verify all objects added successfully
+ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
+
+# Step 4: Point cloud camera will use Blox cache automatically
+# (configured in camera config file)
+
+# Step 5: Plan trajectory avoiding all obstacles
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/GenerateTrajectory \
+  "{goal_pose: {position: {x: 0.6, y: 0.4, z: 0.5}, orientation: {w: 1.0}}}"
+```
+
+---
+
 ## Configuration File Parameters
 
 These are defined in the robot YAML file (e.g., `config/m1013.yml`).

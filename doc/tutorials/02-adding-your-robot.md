@@ -101,6 +101,31 @@ ros2 launch curobo_doosan display.launch.py
 - End-effector frame exists
 - Collision meshes look reasonable
 
+**CLI Verification:**
+
+```bash
+# 1. Validate URDF syntax
+check_urdf /path/to/m1013.urdf
+
+# Expected output: "robot name is: m1013"
+# Lists all links and joints
+
+# 2. Check TF tree
+ros2 run tf2_tools view_frames
+
+# Generates frames.pdf showing transform tree
+
+# 3. List robot joints
+ros2 topic echo /joint_states --once
+
+# Shows current joint names and positions
+
+# 4. Verify end-effector frame exists
+ros2 run tf2_ros tf2_echo base_0 link6
+
+# Should show transform from base to end-effector
+```
+
 ### Step 4: Launch with Your Robot
 
 ```bash
@@ -128,6 +153,72 @@ ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/Trajector
 ```
 
 **Success!** You're now planning trajectories for the Doosan M1013.
+
+### Step 6: Verify Robot Configuration
+
+Use these CLI commands to verify your robot is properly configured:
+
+```bash
+# 1. Check loaded robot configuration
+ros2 param get /unified_planner robot_config_file
+
+# Output: Current robot config path
+
+# 2. Verify joint names match URDF
+ros2 param get /unified_planner joint_names
+
+# Should match joint names in your URDF
+
+# 3. Check collision spheres are published
+ros2 topic echo /unified_planner/collision_spheres --once
+
+# Shows MarkerArray with robot collision geometry
+
+# 4. Test IK for reachability
+ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+  "{pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
+
+# Response shows if pose is reachable and joint solution
+
+# 5. Check node is healthy
+ros2 node info /unified_planner
+
+# Shows all services, topics, and parameters
+
+# 6. Monitor planning performance
+ros2 topic hz /unified_planner/ghost_joint_states
+
+# Shows update rate for trajectory visualization
+
+# 7. Check for errors
+ros2 topic echo /rosout | grep unified_planner
+
+# Monitor real-time logs for warnings/errors
+```
+
+### Step 7: Validate Joint Limits
+
+Ensure joint limits in your config match the URDF and are safe:
+
+```bash
+# 1. Test each joint individually
+ros2 service call /unified_planner/fk_batch_joints curobo_msgs/srv/Fk \
+  "{joint_state: {position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+
+# Returns end-effector pose for given joint configuration
+
+# 2. Test near joint limit (example for joint 1 near +3.14)
+ros2 service call /unified_planner/fk_batch_joints curobo_msgs/srv/Fk \
+  "{joint_state: {position: [3.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+
+# Should succeed if within limits
+
+# 3. Test beyond joint limit (should fail)
+ros2 service call /unified_planner/fk_batch_joints curobo_msgs/srv/Fk \
+  "{joint_state: {position: [4.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+
+# Should return error or clamp to limit
+```
 
 ---
 

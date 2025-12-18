@@ -229,8 +229,324 @@ ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/Sen
 ```
  
 ---
- 
-## Step 4: Observe MPC Behavior
+
+## Step 4: Using the MpcMove Action
+
+### What is MpcMove?
+
+The **MpcMove action** provides a streamlined interface for MPC-based motion execution. Unlike the two-step process of `generate_trajectory` + `execute_trajectory`, MpcMove combines planning and execution into a single action call.
+
+**Key Features:**
+- **Single Action Call**: No need for separate planning and execution
+- **Real-time Feedback**: Provides continuous joint command updates and progress
+- **Closed-loop Control**: MPC continuously replans during execution
+- **Reactive**: Automatically adapts to obstacles and disturbances
+
+### MpcMove vs generate_trajectory + execute_trajectory
+
+| Aspect | generate_trajectory + execute_trajectory | MpcMove Action |
+|--------|------------------------------------------|----------------|
+| **API Calls** | Two separate calls | Single action call |
+| **Planning** | Generates full trajectory upfront | Continuous replanning during execution |
+| **Feedback** | Trajectory waypoints, then execution status | Real-time joint commands + progression |
+| **Use Case** | Static environments, reproducible paths | Dynamic environments, reactive control |
+| **Complexity** | More steps to coordinate | Simpler single-action interface |
+
+### MpcMove Action Interface
+
+**Action Name:** `/unified_planner/mpc_move`
+**Action Type:** `curobo_msgs/action/MpcMove`
+
+**Goal:**
+```
+geometry_msgs/Pose target_pose  # Target end-effector pose
+```
+
+**Result:**
+```
+bool success                     # True if goal reached
+string message                   # Status message or error details
+```
+
+**Feedback:**
+```
+sensor_msgs/JointState joint_command  # Current joint target
+float32 step_progression              # Progress toward goal (0.0 to 1.0)
+```
+
+### Example 1: Basic MpcMove Usage
+
+```bash
+# Send goal to MPC action server
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}" \
+  --feedback
+```
+
+**Expected Feedback Output:**
+```yaml
+# Feedback updates continuously during execution
+feedback:
+  joint_command:
+    position: [-0.234, 0.567, -1.234, 0.890, -0.456, 0.123]
+  step_progression: 0.15  # 15% complete
+
+feedback:
+  joint_command:
+    position: [-0.245, 0.578, -1.245, 0.901, -0.467, 0.134]
+  step_progression: 0.32  # 32% complete
+
+...
+
+feedback:
+  joint_command:
+    position: [-0.289, 0.634, -1.312, 0.978, -0.523, 0.189]
+  step_progression: 0.98  # 98% complete
+```
+
+**Result:**
+```yaml
+result:
+  success: true
+  message: 'MPC reached goal pose successfully'
+```
+
+### Example 2: MpcMove with Different Orientations
+
+```bash
+# Move with end-effector pointing downward
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.6, y: 0.0, z: 0.3}, \
+    orientation: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}}}" \
+  --feedback
+```
+
+### Example 3: Monitor Progress Without Feedback
+
+```bash
+# Send goal without continuous feedback (simpler output)
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.45, y: -0.2, z: 0.5}, orientation: {w: 1.0}}}"
+
+# In another terminal, monitor action status
+ros2 action list
+ros2 action info /unified_planner/mpc_move
+```
+
+### Example 4: Cancel MpcMove During Execution
+
+```bash
+# Terminal 1: Start MPC move
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.8, y: 0.4, z: 0.6}, orientation: {w: 1.0}}}" \
+  --feedback
+
+# Terminal 2: Cancel the action (e.g., if obstacle appears)
+# Get the goal ID from Terminal 1 output, then:
+ros2 action send_goal --cancel /unified_planner/mpc_move
+```
+
+### Understanding Feedback: step_progression
+
+The `step_progression` field indicates how close the robot is to the goal:
+
+- **0.0**: Starting position
+- **0.5**: Halfway to goal
+- **1.0**: Goal reached
+
+**Progress Interpretation:**
+- **Linear motion**: Progression reflects Cartesian distance traveled
+- **Complex paths**: Progression may be non-linear due to obstacle avoidance
+- **Near obstacles**: Progression may slow down (more MPC iterations needed)
+
+### Understanding Feedback: joint_command
+
+The `joint_command` field provides the current joint targets being sent to the robot:
+
+```yaml
+joint_command:
+  position: [j1, j2, j3, j4, j5, j6]  # Joint positions in radians
+  velocity: []                         # Not populated
+  effort: []                           # Not populated
+```
+
+**Use Cases for joint_command Feedback:**
+- Monitor robot joint state during execution
+- Verify robot is following MPC commands
+- Log joint trajectories for analysis
+- Detect anomalies (e.g., joint limits)
+
+### When to Use MpcMove
+
+**Use MpcMove when:**
+- You need simple, single-call interface for motion
+- Environment has dynamic obstacles
+- You want real-time feedback on progress
+- Reactive control is more important than trajectory reproducibility
+
+**Use generate_trajectory + execute_trajectory when:**
+- You need to inspect/modify trajectory before execution
+- Trajectory must be saved or replayed
+- Environment is static (more efficient with classic planner)
+- You need full trajectory waypoints upfront
+
+### Combining MpcMove with Obstacle Management
+
+MpcMove automatically adapts to obstacles in the world configuration:
+
+```bash
+# 1. Add obstacle
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'wall', primitive_type: 0, dims: [0.1, 1.0, 1.5], \
+    pose: {position: {x: 0.4, y: 0.0, z: 0.5}, orientation: {w: 1.0}}}"
+
+# 2. Send MpcMove goal (will automatically avoid wall)
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.6, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}" \
+  --feedback
+
+# 3. MPC continuously replans to avoid the wall during execution
+```
+
+### Adding Obstacles Mid-Execution
+
+One of MPC's key strengths is handling obstacles that appear during motion:
+
+```bash
+# Terminal 1: Start MPC move to distant goal
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.7, y: 0.5, z: 0.5}, orientation: {w: 1.0}}}" \
+  --feedback
+
+# Terminal 2: Add obstacle mid-execution (after 2 seconds)
+sleep 2
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'dynamic_box', primitive_type: 0, dims: [0.15, 0.15, 0.15], \
+    pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
+
+# Observe: MPC automatically avoids the new obstacle without stopping!
+```
+
+### Troubleshooting MpcMove
+
+#### Issue 1: Action Immediately Fails
+
+**Symptoms:**
+```yaml
+result:
+  success: false
+  message: 'Goal pose unreachable or violates constraints'
+```
+
+**Solutions:**
+```bash
+# Check if goal is reachable using IK service
+ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+  "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
+
+# If IK fails, adjust goal pose to be within workspace
+```
+
+#### Issue 2: MPC Not Converging
+
+**Symptoms:**
+```yaml
+result:
+  success: false
+  message: 'MPC failed to converge after max iterations'
+```
+
+**Solutions:**
+```bash
+# Increase max iterations
+ros2 param set /unified_planner mpc_max_iterations 2000
+
+# Relax convergence threshold
+ros2 param set /unified_planner mpc_convergence_threshold 0.02
+
+# Try again
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove "{...}"
+```
+
+#### Issue 3: Slow Progress (step_progression not advancing)
+
+**Symptoms:** Feedback shows progression stuck at same value
+
+**Possible Causes:**
+- Collision with obstacle blocking path
+- Joint limits preventing motion
+- Goal pose nearly unreachable
+
+**Solutions:**
+```bash
+# Check for collision distance
+ros2 service call /unified_planner/get_collision_distance curobo_msgs/srv/GetCollisionDistance \
+  "{joint_state: {position: [j1, j2, j3, j4, j5, j6]}}"
+
+# If collision detected, remove or adjust obstacles
+ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject "{name: 'obstacle_name'}"
+
+# Or adjust goal pose
+```
+
+#### Issue 4: Action Never Completes
+
+**Symptoms:** Progression reaches 0.95-0.98 but never completes
+
+**Possible Causes:**
+- Convergence threshold too tight
+- Goal pose requires precision beyond MPC capability
+
+**Solutions:**
+```bash
+# Relax convergence threshold
+ros2 param set /unified_planner mpc_convergence_threshold 0.02
+
+# Or use classic planner for final precise positioning
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 0}"
+ros2 service call /unified_planner/generate_trajectory ...
+```
+
+### Monitoring MpcMove Performance
+
+#### View Action Status
+
+```bash
+# List all active actions
+ros2 action list -t
+
+# Get detailed info about MpcMove action
+ros2 action info /unified_planner/mpc_move
+
+# Output shows:
+# - Action server status (ACTIVE/IDLE)
+# - Number of active goals
+# - Clients connected
+```
+
+#### Echo Feedback in Real-Time
+
+```bash
+# View feedback without sending a goal
+ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
+  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}" \
+  --feedback | tee mpc_feedback.log
+
+# Logs all feedback to file for later analysis
+```
+
+#### Monitor Joint Commands
+
+```bash
+# In another terminal during MpcMove execution:
+ros2 topic echo /joint_states
+
+# Compare commanded joints (from feedback) vs actual joints (from topic)
+```
+
+---
+
+## Step 5: Observe MPC Behavior
  
 ### In RViz
  
@@ -268,8 +584,8 @@ ros2 topic echo /unified_planner/mpc_stats
 ```
  
 ---
- 
-## Step 5: Advanced MPC Usage
+
+## Step 6: Advanced MPC Usage
  
 ### Dynamic Obstacle Avoidance
  
@@ -322,8 +638,8 @@ class MovingTargetMPC:
 ```
  
 ---
- 
-## Step 6: Tuning MPC for Your Application
+
+## Step 7: Tuning MPC for Your Application
  
 ### High-Speed Reactive Control
  
