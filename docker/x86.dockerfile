@@ -4,7 +4,6 @@ LABEL maintainer="Lucas Carpentier, Guillaume Dupoiron"
 
 RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections
 ARG ROS_DISTRO=humble
-
 # add GL:
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libegl1-mesa-dev \
@@ -108,7 +107,7 @@ RUN git clone https://github.com/valtsblukis/nvblox.git && \
     cmake .. -DPRE_CXX11_ABI_LINKABLE=ON && \
     make -j32 && \
     make install
-RUN git clone https://github.com/Lab-CORO/nvblox_torch.git && \
+RUN git clone https://github.com/nvlabs/nvblox_torch.git && \
     cd nvblox_torch && \
     sh install.sh $(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)') && \
     python3 -m pip install -e .
@@ -155,6 +154,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-nav2-msgs \
     ros-humble-moveit \
     ros-humble-realsense2-* \
+    ros-humble-librealsense2* \
     && rm -rf /var/lib/apt/lists/*
 
 # Ajouter les sources de ROS 2 Humble
@@ -180,7 +180,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /home/ros2_ws/src
 
-RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
+# Currently this package is not use and need a debug
+# RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
 
 # Note: curobo_msgs, curobo_rviz, and curobo_ros will be mounted as volumes in DEV mode
 
@@ -226,6 +227,9 @@ RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
     . install/local_setup.bash
 
 WORKDIR /home/ros2_ws
+
+RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc && \
+    echo "source /home/ros2_ws/install/setup.bash" >> ~/.bashrc
 
 # Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
 #RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
