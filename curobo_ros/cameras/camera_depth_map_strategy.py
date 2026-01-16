@@ -7,6 +7,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from rclpy.wait_for_message import wait_for_message
 import rclpy
 from scipy.spatial.transform import Rotation
+from tf2_ros import TransformException
 
 import torch
 import numpy as np

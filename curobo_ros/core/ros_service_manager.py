@@ -153,12 +153,8 @@ class RosServiceManager:
         return self.obstacle_manager.get_voxel_grid(node, request, response)
 
     def _callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
-        """
-        Get collision distance - this is abstract in ConfigWrapper.
-        Child classes (ConfigWrapperMotion, IK, MPC) must implement this.
-        For now, raise NotImplementedError as in original ConfigWrapper.
-        """
-        raise NotImplementedError
+        """Delegate get_collision_distance service to ConfigWrapper"""
+        return self.config_wrapper.callback_get_collision_distance(node, request, response)
 
     def _callback_set_collision_cache(self, node, request: SetCollisionCache, response):
         """Delegate set_collision_cache service to ObstacleManager"""

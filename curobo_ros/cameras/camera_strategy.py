@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import torch
 import numpy as np
 import rclpy
+from scipy.spatial.transform import Rotation
 
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
@@ -104,8 +105,10 @@ class CameraStrategy(ABC):
         Parse extrinsics from YAML config to cuRobo Pose object.
 
         Args:
-            extrinsics: List[float] of length 7: [x, y, z, qw, qx, qy, qz]
-                       or None (will use TF transform)
+            extrinsics: Can be:
+                - List[float] of length 7: [x, y, z, qw, qx, qy, qz]
+                - List[List[float]] 4x4 transformation matrix
+                - None (will use TF transform)
 
         Returns:
             Pose object or None
@@ -114,27 +117,50 @@ class CameraStrategy(ABC):
             return None
 
         try:
-            if not isinstance(extrinsics, list) or len(extrinsics) != 7:
+            # Check if it's a 4x4 matrix (list of lists)
+            if isinstance(extrinsics, list) and len(extrinsics) == 4 and isinstance(extrinsics[0], list):
+                # It's a 4x4 transformation matrix
+                matrix = np.array(extrinsics)
+
+                # Extract translation from last column
+                position = matrix[:3, 3].tolist()
+
+                # Extract rotation matrix and convert to quaternion
+                rotation_matrix = matrix[:3, :3]
+                rot = Rotation.from_matrix(rotation_matrix)
+                quat_scipy = rot.as_quat()  # Returns [x, y, z, w]
+
+                # cuRobo expects [x, y, z, qw, qx, qy, qz]
+                pose_list = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
+
+                camera_pose = Pose.from_list(pose_list, tensor_args=self.tensor_args)
+
+                self.node.get_logger().info(
+                    f"Loaded extrinsics from 4x4 matrix: pos=[{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}]")
+                return camera_pose
+
+            elif isinstance(extrinsics, list) and len(extrinsics) == 7:
+                # It's a 7-element list [x, y, z, qw, qx, qy, qz]
+                # Validate quaternion norm (should be ~1.0)
+                quat = extrinsics[3:]  # [qw, qx, qy, qz]
+                quat_norm = sum(q**2 for q in quat) ** 0.5
+                if abs(quat_norm - 1.0) > 0.01:
+                    self.node.get_logger().warn(
+                        f"Quaternion norm is {quat_norm:.4f}, should be 1.0. Normalizing...")
+                    quat = [q / quat_norm for q in quat]
+                    extrinsics = extrinsics[:3] + quat
+
+                # Create Pose using cuRobo format
+                camera_pose = Pose.from_list(extrinsics, tensor_args=self.tensor_args)
+
+                self.node.get_logger().info(
+                    f"Loaded extrinsics from config: pos=[{extrinsics[0]:.3f}, {extrinsics[1]:.3f}, {extrinsics[2]:.3f}], "
+                    f"quat=[{extrinsics[3]:.3f}, {extrinsics[4]:.3f}, {extrinsics[5]:.3f}, {extrinsics[6]:.3f}]")
+                return camera_pose
+            else:
                 self.node.get_logger().error(
-                    f"Extrinsics must be list of 7 elements [x,y,z,qw,qx,qy,qz], got {extrinsics}")
+                    f"Extrinsics must be list of 7 elements [x,y,z,qw,qx,qy,qz] or 4x4 matrix, got {type(extrinsics)}")
                 return None
-
-            # Validate quaternion norm (should be ~1.0)
-            quat = extrinsics[3:]  # [qw, qx, qy, qz]
-            quat_norm = sum(q**2 for q in quat) ** 0.5
-            if abs(quat_norm - 1.0) > 0.01:
-                self.node.get_logger().warn(
-                    f"Quaternion norm is {quat_norm:.4f}, should be 1.0. Normalizing...")
-                quat = [q / quat_norm for q in quat]
-                extrinsics = extrinsics[:3] + quat
-
-            # Create Pose using cuRobo format
-            camera_pose = Pose.from_list(extrinsics, tensor_args=self.tensor_args)
-
-            self.node.get_logger().info(
-                f"Loaded extrinsics from config: pos=[{extrinsics[0]:.3f}, {extrinsics[1]:.3f}, {extrinsics[2]:.3f}], "
-                f"quat=[{extrinsics[3]:.3f}, {extrinsics[4]:.3f}, {extrinsics[5]:.3f}, {extrinsics[6]:.3f}]")
-            return camera_pose
 
         except Exception as e:
             self.node.get_logger().error(f"Error parsing extrinsics: {e}")

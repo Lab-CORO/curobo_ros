@@ -151,11 +151,20 @@ class ConfigWrapper(ABC):
         """Get collision checker type from ObstacleManager"""
         return self.obstacle_manager.collision_checker_type
 
+    @collision_checker_type.setter
+    def collision_checker_type(self, value):
+        """Set collision checker type in ObstacleManager"""
+        self.obstacle_manager.collision_checker_type = value
 
     @property
     def collision_cache(self):
         """Get collision cache from ObstacleManager"""
         return self.obstacle_manager.collision_cache
+
+    @collision_cache.setter
+    def collision_cache(self, value):
+        """Set collision cache in ObstacleManager"""
+        self.obstacle_manager.collision_cache = value
 
     @property
     def camera_context(self):
