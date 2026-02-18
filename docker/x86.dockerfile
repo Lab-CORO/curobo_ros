@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:23.08-py3 AS torch_cuda_base
+FROM nvcr.io/nvidia/pytorch:24.01-py3 AS torch_cuda_base
 
 LABEL maintainer="Lucas Carpentier, Guillaume Dupoiron"
 
@@ -38,14 +38,13 @@ RUN apt-get update && apt-get install -y \
     iputils-ping \
     libeigen3-dev \
     libssl-dev \
-    lsb-core \
+    lsb-release \
     make \
     openssh-client \
     openssh-server \
     python3-ipdb \
     python3-pip \
     python3-tk \
-    python3-wstool \
     snapd \
     sudo \
     terminator \
@@ -242,4 +241,5 @@ RUN  apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp ros-humb
 
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 # Not needed anymore ENTRYPOINT [ "/home/branch_switch_entrypoint.sh" ]
+
 

@@ -12,6 +12,7 @@ from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCPlanner
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
+from .grasp_mpc_planner import GraspMPCPlanner
 
 class PlannerFactory:
     """
@@ -30,7 +31,7 @@ class PlannerFactory:
         # Future planners can be added here:
         'multi_point': MultiPointPlanner,
         'joint_space': JointSpacePlanner,
-        # 'grasp': GraspPlanner,
+        'grasp_mpc': GraspMPCPlanner,
         # 'batch': BatchPlanner,
         # 'constrained': ConstrainedPlanner,
     }

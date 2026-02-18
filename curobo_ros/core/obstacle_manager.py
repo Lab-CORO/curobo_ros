@@ -547,6 +547,92 @@ class ObstacleManager:
             self.world_cfg.blox[0].voxel_size = voxel_size
             self.node.get_logger().info(f"Updated voxel size to {voxel_size}m")
 
+    def get_object(self, object_name: str) -> dict:
+        """
+        Get object information by name.
+
+        Returns dictionary with object information:
+            - 'type': 'cuboid' | 'cylinder' | 'sphere' | 'capsule' | 'mesh'
+            - 'pose': pose as [x, y, z, qw, qx, qy, qz] list
+            - 'dimensions': size parameters (depends on type)
+            - 'object': original object reference
+
+        Args:
+            object_name: Name of the object to retrieve
+
+        Returns:
+            dict with object information
+
+        Raises:
+            ValueError: If object not found
+        """
+        # Search in cuboid list
+        for obj in self.world_cfg.cuboid:
+            if obj.name == object_name:
+                return {
+                    'type': 'cuboid',
+                    'pose': obj.pose,  # [x, y, z, qw, qx, qy, qz]
+                    'dimensions': {
+                        'dims': obj.dims  # [width, length, height]
+                    },
+                    'object': obj
+                }
+
+        # Search in cylinder list
+        for obj in self.world_cfg.cylinder:
+            if obj.name == object_name:
+                return {
+                    'type': 'cylinder',
+                    'pose': obj.pose,
+                    'dimensions': {
+                        'radius': obj.radius,
+                        'height': obj.height
+                    },
+                    'object': obj
+                }
+
+        # Search in sphere list
+        for obj in self.world_cfg.sphere:
+            if obj.name == object_name:
+                return {
+                    'type': 'sphere',
+                    'pose': obj.pose,
+                    'dimensions': {
+                        'radius': obj.radius
+                    },
+                    'object': obj
+                }
+
+        # Search in capsule list
+        for obj in self.world_cfg.capsule:
+            if obj.name == object_name:
+                return {
+                    'type': 'capsule',
+                    'pose': obj.pose,
+                    'dimensions': {
+                        'radius': obj.radius,
+                        'base': obj.base,
+                        'tip': obj.tip
+                    },
+                    'object': obj
+                }
+
+        # Search in mesh list
+        for obj in self.world_cfg.mesh:
+            if obj.name == object_name:
+                return {
+                    'type': 'mesh',
+                    'pose': obj.pose,
+                    'dimensions': {
+                        'scale': obj.scale,
+                        'file_path': obj.file_path
+                    },
+                    'object': obj
+                }
+
+        # Not found in any list
+        raise ValueError(f"Object '{object_name}' not found in obstacle manager")
+
 
 
 class MeshBloxilization():
