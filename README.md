@@ -13,20 +13,23 @@ A pre-built Docker image ships all dependencies (ROS 2 Humble, CUDA 12, curobo)
 
 ---
 
-## Documentation structure
+## Documentation
 
-- [Getting started](doc/getting_started.md)
+Full documentation: **https://lab-coro.github.io/curobo_ros/**
+
+Or browse the source files directly:
+
+- [Getting started](docs/getting_started.md)
 - Tutorials
-  - [Exemple with doosan M1013](doc/tutorials/doosan_example.md)
-  - [Object management](doc/tutorials/adding_collision_objects.md)
-  - [Inverse and forward kinenatics](doc/tutorials/ik_fk_services.md)
-  - [TODO Using camera](doc/tutorials/trajectory_generation_camera.md)
+  - [Exemple with doosan M1013](docs/tutorials/doosan_example.md)
+  - [Object management](docs/tutorials/adding_collision_objects.md)
+  - [Inverse and forward kinenatics](docs/tutorials/ik_fk_services.md)
+  - [TODO Using camera](docs/tutorials/trajectory_generation_camera.md)
 - Concepts
-   - [Todo Architecture](doc/concepts/architecture.md)
-   - [Ros interfaces](doc/concepts/ros_interfaces.md)
-   - [Todo Rviz plugin](doc/concepts/rviz_plugin.md)
-
-- [Troubleshooting](doc/troubleshooting.md) 
+   - [Todo Architecture](docs/concepts/architecture.md)
+   - [Ros interfaces](docs/concepts/ros_interfaces.md)
+   - [Todo Rviz plugin](docs/concepts/rviz_plugin.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 ---
 
