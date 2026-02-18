@@ -1,4 +1,3 @@
-from dsr_msgs2.msg import SpeedjRtStream
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
@@ -19,7 +18,6 @@ class DoosanControl(JointCommandStrategy):
     def __init__(self, node, dt):
         super().__init__(node, dt)
         # create a publisher
-        self.pub_speed_command = node.create_publisher(SpeedjRtStream, '/dsr01/speedj_rt_stream', 10)
         self.pub_trajectory = node.create_publisher(JointTrajectory, '/leeloo/execute_trajectory', 10)
         self.sub_trajectory_state = node.create_subscription(Float32, "/leeloo/trajectory_state", self.callback_trajectory_state, 10, callback_group = MutuallyExclusiveCallbackGroup())
         self.sub_joint_state = node.create_subscription(JointState, "/dsr01/joint_states", self.callback_joint_pose, 10, callback_group = MutuallyExclusiveCallbackGroup())
@@ -32,7 +30,7 @@ class DoosanControl(JointCommandStrategy):
         self.robot_state = RobotState.IDLE
         self.trajectory_progression = 0.0
         self.joint_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.joint_name = []
+        self.joint_name = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
 
     def send_trajectrory(self):
         self.robot_state = RobotState.RUNNING

@@ -4,7 +4,6 @@ LABEL maintainer="Lucas Carpentier, Guillaume Dupoiron"
 
 RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections
 ARG ROS_DISTRO=humble
-
 # add GL:
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libegl1-mesa-dev \
@@ -55,18 +54,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 
-# Téléchargez le fichier tar.gz depuis le site de JetBrains
-RUN wget https://download.jetbrains.com/python/pycharm-community-2023.1.2.tar.gz
-
-# Décompressez le fichier
-RUN tar -xzf pycharm-community-2023.1.2.tar.gz
-
-# Déplacez le dossier décompressé
-RUN mv pycharm-community-2023.1.2 /opt/pycharm-community
-
-# Ajoutez un lien symbolique pour faciliter l'exécution
-RUN ln -s /opt/pycharm-community/bin/pycharm.sh /usr/local/bin/pycharm
-
 # push defaults to bashrc:
 RUN apt-get update && apt-get install --reinstall -y \
     hwloc-nox \
@@ -79,7 +66,8 @@ RUN apt-get update && apt-get install --reinstall -y \
 ENV PATH="${PATH}:/opt/hpcx/ompi/bin"
 ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/opt/hpcx/ompi/lib"
 
-ENV TORCH_CUDA_ARCH_LIST="6.1 7.0+PTX"
+ARG TORCH_CUDA_ARCH_LIST="6.1 7.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 
 # Add cache date to avoid using cached layers older than this
@@ -119,7 +107,7 @@ RUN git clone https://github.com/valtsblukis/nvblox.git && \
     cmake .. -DPRE_CXX11_ABI_LINKABLE=ON && \
     make -j32 && \
     make install
-RUN git clone https://github.com/Lab-CORO/nvblox_torch.git && \
+RUN git clone https://github.com/nvlabs/nvblox_torch.git && \
     cd nvblox_torch && \
     sh install.sh $(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)') && \
     python3 -m pip install -e .
@@ -132,7 +120,7 @@ RUN git clone https://github.com/opencv/opencv.git /pkgs/opencv
 WORKDIR /pkgs/opencv
 RUN mkdir -p build
 
-RUN python -m pip install opencv-python-headless \
+RUN python -m pip install \
     pyrealsense2 \
     transforms3d
 
@@ -166,6 +154,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-nav2-msgs \
     ros-humble-moveit \
     ros-humble-realsense2-* \
+    ros-humble-librealsense2* \
     && rm -rf /var/lib/apt/lists/*
 
 # Ajouter les sources de ROS 2 Humble
@@ -191,12 +180,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /home/ros2_ws/src
 
-RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
+# Currently this package is not use and need a debug
+# RUN git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-master
 
-# Construire les packages un par un pour résoudre les dépendances
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build --packages-select curobo_msgs"
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros2_ws && colcon build"
-RUN echo "source /home/ros2_ws/install/setup.bash" >> ~/.bashrc
+# Note: curobo_msgs, curobo_rviz, and curobo_ros will be mounted as volumes in DEV mode
 
 RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
     rosdep update # "sudo rosdep update --include-eol-distros" 
@@ -204,8 +191,7 @@ RUN sudo rosdep init # "sudo rosdep init --include-eol-distros" && \
 # Setup for trajectory_preview
 RUN git clone https://github.com/swri-robotics/trajectory_preview.git
 
-# Setup for curobo_rviz
-# RUN git clone https://github.com/Lab-CORO/curobo_rviz.git
+# curobo_rviz and curobo_ros will be mounted as volumes in DEV mode
 
 # Add tools for pcd_fuse
 RUN apt remove python3-blinker -y
@@ -222,7 +208,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Install Open3D from the PyPI repositories
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir --upgrade open3d
-
+RUN python3 -m pip install --no-cache-dir --force-reinstall --no-deps \
+    pandas scikit-learn pyarrow
 # # # Set the workspace directory
 WORKDIR /home/ros2_ws/src
 
@@ -241,11 +228,18 @@ RUN source /opt/ros/"$ROS_DISTRO"/setup.bash && \
 
 WORKDIR /home/ros2_ws
 
-# Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
-RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc && \
+    echo "source /home/ros2_ws/install/setup.bash" >> ~/.bashrc
 
+# Fix error: "AttributeError: module 'cv2.dnn' has no attribute 'DictValue'"
+#RUN sed -i '171d' /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+
+# update ucx path: https://github.com/openucx/ucc/issues/476
+ENV LD_LIBRARY_PATH=/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH
 COPY branch_switch_entrypoint.sh /home/
 
+RUN  apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp ros-humble-cyclonedds
 
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 # Not needed anymore ENTRYPOINT [ "/home/branch_switch_entrypoint.sh" ]
 

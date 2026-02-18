@@ -5,6 +5,7 @@ import std_msgs.msg
 from sensor_msgs.msg import JointState
 from rclpy.node import Node
 
+
 # Third Party
 import torch
 
@@ -16,6 +17,8 @@ from curobo.types.math import Pose
 
 # msg ik
 from .config_wrapper_motion import ConfigWrapperIK
+from curobo_ros.robot.robot_context import RobotContext
+
 
 
 
@@ -33,51 +36,63 @@ class IK(Node):
         self.declare_parameter('voxel_size', 0.5)
         voxel_size = self.get_parameter(
                 'voxel_size').get_parameter_value().double_value
+        self.declare_parameter('init_batch_size', 1000)
+        init_batch_size = self.get_parameter(
+                'init_batch_size').get_parameter_value().integer_value
         
         # curobo args
         self.tensor_args = TensorDeviceType()
 
-        self.size_init = 5500
-        self.config_wrapper = ConfigWrapperIK(self)
-        # self.config_wrapper.set_ik_gen_config(self, None, None)
-        # self.ik_init()
-
-        # service for list of poses to calculate the inverse kinematics
-        
+        self.size_init = init_batch_size
+        print("size init:")
+        print(self.size_init)
+        self.robot_context = RobotContext(self, 0.03)
+        self.config_wrapper = ConfigWrapperIK(self, self.robot_context)
 
     def ik_callback(self, request, response):
-        if len(request.poses) == 0:
+
+        res, ik_result = self.get_ik([request.pose])
+        if (res == False):
+            response.success = res 
+            return response
+
+        for index, j in enumerate(ik_result.solution.cpu().numpy()):
+            joint = JointState()
+            joint.position = j[0].tolist()
+
+            # joint state valide to Bool list
+            res = std_msgs.msg.Bool()
+            res.data = bool(ik_result.success.cpu().numpy()[index][0])
+
+            response.joint_states_valid =res
+            response.joint_states = joint
+            response.success = True
+        return response
+
+    def get_ik(self, poses):
+        '''
+        Get a list of poses (geometry...) 
+        return a tuple (result(bool), [joint_states])
+        '''
+        if len(poses) == 0:
             self.get_logger().info("0 pose requested")
             # self.get_logger().info(len(request.poses))
-            return response
+            return False, []
         # check limit of poses 1000 poses
-        if len(request.poses) != self.size_init:
-            # print("new size")
-            self.tensor_args = TensorDeviceType()
-            self.config_wrapper.set_ik_gen_config(self, None, None)
-            # ik_config = IKSolverConfig.load_from_robot_config(
-            #     self.robot_cfg,
-            #     self.world_cfg,
-            #     rotation_threshold=0.05,
-            #     position_threshold=0.005,
-            #     num_seeds=20,
-            #     self_collision_check=True,
-            #     self_collision_opt=True,
-            #     tensor_args=self.tensor_args,
-            #     use_cuda_graph=True,
-            # )
-            # self.ik_solver = IKSolver(ik_config)
-            self.size_init = len(request.poses)
-            try:
+        try:
+            if len(poses) != self.size_init:
+                # print("new size")
+                self.tensor_args = TensorDeviceType()
+                self.config_wrapper.set_ik_gen_config(self, None, None)
+
+                self.size_init = len(poses)
+            
                 self.ik_init()
-            except:
-                # response.error_msg = "May be in collision"
-                self.size_init = 0 # Init could not be done also the size is set to 0.
-                response.success = False
-                return response
+        except:
+            # response.error_msg = "May be in collision"
+            self.size_init = 0 # Init could not be done also the size is set to 0.
+            return False, []
         # get the poses
-        poses = request.poses
-        # print(poses[0])
 
         positions = []
         orientations = []
@@ -93,8 +108,7 @@ class IK(Node):
         orientation_tensor = torch.tensor(orientations)
 
         goal = Pose(position_tensor, orientation_tensor)
-        # print(goal.position)
-        # ca pete ici
+
         try:
             result = self.ik_solver.solve_batch(goal)
         except:
@@ -103,33 +117,38 @@ class IK(Node):
                 result = self.ik_solver.solve_batch(goal)
             except:
                 self.size_init = 0 # Init could not be done also the size is set to 0.
-                response.success = False
-                return response
+                return False, []
         torch.cuda.synchronize()
 
-        # convert result joins angles to sensor_msgs/JointState
-        joints_results = []
-        for index, j in enumerate(result.solution.cpu().numpy()):
+
+        return True, result
+
+
+    def ik_batch_callback(self, request, response):
+
+
+        res, ik_result = self.get_ik(request.poses)
+
+        if (res == False):
+            response.success = res 
+            return response
+
+        for index, j in enumerate(ik_result.solution.cpu().numpy()):
             joint = JointState()
             joint.position = j[0].tolist()
-            # joints_results.append(joint)
 
             # joint state valide to Bool list
             res = std_msgs.msg.Bool()
-            res.data = bool(result.success.cpu().numpy()[index][0])
-            # print(res)
+            res.data = bool(ik_result.success.cpu().numpy()[index][0])
 
             response.joint_states_valid.append(res)
             response.joint_states.append(joint)
             response.success = True
-        # response.joint_states_valid = result.success.cpu().numpy()[:,0]
-
-        # response.joint_angles = result.joint_angles.cpu().numpy().tolist()
         return response
+
 
     def ik_init(self):
         q_sample = self.ik_solver.sample_configs(self.size_init)
-        # print(q_sample)
         kin_state = self.ik_solver.fk(q_sample)
         goal = Pose(kin_state.ee_position, kin_state.ee_quaternion)
 

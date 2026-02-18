@@ -11,6 +11,11 @@ class MarkerPublisher(Node):
         self.marker_voxel_pub = self.create_publisher(
             MarkerArray, 'visualization_marker_voxel', 10)
 
+        # Declare and get base_link parameter, default to 'base_0'
+        self.declare_parameter('base_link', 'base_0')
+        self.base_link = self.get_parameter('base_link').get_parameter_value().string_value
+        self.get_logger().info(f'MarkerPublisher using base_link: {self.base_link}')
+
     def delete_marker(self, pub, ns):
         marker_array_msg = MarkerArray()
         marker = Marker()
@@ -27,7 +32,7 @@ class MarkerPublisher(Node):
             if i == 0:
                 # Create a red sphere marker for the start position
                 sphere_marker = Marker()
-                sphere_marker.header.frame_id = "base_0"
+                sphere_marker.header.frame_id = self.base_link
                 sphere_marker.header.stamp = self.get_clock().now().to_msg()
                 sphere_marker.ns = "trajectory"
                 sphere_marker.id = i
@@ -46,7 +51,7 @@ class MarkerPublisher(Node):
             elif i == len(poses) - 1:
                 # Create a blue sphere marker for the end position
                 sphere_marker = Marker()
-                sphere_marker.header.frame_id = "base_0"
+                sphere_marker.header.frame_id = self.base_link
                 sphere_marker.header.stamp = self.get_clock().now().to_msg()
                 sphere_marker.ns = "trajectory"
                 sphere_marker.id = i
@@ -65,7 +70,7 @@ class MarkerPublisher(Node):
             else:
                 # Create text marker for other positions
                 text_marker = Marker()
-                text_marker.header.frame_id = "base_0"
+                text_marker.header.frame_id = self.base_link
                 text_marker.header.stamp = self.get_clock().now().to_msg()
                 text_marker.ns = "trajectory"
                 text_marker.id = i
@@ -93,7 +98,7 @@ class MarkerPublisher(Node):
         marker_array = MarkerArray()
         for i, pose in enumerate(poses):
             voxel_marker = Marker()
-            voxel_marker.header.frame_id = "base_0"
+            voxel_marker.header.frame_id = self.base_link
             voxel_marker.header.stamp = self.get_clock().now().to_msg()
             voxel_marker.ns = "voxel"
             voxel_marker.id = i

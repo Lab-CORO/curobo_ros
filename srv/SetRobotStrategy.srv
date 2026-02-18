@@ -1,0 +1,12 @@
+# Service to change the robot control strategy dynamically
+# Available strategies: "doosan_m1013", "ur5e", "emulator", "ghost"
+
+# Request
+string strategy_name    # Name of the strategy to switch to
+
+---
+
+# Response
+bool success           # True if strategy was changed successfully
+string message         # Status message or error description
+string previous_strategy  # Name of the previous strategy

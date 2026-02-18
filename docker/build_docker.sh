@@ -1,73 +1,166 @@
 #!/bin/bash
+
 ##
-## Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+## Build script for curobo_ros Docker images
+## Supports DEV (development) and PROD (production) modes
 ##
-## NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-## property and proprietary rights in and to this material, related
-## documentation and any modifications thereto. Any use, reproduction,
-## disclosure or distribution of this material and related documentation
-## without an express license agreement from NVIDIA CORPORATION or
-## its affiliates is strictly prohibited.
+## Usage:
+##   Interactive mode:  ./build_docker.sh
+##   Automated mode:    ./build_docker.sh <gpu_choice> <mode_choice>
+##
+## Arguments:
+##   gpu_choice:   1=Ampere, 2=Ada Lovelace, 3=Turing, 4=Volta
+##   mode_choice:  1=DEV, 2=PROD
+##
+## Examples:
+##   ./build_docker.sh 1 1    # Ampere GPU, DEV mode
+##   ./build_docker.sh 2 2    # Ada Lovelace GPU, PROD mode
 ##
 
+set -e  # Exit on error
 
-# This script will create a dev docker. Run this script by calling `bash build_dev_docker.sh`
-# If you want to build a isaac sim docker, run this script with `bash build_dev_docker.sh isaac`
+echo "======================================"
+echo "  curobo_ros Docker Build Script"
+echo "======================================"
+echo ""
 
-# Check architecture to build:
-
-image_tag="x86"
-isaac_sim_version=""
-input_arg="$1"
-
-if [ -z "$input_arg" ]; then
-    arch=$(uname -m)
-    echo "Argument empty, trying to build based on architecture"
-    if [ "$arch" == "x86_64" ]; then
-        input_arg="x86"
-    elif [ "$arch" == "arm64" ]; then
-        input_arg="aarch64"
-    elif [ "$arch" == "aarch64" ]; then
-        input_arg="aarch64"
-    fi
-fi
-
-if [ "$input_arg" == "isaac_sim_2022.2.1" ]; then
-    echo "Building Isaac Sim docker"
-    dockerfile="isaac_sim.dockerfile"
-    image_tag="isaac_sim_2022.2.1"
-    isaac_sim_version="2022.2.1"
-elif [ "$input_arg" == "isaac" ]; then
-    echo "Building Isaac Sim headless docker"
-    dockerfile="isaac_sim.dockerfile"
-    image_tag="isaac"
-    isaac_sim_version="2023.1.0"
-elif [ "$input_arg" == "x86" ]; then
-    echo "Building for X86 Architecture"
-    dockerfile="x86.dockerfile"
-    image_tag="x86"
-elif [ "$input_arg" = "aarch64" ]; then
-    echo "Building for ARM Architecture"
-    dockerfile="aarch64.dockerfile"
-    image_tag="aarch64"
+# Check if arguments are provided
+if [ $# -eq 2 ]; then
+    gpu_choice=$1
+    mode_choice=$2
+    echo "Using command-line arguments:"
+    echo "  GPU choice: $gpu_choice"
+    echo "  Mode choice: $mode_choice"
+    echo ""
 else
-    echo "Unknown Argument. Please pass one of [x86, aarch64, isaac_sim_2022.2.1, isaac_sim_2023.1.0]"
-    exit
+    # Step 1: Choose GPU architecture
+    echo "Step 1/2: Choose your GPU architecture"
+    echo "---------------------------------------"
+    echo "1) Ampere (RTX 30XX series: 3060, 3070, 3080, 3090, A100)"
+    echo "2) Ada Lovelace (RTX 40XX series: 4060, 4070, 4080, 4090)"
+    echo "3) Turing (RTX 20XX series: 2060, 2070, 2080)"
+    echo "4) Volta (Titan V, V100)"
+    echo ""
+    read -p "Enter the number corresponding to your GPU: " gpu_choice
 fi
 
-# build docker file:
-# Make sure you enable nvidia runtime by:
-# Edit/create the /etc/docker/daemon.json with content:
-# {
-#    "runtimes": {
-#        "nvidia": {
-#            "path": "/usr/bin/nvidia-container-runtime",
-#            "runtimeArgs": []
-#         } 
-#    },
-#    "default-runtime": "nvidia" # ADD this line (the above lines will already exist in your json file)
-# }
-# 
-echo "${dockerfile}"
+# Set CUDA architecture based on choice
+case $gpu_choice in
+    1)
+        TORCH_CUDA_ARCH_LIST="8.0 8.6"
+        GPU_NAME="ampere"
+        echo "Selected: Ampere (Compute Capability 8.0, 8.6)"
+        ;;
+    2)
+        TORCH_CUDA_ARCH_LIST="8.9 9.0"
+        GPU_NAME="ada_lovelace"
+        echo "Selected: Ada Lovelace (Compute Capability 8.9, 9.0)"
+        ;;
+    3)
+        TORCH_CUDA_ARCH_LIST="7.5"
+        GPU_NAME="turing"
+        echo "Selected: Turing (Compute Capability 7.5)"
+        ;;
+    4)
+        TORCH_CUDA_ARCH_LIST="7.0"
+        GPU_NAME="volta"
+        echo "Selected: Volta (Compute Capability 7.0)"
+        ;;
+    *)
+        echo "Invalid choice, defaulting to Ampere (RTX 30XX)"
+        TORCH_CUDA_ARCH_LIST="8.0 8.6"
+        GPU_NAME="ampere"
+        ;;
+esac
 
-docker build  --build-arg ISAAC_SIM_VERSION=${isaac_sim_version} -t curobo_docker:${image_tag} -f ${dockerfile} . 
+echo ""
+
+# Step 2: Choose build mode (only if not provided as argument)
+if [ $# -ne 2 ]; then
+    echo "Step 2/2: Choose build mode"
+    echo "-----------------------------"
+    echo "1) DEV  - Development mode (for modifying curobo_ros internals)"
+    echo "            → Full image with development tools"
+    echo "            → Workspace mounted from host for live editing"
+    echo "            → Size: ~25-30 GB"
+    echo ""
+    echo "2) PROD - Production mode (for using curobo_ros)"
+    echo "            → Optimized image with curobo_ros pre-installed"
+    echo "            → Mount your own workspace to use the package"
+    echo "            → Size: ~15-20 GB (smaller)"
+    echo ""
+    read -p "Enter your choice (1 for DEV, 2 for PROD): " mode_choice
+fi
+
+case $mode_choice in
+    1)
+        BUILD_MODE="dev"
+        DOCKERFILE="x86.dockerfile"
+        IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
+        echo "Selected: DEV mode"
+        echo "Building development image with full tools..."
+        ;;
+    2)
+        BUILD_MODE="prod"
+        DOCKERFILE="x86.optimize-v2-ultra.dockerfile"
+        IMAGE_TAG="curobo_ros:${GPU_NAME}-prod"
+        echo "Selected: PROD mode"
+        echo "Building optimized production image..."
+        ;;
+    *)
+        echo "Invalid choice, defaulting to DEV mode"
+        BUILD_MODE="dev"
+        DOCKERFILE="x86.dockerfile"
+        IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
+        ;;
+esac
+
+echo ""
+echo "======================================"
+echo "  Build Configuration"
+echo "======================================"
+echo "GPU Architecture:  $GPU_NAME"
+echo "CUDA Arch List:    $TORCH_CUDA_ARCH_LIST"
+echo "Build Mode:        $BUILD_MODE"
+echo "Dockerfile:        $DOCKERFILE"
+echo "Image Tag:         $IMAGE_TAG"
+echo ""
+echo "⚠️  Note: This build will take 20-30 minutes and require ~30 GB disk space during build."
+echo ""
+
+# Build the Docker image
+echo ""
+echo "Building Docker image..."
+docker build \
+    --build-arg TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
+    -t "$IMAGE_TAG" \
+    -f "$DOCKERFILE" \
+    .
+
+echo ""
+echo "======================================"
+echo "  ✅ Build Complete!"
+echo "======================================"
+echo "Image tag: $IMAGE_TAG"
+echo "Mode:      $BUILD_MODE"
+echo ""
+echo "Next steps:"
+if [ "$BUILD_MODE" = "dev" ]; then
+    echo "  1. Ensure you have imported dependencies:"
+    echo "     cd ~/ros2_ws/src"
+    echo "     vcs import < curobo_ros/my.repos"
+    echo ""
+    echo "  2. Start the container:"
+    echo "     bash start_docker_x86.sh"
+    echo ""
+else
+    echo "  1. Create your ROS 2 workspace on the host:"
+    echo "     mkdir -p ~/my_ros2_ws/src"
+    echo ""
+    echo "  2. Start the container:"
+    echo "     bash start_docker_x86.sh"
+    echo "     (You'll be asked for your workspace path)"
+    echo ""
+fi
+echo "See doc/concepts/docker_workflow.md for more details."
+echo "======================================"

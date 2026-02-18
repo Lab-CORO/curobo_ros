@@ -1,0 +1,19 @@
+cameras:
+  # Exemple 1: Camera de profondeur avec intrinsics/extrinsics depuis topics/TF (comportement par defaut)
+  - name: depth_map_test
+    type: depth_camera
+    topic: /depth_to_rgb/image_raw
+    frame_id: rgb_camera_link
+    camera_info: /depth_to_rgb/camera_info  # Topic pour obtenir les intrinsics
+    #   # Option A: Matrice K complete (9 elements: fx, 0, cx, 0, fy, cy, 0, 0, 1)
+    #   intrinsics: [615.3, 0.0, 320.5, 0.0, 615.8, 240.5, 0.0, 0.0, 1.0]
+    #   # Option B: Format dict (alternatif)
+    #   # intrinsics:
+    #   #   fx: 615.3
+    #   #   fy: 615.8
+    #   #   cx: 320.5
+    #   #   cy: 240.5
+    intrinsics: []  # Vide = utiliser camera_info topic
+    # Extrinsics: [x, y, z, qw, qx, qy, qz] (format cuRobo)
+    extrinsics: [0.161, -0.428, 1.585, -0.3409296, 0.6840516, -0.6215661, 0.1717437]
+ 
