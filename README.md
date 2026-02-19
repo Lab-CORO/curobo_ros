@@ -176,6 +176,7 @@ For robot integration, see [Adding Your Robot Tutorial](doc/tutorials/02-adding-
 
 ---
 
+
 ## Citation
 
 If you use curobo_ros in your research, please cite cuRobo:
