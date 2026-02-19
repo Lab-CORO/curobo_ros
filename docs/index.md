@@ -17,7 +17,7 @@ A pre-built Docker image ships all dependencies (ROS 2 Humble, CUDA 12, curobo).
 :maxdepth: 2
 :caption: Getting Started
 
-getting_started
+getting-started/index
 ```
 
 ```{toctree}
@@ -35,8 +35,8 @@ concepts/index
 ```
 
 ```{toctree}
-:maxdepth: 1
-:caption: Reference
+:maxdepth: 2
+:caption: Robots
 
-troubleshooting
+robots/index
 ```
