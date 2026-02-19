@@ -84,15 +84,7 @@ Setting this up manually can take hours and often breaks. Docker gives you a **p
 | **Volume** | Share files between host and container | A shared folder |
 | **Build** | Create an image from a Dockerfile | Following the recipe |
 
-#### How We Use Docker
-
-1. **Build** the image once (20-30 minutes)
-2. **Start** a container when you want to work
-3. **Code** on your host machine (files are shared via volumes)
-4. **Execute** commands inside the container
-5. **Stop** the container when done (your work is saved)
-
-**Important**: The container is like a workspace - you can stop it and start it later without losing your work.
+For setup details, DEV vs PROD workflows, and daily usage, see the [Installation Guide](installation.md).
 
 ### 3. What is cuRobo?
 
@@ -100,7 +92,7 @@ Setting this up manually can take hours and often breaks. Docker gives you a **p
 
 #### Why GPU acceleration?
 
-Traditional motion planning can take seconds or even minutes. cuRobo uses your NVIDIA GPU to:
+Traditional motion planning can take seconds. cuRobo uses your NVIDIA GPU to:
 - Solve inverse kinematics in **milliseconds**
 - Check thousands of collision scenarios **in parallel**
 - Optimize trajectories **100x faster** than CPU-only methods
@@ -120,102 +112,6 @@ Traditional motion planning can take seconds or even minutes. cuRobo uses your N
   - World represented as voxels
   - Ultra-fast GPU collision detection
 
----
-
-## How curobo_ros Works
-
-curobo_ros is the **bridge** between cuRobo (GPU planning) and ROS 2 (robot communication).
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Your Application                      │
-│         (Python script, RViz plugin, etc.)              │
-└───────────────────────┬─────────────────────────────────┘
-                        │ ROS 2 Services/Topics
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│                  curobo_ros Node                         │
-│  • Receives motion planning requests                     │
-│  • Manages obstacles and world model                     │
-│  • Interfaces with cuRobo GPU library                    │
-└───────────────────────┬─────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│                cuRobo (GPU Library)                      │
-│  • Plans trajectories on GPU                             │
-│  • Solves IK with parallel optimization                  │
-│  • Collision checking with voxels                        │
-└───────────────────────┬─────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│                 Robot Strategy                           │
-│  • Sends commands to real robot                          │
-│  • Or runs in simulation/emulator                        │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## Typical Workflow
-
-Here's what a typical use case looks like:
-
-### 1. Setup (Done Once)
-```bash
-# Build Docker image
-cd curobo_ros/docker
-bash build_docker.sh x86
-
-# Start container
-bash start_docker_x86.sh
-```
-
-### 2. Launch the System
-```bash
-# Inside container
-ros2 launch curobo_ros unified_planner.launch.py
-```
-
-This starts:
-- The trajectory generation node
-- RViz for visualization
-- Robot state publishers
-
-### 3. Request a Trajectory
-```bash
-# In another terminal (docker exec)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-```
-
-cuRobo plans a path, and you see it in RViz!
-
-### 4. Add Obstacles
-```bash
-# Add a box obstacle
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'box1', type: 0, dimensions: {x: 0.2, y: 0.2, z: 0.2}, ...}"
-```
-
-### 5. Plan Again
-The planner now avoids your obstacle automatically.
-
----
-
-## What You'll Learn
-
-By the end of this documentation, you'll be able to:
-
-1. ✅ Set up the Docker environment
-2. ✅ Launch the motion planning system
-3. ✅ Generate your first trajectory
-4. ✅ Integrate your own robot (with URDF)
-5. ✅ Add obstacles to the environment
-6. ✅ Use camera/point cloud for obstacle detection
-7. ✅ Switch between robot strategies (real/simulation/emulator)
-8. ✅ Tune important parameters for best performance
 
 ---
 
@@ -235,8 +131,7 @@ Before starting, make sure you have:
 
 Ready to get started?
 
-1. **[Docker Workflow Guide](docker-workflow.md)** - Learn how to work with Docker containers
-2. **[Installation Guide](installation.md)** - Set up and run your first trajectory
+1. **[Installation Guide](installation.md)** - Set up Docker, build the image, and run your first trajectory
 3. **[Parameters Guide](../concepts/parameters.md)** - Understand important configuration parameters
 
 ---
@@ -250,4 +145,4 @@ Ready to get started?
 
 ---
 
-**Let's begin!** → [Docker Workflow Guide](docker-workflow.md)
+**Let's begin!** → [Installation Guide](installation.md)
