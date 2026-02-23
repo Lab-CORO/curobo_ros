@@ -437,4 +437,4 @@ ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/Sen
 - **[Parameters Guide](../concepts/parameters.md)** - Deep dive into all parameters
 - **[Dynamic Strategy Switching](04-strategy-switching.md)** - Switch between robot modes
 
----
+
