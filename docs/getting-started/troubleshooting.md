@@ -75,7 +75,7 @@ sudo rm -rf /var/lib/snapd/cache/*
 
 **Symptom**
 ```
-docker: Error response from daemon: Conflict. The container name "/x86docker" is already in use
+docker: Error response from daemon: Conflict. The container name "/curobo_ampere_dev" is already in use
 ```
 
 **Cause**
@@ -86,22 +86,22 @@ You're trying to create a container, but one with that name already exists (poss
 **Option 1: Start the existing container** (recommended)
 ```bash
 # Check if container exists
-docker ps -a | grep x86docker
+docker ps -a | grep curobo_ampere_dev
 
 # Start it
-docker start x86docker
+docker start curobo_ampere_dev
 
 # Attach to it
-docker exec -it x86docker bash
+docker exec -it curobo_ampere_dev bash
 ```
 
 **Option 2: Remove and recreate** (you'll lose container-specific changes)
 ```bash
 # Stop the container
-docker stop x86docker
+docker stop curobo_ampere_dev
 
 # Remove it
-docker rm x86docker
+docker rm curobo_ampere_dev
 
 # Now run start_docker_x86.sh again
 bash start_docker_x86.sh

@@ -5,7 +5,7 @@
 The `unified_planner` node handles motion planning. You can launch it with:
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py
+ros2 launch curobo_ros gen_traj.launch.py
 ```
 
 > ⚠️ On first launch, you may encounter the "missing symbol: ucm\_set\_global\_opts" error. The workaround is in [Troubleshooting](../../getting-started/troubleshooting.md#2-missing-symbol-ucm_set_global_opts), though a permanent fix is currently pending.

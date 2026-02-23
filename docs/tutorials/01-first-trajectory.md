@@ -17,7 +17,7 @@ This tutorial walks you through generating your first motion plan with curobo_ro
 
 If not, start the system:
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py
+ros2 launch curobo_ros gen_traj.launch.py
 ```
 
 ---
@@ -54,7 +54,7 @@ Let's plan a simple trajectory to a target position!
 
 ```bash
 # If using VSCode: Terminal → New Terminal (already inside container)
-# If not: docker exec -it x86docker bash
+# If not: docker exec -it curobo_ampere_dev bash  # adapt name to your GPU
 
 # Source the workspace
 source /home/ros2_ws/install/setup.bash

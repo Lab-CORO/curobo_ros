@@ -55,7 +55,7 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='curobo_ros',
-            executable='unified_planner',
+            executable='curobo_trajectory_planner',
             name='trajectory_planner',
             parameters=[{
                 'default_planner': 'mpc',  # Use MPC planner
@@ -84,7 +84,7 @@ Alternatively, launch with default settings and switch to MPC:
  
 ```bash
 # Terminal 1: Launch unified planner
-ros2 run curobo_ros unified_planner
+ros2 run curobo_ros curobo_trajectory_planner
  
 # Terminal 2: Switch to MPC
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"

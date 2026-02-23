@@ -130,7 +130,7 @@ ros2 run tf2_ros tf2_echo base_0 link6
 
 ```bash
 # Launch curobo_ros with Doosan M1013 config
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   robot_config_file:=$(ros2 pkg prefix curobo_doosan)/config/m1013.yml
 ```
 
@@ -144,7 +144,7 @@ ros2 launch curobo_ros unified_planner.launch.py \
 
 ```bash
 # Open a new terminal
-docker exec -it x86docker bash
+docker exec -it curobo_ampere_dev bash  # adapt name to your GPU
 source /home/ros2_ws/install/setup.bash
 
 # Generate a trajectory
@@ -478,7 +478,7 @@ Now use your configuration with curobo_ros:
 
 ```bash
 # Inside Docker container (or your ROS 2 environment)
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   robot_config_file:=/path/to/my_robot.yml
 ```
 
@@ -693,8 +693,8 @@ robot:
 
 ```bash
 # Launch with your config
-ros2 launch curobo_ros unified_planner.launch.py \
-  robot_config_file:=/home/ros2_ws/src/curobo_ros/config/my_robot.yml
+ros2 launch curobo_ros gen_traj.launch.py \
+  robot_config_file:=$(ros2 pkg prefix curobo_ros)/config/my_robot.yml
 ```
 
 **Check logs for errors:**
@@ -773,7 +773,7 @@ setup(
 colcon build --packages-select my_robot_curobo
 source install/setup.bash
 
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   robot_config_file:=$(ros2 pkg prefix my_robot_curobo)/config/my_robot.yml
 ```
 
