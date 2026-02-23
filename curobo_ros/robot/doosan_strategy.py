@@ -64,6 +64,9 @@ class DoosanControl(JointCommandStrategy):
 
             # Add the point to the trajectory message
             joint_trajectory_msg.points.append(joint_trajectory_point)
+        self.position_command = []
+        self.vel_command = []
+        self.accel_command = []
 
         self.pub_trajectory.publish(joint_trajectory_msg)
     
