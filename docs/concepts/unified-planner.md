@@ -117,7 +117,7 @@ class ClassicPlanner(SinglePlanner):
  
 ```bash
 # Launch the unified planner node
-ros2 run curobo_ros unified_planner
+ros2 run curobo_ros curobo_trajectory_planner
  
 # List available planners
 ros2 service call /unified_planner/list_planners std_srvs/srv/Trigger

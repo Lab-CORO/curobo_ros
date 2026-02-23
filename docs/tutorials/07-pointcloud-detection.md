@@ -165,7 +165,7 @@ ros2 topic echo /masked_pointcloud --once | head -20
 Start the trajectory generation node with point cloud camera enabled:
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py use_pointcloud_camera:=true
+ros2 launch curobo_ros gen_traj.launch.py use_pointcloud_camera:=true
 ```
 
 ### 3. Generate trajectories
@@ -509,5 +509,5 @@ self.camera_context.add_camera('realsense', realsense_camera)
 
 - [Robot Segmentation](../core/robot_segmentation.py)
 - [Camera Strategies](../../curobo_ros/cameras/)
-- [Motion Generation](./doosan_example.md)
-- [Adding Collision Objects](./adding_collision_objects.md)
+- [Motion Generation](./examples/doosan-m1013.md)
+- [Adding Collision Objects](./03-collision-objects.md)

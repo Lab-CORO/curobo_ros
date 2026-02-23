@@ -16,6 +16,42 @@ curobo_ros has two types of parameters:
 
 ---
 
+## Launch File Parameters
+
+The `gen_traj.launch.py` file accepts several parameters that control the behavior of the trajectory generation system:
+
+### Launch Parameters Reference
+
+| Parameter | Type | Default | Description | Required |
+|-----------|------|---------|-------------|----------|
+| `robot_config_file` | string | m1013.yml | Path to robot configuration YAML file | No |
+| `urdf_path` | string | "" (auto) | Path to URDF file (if empty, loaded from robot_config_file) | No |
+| `cameras_config_file` | string | "" | Path to cameras configuration YAML file | No |
+| `world_file` | string | "" | Path to world configuration YAML file | No |
+| `gui` | bool | true | Launch RViz visualization | No |
+| `include_realsense_launch` | bool | false | Include RealSense camera launch | No |
+| `max_attempts` | int | 2 | Maximum planning attempts | No |
+| `timeout` | float | 1.0 | Planning timeout in seconds | No |
+| `time_dilation_factor` | float | 0.5 | Time dilation for trajectory execution | No |
+| `voxel_size` | float | 1.0 | Voxel size for collision checking | No |
+| `collision_activation_distance` | float | 0.5 | Distance for collision activation | No |
+
+### Usage Examples
+
+```bash
+# Basic launch with custom robot config
+ros2 launch curobo_ros gen_traj.launch.py robot_config_file:=$(ros2 pkg prefix curobo_doosan)/config/m1013.yml
+
+# Launch without GUI (headless mode)
+ros2 launch curobo_ros gen_traj.launch.py gui:=false
+
+# Launch with custom parameters
+ros2 launch curobo_ros gen_traj.launch.py \
+    voxel_size:=0.05 \
+    max_attempts:=5 \
+    timeout:=2.0
+```
+
 ## Critical Parameters
 
 These two parameters have the **biggest impact** on system behavior:
@@ -79,7 +115,7 @@ The robot is represented as spheres, and collision checking tests if any sphere 
 
 ```bash
 # At launch time
-ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
+ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
 
 # To change at runtime (requires reload)
 ros2 param set /unified_planner voxel_size 0.02
@@ -172,7 +208,7 @@ time_dilation_factor = 1.0 → Executed in 2.0 seconds (faster, at limits)
 
 ```bash
 # At launch time
-ros2 launch curobo_ros unified_planner.launch.py time_dilation_factor:=0.7
+ros2 launch curobo_ros gen_traj.launch.py time_dilation_factor:=0.7
 
 # At runtime (takes effect on next trajectory)
 ros2 param set /unified_planner time_dilation_factor 0.7
@@ -231,7 +267,7 @@ The robot will start avoiding obstacles when it gets within this distance. Think
 #### How to Set
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py collision_activation_distance:=0.03
+ros2 launch curobo_ros gen_traj.launch.py collision_activation_distance:=0.03
 ```
 
 ---
@@ -262,7 +298,7 @@ If planning fails, the node will retry up to `max_attempts` times with different
 
 ```bash
 # At launch
-ros2 launch curobo_ros unified_planner.launch.py max_attempts:=3
+ros2 launch curobo_ros gen_traj.launch.py max_attempts:=3
 
 # At runtime
 ros2 param set /unified_planner max_attempts 3
@@ -321,7 +357,7 @@ ros2 param set /unified_planner timeout 2.0
 #### How to Set
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py robot_config_file:=path/to/your_robot.yml
+ros2 launch curobo_ros gen_traj.launch.py robot_config_file:=path/to/your_robot.yml
 ```
 
 See [Adding Your Robot Tutorial](../tutorials/02-adding-your-robot.md) for details.
@@ -811,7 +847,7 @@ Here's how to tune parameters for your application:
 ### Step 1: Start with Defaults
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py
+ros2 launch curobo_ros gen_traj.launch.py
 ```
 
 Test your application and identify issues.
@@ -834,10 +870,10 @@ If planning is slow or missing obstacles:
 
 ```bash
 # For small obstacles (slower)
-ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
+ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
 
 # For large obstacles (faster)
-ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.08
+ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.08
 ```
 
 ### Step 4: Tune Reliability
@@ -852,7 +888,7 @@ ros2 param set /unified_planner max_attempts 3
 ros2 param set /unified_planner timeout 10.0
 
 # Looser collision constraints
-ros2 launch curobo_ros unified_planner.launch.py collision_activation_distance:=0.04
+ros2 launch curobo_ros gen_traj.launch.py collision_activation_distance:=0.04
 ```
 
 ### Step 5: Measure and Iterate
@@ -872,7 +908,7 @@ ros2 topic echo /unified_planner/planning_time
 ### For Testing/Development
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   time_dilation_factor:=0.3 \
   voxel_size:=0.05 \
   max_attempts:=2 \
@@ -884,7 +920,7 @@ ros2 launch curobo_ros unified_planner.launch.py \
 ### For Production (Fast)
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   time_dilation_factor:=0.8 \
   voxel_size:=0.05 \
   max_attempts:=1 \
@@ -896,7 +932,7 @@ ros2 launch curobo_ros unified_planner.launch.py \
 ### For Precision Tasks
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   time_dilation_factor:=0.4 \
   voxel_size:=0.02 \
   collision_activation_distance:=0.02 \
@@ -908,7 +944,7 @@ ros2 launch curobo_ros unified_planner.launch.py \
 ### For Cluttered Environments
 
 ```bash
-ros2 launch curobo_ros unified_planner.launch.py \
+ros2 launch curobo_ros gen_traj.launch.py \
   time_dilation_factor:=0.5 \
   voxel_size:=0.03 \
   collision_activation_distance:=0.03 \
@@ -939,7 +975,7 @@ ros2 launch curobo_ros unified_planner.launch.py \
 **Try**:
 ```bash
 # Larger voxels
-ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.08
+ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.08
 
 # Fewer attempts
 ros2 param set /unified_planner max_attempts 1
@@ -953,7 +989,7 @@ ros2 param set /unified_planner timeout 2.0
 **Try**:
 ```bash
 # Smaller voxels
-ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
+ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.02
 ```
 
 ### Problem: Can't find paths in tight spaces
@@ -961,7 +997,7 @@ ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.02
 **Try**:
 ```bash
 # Tighter collision threshold
-ros2 launch curobo_ros unified_planner.launch.py collision_activation_distance:=0.01
+ros2 launch curobo_ros gen_traj.launch.py collision_activation_distance:=0.01
 
 # More attempts
 ros2 param set /unified_planner max_attempts 5

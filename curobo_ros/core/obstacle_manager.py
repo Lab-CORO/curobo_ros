@@ -380,10 +380,8 @@ class ObstacleManager:
         Returns:
             Trigger.Response with message containing all obstacle names
         """
-        # Use our own world_cfg (single source of truth)
-        # Don't use config_manager.world_cfg (that's just the initial template)
-        for world_object in self.world_cfg.objects:
-            response.message = response.message + world_object.name + "\n"
+        for name in self.obstacle_names:
+            response.message = response.message + name + "\n"
 
         response.success = True
         return response

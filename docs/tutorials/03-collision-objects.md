@@ -30,7 +30,7 @@ curobo_ros supports dynamic obstacle management. You can add or remove objects a
 
 ```bash
 # Launch the system
-ros2 launch curobo_ros unified_planner.launch.py
+ros2 launch curobo_ros gen_traj.launch.py
 ```
 
 ---
@@ -515,7 +515,7 @@ All services work for both `/unified_planner` and `/curobo_ik` nodes:
 **Solutions:**
 ```bash
 # Use smaller voxels
-ros2 launch curobo_ros unified_planner.launch.py voxel_size:=0.03
+ros2 launch curobo_ros gen_traj.launch.py voxel_size:=0.03
 
 # Reload configuration
 ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
