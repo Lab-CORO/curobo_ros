@@ -146,7 +146,7 @@ ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/Trajector
 
 ```bash
 ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.6, y: 0.3, z: 0.4}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
+  "{target_pose: {position: {x: 0.32, y: -0.44, z: 0.13}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
 ### Target 3: Unreachable (Should Fail)
@@ -201,8 +201,8 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
   name: 'table',
   type: 0,
   pose: {position: {x: 0.4, y: 0.0, z: 0.15}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
-  dimensions: {x: 0.8, y: 1.0, z: 0.05},
-  color: {r: 0.6, g: 0.4, b: 0.2, a: 0.9}
+  dimensions: {x: 0.4, y: 0.4, z: 0.4},
+  color: {r: 0.0, g: 0.0, b: 0.0, a: 0.0}
 }"
 ```
 
@@ -210,7 +210,7 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 - A box representing a table
 - Position: 0.4m in front, ground level
 - Dimensions: 80cm x 100cm x 5cm
-- Color: Brown (RGBA)
+
 
 **Object types**:
 - `0`: CUBOID
@@ -223,7 +223,7 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 
 ```bash
 ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
+  "{target_pose: {position: {x: 0.32, y: -0.44, z: 0.13}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
 ```
 
 Watch in RViz - the robot now avoids the table!
@@ -309,6 +309,40 @@ ros2 param set /unified_planner max_attempts 3
 # Allow more time for planning
 ros2 param set /unified_planner timeout 10.0
 ```
+### Adjusting Voxel Size for Precision
+
+Some parameters require special handling because they are initialized during cuRobo's warmup phase. If you modify these parameters at runtime, you must trigger a reinitialization for the changes to take effect.
+
+#### Modifying Voxel Size
+
+The voxel size parameter controls the resolution of the collision grid used for obstacle detection:
+
+```bash
+# Set voxel size to 8cm (good balance between precision and performance)
+ros2 param set /unified_planner voxel_size 0.08
+```
+
+**Resolution Capabilities:**
+- **High-end GPUs:** Can handle resolutions down to 0.01m (1cm)
+- **Recommended default:** 0.05m (5cm) for most applications
+- **Large environments:** 0.1m (10cm) for better performance
+
+**Important:** After changing voxel size, you must update the motion generation configuration:
+
+```bash
+# Trigger configuration update to apply voxel size changes
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+```
+
+#### Performance vs Precision Trade-off
+
+| Voxel Size | Use Case | GPU Memory | Planning Speed |
+|------------|----------|------------|----------------|
+| 0.01m | Fine manipulation | ⚠️ High | ⚠️ Slow |
+| 0.05m | General purpose | ✅ Medium | ✅ Fast |
+| 0.10m | Large environments | ✅ Low | ✅ Very Fast |
+
+**Tip:** Start with the default (0.05m) and adjust based on your specific application needs and GPU capabilities.
 
 ---
 
@@ -319,12 +353,18 @@ If you have a real robot or emulator configured, you can execute the trajectory.
 ### Using the Action Interface
 
 ```bash
+# Switch the strategy to use the emulator
+ros2 service call /unified_planner/set_robot_strategy curobo_msgs/srv/SetRobotStrategy "{robot_strategy: 1}"
+
+
 # Generate a trajectory first
+
 ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
+ 
 
 # Execute it
-ros2 action send_goal /unified_planner/send_trajectrory curobo_msgs/action/SendTrajectory "{}"
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory {}
 ```
 
 **What happens:**
@@ -337,89 +377,6 @@ ros2 action send_goal /unified_planner/send_trajectrory curobo_msgs/action/SendT
 
 ---
 
-## Step 9: Python Example
-
-Here's a complete Python script to generate trajectories:
-
-```python
-#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from curobo_msgs.srv import TrajectoryGeneration
-from geometry_msgs.msg import Pose
-import sys
-
-
-class TrajectoryClient(Node):
-    def __init__(self):
-        super().__init__('trajectory_client')
-        self.client = self.create_client(
-            TrajectoryGeneration,
-            '/unified_planner/generate_trajectory'
-        )
-
-        # Wait for service
-        while not self.client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for trajectory service...')
-
-    def generate_trajectory(self, x, y, z, qw=1.0, qx=0.0, qy=0.0, qz=0.0):
-        """Generate trajectory to target pose"""
-        request = TrajectoryGeneration.Request()
-        request.target_pose.position.x = x
-        request.target_pose.position.y = y
-        request.target_pose.position.z = z
-        request.target_pose.orientation.w = qw
-        request.target_pose.orientation.x = qx
-        request.target_pose.orientation.y = qy
-        request.target_pose.orientation.z = qz
-
-        self.get_logger().info(f'Planning to ({x}, {y}, {z})...')
-        future = self.client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-
-        if future.result() is not None:
-            response = future.result()
-            if response.success:
-                self.get_logger().info(f'✅ Success! {response.message}')
-                self.get_logger().info(f'   Trajectory has {len(response.trajectory.points)} waypoints')
-                return True
-            else:
-                self.get_logger().error(f'❌ Failed: {response.message}')
-                return False
-        else:
-            self.get_logger().error('❌ Service call failed')
-            return False
-
-
-def main():
-    rclpy.init()
-    client = TrajectoryClient()
-
-    # Generate trajectory to multiple targets
-    targets = [
-        (0.5, 0.0, 0.3),
-        (0.6, 0.2, 0.4),
-        (0.5, -0.2, 0.5),
-    ]
-
-    for target in targets:
-        client.generate_trajectory(*target)
-        input("Press Enter to plan to next target...")
-
-    client.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-```
-
-**Save as** `my_trajectory_client.py` and run:
-```bash
-python3 my_trajectory_client.py
-```
-
----
 
 ## Common Issues
 
@@ -481,40 +438,3 @@ python3 my_trajectory_client.py
 - **[Dynamic Strategy Switching](04-strategy-switching.md)** - Switch between robot modes
 
 ---
-
-## Reference
-
-### Trajectory Generation Service
-
-**Service**: `/unified_planner/generate_trajectory`
-**Type**: `curobo_msgs/srv/TrajectoryGeneration`
-
-**Request**:
-```yaml
-target_pose:
-  position: {x: float, y: float, z: float}
-  orientation: {w: float, x: float, y: float, z: float}
-```
-
-**Response**:
-```yaml
-success: bool
-message: string
-trajectory: trajectory_msgs/JointTrajectory
-```
-
-### Useful Commands
-
-```bash
-# Check node status
-ros2 node info /unified_planner
-
-# Monitor planning time
-ros2 topic hz /trajectory
-
-# View collision spheres
-ros2 topic echo /unified_planner/collision_spheres
-
-# List all parameters
-ros2 param list | grep unified_planner
-```

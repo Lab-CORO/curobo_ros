@@ -210,7 +210,7 @@ def generate_launch_description():
     # Déclaration de l'argument robot_config_file
     declare_robot_config_file = DeclareLaunchArgument(
         'robot_config_file',
-        default_value='',
+        default_value=default_robot_config,
         description='Chemin vers le fichier de configuration YAML du robot'
     )
     declare_camera_config_file = DeclareLaunchArgument(

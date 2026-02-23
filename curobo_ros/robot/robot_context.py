@@ -1,8 +1,15 @@
 from curobo_ros.robot.ghost_strategy import GhostStrategy
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from std_srvs.srv import SetBool, Trigger
+from curobo_msgs.srv import SetRobotStrategy
+from rclpy.parameter import Parameter
 import threading
 from functools import partial
+
+_STRATEGY_INT_TO_STR = {
+    SetRobotStrategy.Request.DOOSAN_M1013: "doosan_m1013",
+    SetRobotStrategy.Request.EMULATOR:     "emulator",
+}
 
 
 class RobotContext:
@@ -32,7 +39,7 @@ class RobotContext:
 
         # Create service for dynamic strategy switching
         self.set_strategy_srv = node.create_service(
-            Trigger,
+            SetRobotStrategy,
             node.get_name() + '/set_robot_strategy',
             partial(self.set_robot_strategy_callback, node)
         )
@@ -73,33 +80,29 @@ class RobotContext:
     def set_robot_strategy_callback(self, node, request, response):
         '''
         Service callback to dynamically change the robot control strategy.
-        The strategy name is read from the ROS parameter 'robot_type'.
-
-        Args:
-            node: ROS node
-            request: Trigger request (empty)
-            response: Trigger response
-
-        Returns:
-            Response with success status and message
+        The strategy is received directly in the request (SetRobotStrategy.srv).
+        The 'robot_type' parameter is updated to stay in sync.
         '''
         try:
-            # Get the requested strategy from parameter
-            new_strategy_name = node.get_parameter('robot_type').get_parameter_value().string_value
+            new_strategy_name = _STRATEGY_INT_TO_STR.get(request.robot_strategy)
+            if new_strategy_name is None:
+                response.success = False
+                response.message = f"Unknown strategy id: {request.robot_strategy}"
+                node.get_logger().error(response.message)
+                return response
+
+            response.previous_robot_strategy = self.current_strategy_name
 
             # Check if already using this strategy
             if new_strategy_name == self.current_strategy_name:
                 response.success = True
+                response.current_robot_strategy = self.current_strategy_name
                 response.message = f"Already using strategy: {new_strategy_name}"
                 return response
 
             node.get_logger().info(f"Switching strategy from '{self.current_strategy_name}' to '{new_strategy_name}'...")
 
-            # Thread-safe strategy switching
             with self.strategy_lock:
-                # Store previous strategy
-                previous_strategy = self.current_strategy_name
-
                 # Stop current robot if it exists
                 if self.robot_strategy is not None:
                     try:
@@ -108,24 +111,24 @@ class RobotContext:
                     except Exception as e:
                         node.get_logger().warn(f"Could not stop previous strategy: {e}")
 
-                # Create new strategy
+                # Update parameter so select_strategy (and ros2 param get) stay in sync
+                node.set_parameters([Parameter('robot_type', Parameter.Type.STRING, new_strategy_name)])
+
                 new_strategy = self.select_strategy(node, self.dt)
 
-                if new_strategy is None and new_strategy_name not in ["ghost"]:
+                if new_strategy is None:
                     response.success = False
                     response.message = f"Strategy '{new_strategy_name}' is not implemented yet"
                     node.get_logger().error(response.message)
                     return response
 
-                # Switch to new strategy
                 self.robot_strategy = new_strategy
                 self.current_strategy_name = new_strategy_name
-
-                # Reinitialize ghost strategy (for visualization)
                 self.ghost_strategy = GhostStrategy(node, self.dt)
 
                 response.success = True
-                response.message = f"Strategy switched from '{previous_strategy}' to '{new_strategy_name}'"
+                response.current_robot_strategy = new_strategy_name
+                response.message = f"Strategy switched from '{response.previous_robot_strategy}' to '{new_strategy_name}'"
                 node.get_logger().info(f"✅ {response.message}")
 
         except Exception as e:
