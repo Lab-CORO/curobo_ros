@@ -67,6 +67,7 @@ class DoosanControl(JointCommandStrategy):
         self.position_command = []
         self.vel_command = []
         self.accel_command = []
+        self.trajectory_progression = 0.0
 
         self.pub_trajectory.publish(joint_trajectory_msg)
     
