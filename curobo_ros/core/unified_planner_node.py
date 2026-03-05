@@ -198,18 +198,42 @@ class UnifiedPlannerNode(Node):
                 self.shared_world_cfg.add_obstacle(ground_plane)
                 self.get_logger().info("  → Added ground plane to shared world_cfg")
 
-            # Create MPC config using shared world_cfg
+            # Create MPC config, sharing world_coll_checker with MotionGen if available.
+            # This avoids duplicating obstacle tensors in VRAM — both solvers use the
+            # same CUDA tensors. update_world() only needs to be called once.
+            shared_checker = self.motion_gen.world_coll_checker if self.motion_gen is not None else None
+            if shared_checker is not None:
+                self.get_logger().info("  → Sharing world_coll_checker with MotionGen (no extra VRAM)")
+
             mpc_config = MpcSolverConfig.load_from_robot_config(
                 robot_cfg,
-                self.shared_world_cfg,  # Use shared world_cfg!
+                self.shared_world_cfg,
                 store_rollouts=True,
                 step_dt=0.03,
+                world_coll_checker=shared_checker,
             )
 
             self.mpc = MpcSolver(mpc_config)
-            self.get_logger().info("  → MPC solver ready (sharing world_cfg with other planners)")
+            self.get_logger().info("  → MPC solver ready")
         else:
             self.get_logger().info("  → MPC solver already initialized (using cache)")
+
+    def update_all_solvers_world(self, world_cfg):
+        """
+        Propagate a world configuration update to all initialized solvers.
+
+        Solvers that share the same world_coll_checker instance (VRAM sharing) only
+        need one update — the identity check avoids the redundant call.
+        """
+        if self.motion_gen is not None:
+            self.motion_gen.world_coll_checker.clear_cache()
+            self.motion_gen.update_world(world_cfg)
+
+        if (self.mpc is not None and
+                (self.motion_gen is None or
+                 self.mpc.world_coll_checker is not self.motion_gen.world_coll_checker)):
+            self.mpc.world_coll_checker.clear_cache()
+            self.mpc.update_world(world_cfg)
 
     def generate_trajectory_callback(self, request: TrajectoryGeneration, response):
         """
@@ -414,23 +438,21 @@ class UnifiedPlannerNode(Node):
         Callback for MPC goal updates (real-time tracking).
 
         Receives goal pose from RViz plugin and updates MPC planner during execution.
+        NOTE: do NOT create CUDA tensors here — this runs on the ROS2 executor thread
+        and may race with CUDA graph capture in the MPC execution thread.
+        Store raw Python data; the MPC thread will convert it to a Pose safely.
         """
-        from curobo.types.math import Pose
-
-        # Convert ROS Pose message to cuRobo Pose
-        new_goal_pose = Pose.from_list([
-            msg.position.x, msg.position.y, msg.position.z,
-            msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z
-        ])
-
         # Get current planner
         planner = self.planner_manager.get_current_planner()
 
         # Only update if MPC planner is active
         from curobo_ros.planners.mpc_planner import MPCPlanner
         if isinstance(planner, MPCPlanner):
-            # Store goal for MPC execute() loop to pick up
-            planner.latest_goal_from_topic = new_goal_pose
+            # Store raw list — converted to cuRobo Pose inside the MPC execution thread
+            planner.latest_goal_from_topic = [
+                msg.position.x, msg.position.y, msg.position.z,
+                msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z
+            ]
             self.get_logger().debug(
                 f"MPC goal updated from topic: [{msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}]"
             )

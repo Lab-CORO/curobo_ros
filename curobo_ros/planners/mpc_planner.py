@@ -255,9 +255,12 @@ class MPCPlanner(TrajectoryPlanner):
                     return False
 
                 # Check for goal update from topic (for real-time tracking)
+                # latest_goal_from_topic is a raw list to avoid CUDA ops on the ROS2 thread
                 if self.latest_goal_from_topic is not None:
-                    self.update_goal_pose(self.latest_goal_from_topic)
-                    self.latest_goal_from_topic = None  # Consumed
+                    raw = self.latest_goal_from_topic
+                    self.latest_goal_from_topic = None  # Consume before CUDA work
+                    new_goal = Pose.from_list(raw)      # Safe: we are on the MPC thread
+                    self.update_goal_pose(new_goal)
 
                 # Read actual robot position to close the feedback loop
                 # This ensures MPC uses real robot state, not predicted state

@@ -1,5 +1,5 @@
 from functools import partial
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache, GetRobotStrategies
 from visualization_msgs.msg import MarkerArray, Marker
 
@@ -45,6 +45,7 @@ class RosServiceManager:
         # Publisher for collision spheres visualization
         self.publish_collision_spheres_pub = None
         self.publish_collision_spheres_timer = None
+        self.collision_spheres_enabled = False  # Disabled by default (safe during MPC graph capture)
 
     def init_services(self):
         """Create all ROS services, publishers, and timers"""
@@ -112,6 +113,13 @@ class RosServiceManager:
             1
         )
 
+        # Service to enable/disable collision sphere publishing (disabled by default)
+        self.set_collision_spheres_srv = self.node.create_service(
+            SetBool,
+            self.node.get_name() + '/set_collision_spheres_enabled',
+            self._callback_set_collision_spheres_enabled
+        )
+
         # Create timer for periodic collision sphere publishing
         self.publish_collision_spheres_timer = self.node.create_timer(
             0.5,
@@ -173,11 +181,23 @@ class RosServiceManager:
         """Delegate get_robot_strategies service to RobotContext"""
         return self.robot_context.get_robot_strategies_callback(node, request, response)
 
+    def _callback_set_collision_spheres_enabled(self, request: SetBool.Request, response: SetBool.Response):
+        """Enable or disable collision sphere publishing (e.g. disable during MPC graph capture)"""
+        self.collision_spheres_enabled = request.data
+        state = "enabled" if request.data else "disabled"
+        self.node.get_logger().info(f"Collision sphere publishing {state}")
+        response.success = True
+        response.message = f"Collision spheres {state}"
+        return response
+
     def publish_collision_spheres(self, node):
         """
         Publishes the robot's collision spheres as markers for visualization in RViz.
         Useful for debugging and ensuring proper masking of the robot in the point cloud.
         """
+        if not self.collision_spheres_enabled:
+            return
+
         # Get collision spheres from robot model manager
         robot_spheres = self.robot_model_manager.get_collision_spheres()
 
