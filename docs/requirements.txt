@@ -1,0 +1,4 @@
+sphinx>=7.2,<8
+furo>=2024.1.29
+myst-parser>=3.0
+sphinxcontrib-mermaid>=0.9
