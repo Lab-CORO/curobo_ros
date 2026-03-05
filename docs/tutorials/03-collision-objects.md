@@ -209,7 +209,7 @@ ros2 topic echo /unified_planner/collision_spheres
 
 ### Voxel Grid Visualization
 
-The environment is discretized into voxels for collision checking.
+The environment is discretized into voxels for collision checking. Be carefull, this kind of operation is really GPU demanding and could ask a lot of VRAM.
 
 **Get voxel grid:**
 ```bash
@@ -220,13 +220,6 @@ ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
 - Voxel grid dimensions
 - Occupied voxels
 - Resolution (voxel size)
-
-**Visualize with viz_voxel_grid node:**
-```bash
-ros2 run curobo_ros viz_voxel_grid
-```
-
-This publishes to `/visualization_marker_voxel` (view in RViz).
 
 ---
 
@@ -240,8 +233,8 @@ ros2 service call /unified_planner/get_collision_distance curobo_msgs/srv/GetCol
 
 **Response:**
 ```yaml
-success: true
-distances: [0.15, 0.23, 0.08, ...]  # Distance for each collision sphere
+data: [0.15, 0.23, 0.08, ...]  # Distance for each collision sphere
+nb_sphere: 13  
 ```
 
 **Interpretation:**
@@ -298,156 +291,6 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 ```bash
 ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.6, y: 0.0, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-```
-
----
-
-## Python API Example
-
-Here's a Python class to manage objects:
-
-```python
-#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from curobo_msgs.srv import AddObject, RemoveObject
-from std_srvs.srv import Trigger
-from geometry_msgs.msg import Pose
-from std_msgs.msg import ColorRGBA
-
-
-class ObjectManager(Node):
-    def __init__(self):
-        super().__init__('object_manager')
-
-        # Create service clients
-        self.add_client = self.create_client(
-            AddObject, '/unified_planner/add_object')
-        self.remove_client = self.create_client(
-            RemoveObject, '/unified_planner/remove_object')
-        self.get_obstacles_client = self.create_client(
-            Trigger, '/unified_planner/get_obstacles')
-        self.clear_client = self.create_client(
-            Trigger, '/unified_planner/remove_all_objects')
-
-        # Wait for services
-        self.add_client.wait_for_service()
-        self.remove_client.wait_for_service()
-
-    def add_cuboid(self, name, position, dimensions, color=(0.5, 0.5, 0.5, 0.9)):
-        """Add a cuboid obstacle"""
-        request = AddObject.Request()
-        request.name = name
-        request.type = 0  # CUBOID
-
-        request.pose.position.x = position[0]
-        request.pose.position.y = position[1]
-        request.pose.position.z = position[2]
-        request.pose.orientation.w = 1.0
-
-        request.dimensions.x = dimensions[0]
-        request.dimensions.y = dimensions[1]
-        request.dimensions.z = dimensions[2]
-
-        request.color.r = color[0]
-        request.color.g = color[1]
-        request.color.b = color[2]
-        request.color.a = color[3]
-
-        future = self.add_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-
-        if future.result().success:
-            self.get_logger().info(f"✅ Added '{name}'")
-        else:
-            self.get_logger().error(f"❌ Failed to add '{name}': {future.result().message}")
-
-    def add_sphere(self, name, position, radius, color=(1.0, 0.0, 0.0, 0.8)):
-        """Add a sphere obstacle"""
-        request = AddObject.Request()
-        request.name = name
-        request.type = 1  # SPHERE
-
-        request.pose.position.x = position[0]
-        request.pose.position.y = position[1]
-        request.pose.position.z = position[2]
-        request.pose.orientation.w = 1.0
-
-        request.dimensions.x = radius
-        request.dimensions.y = radius
-        request.dimensions.z = radius
-
-        request.color.r = color[0]
-        request.color.g = color[1]
-        request.color.b = color[2]
-        request.color.a = color[3]
-
-        future = self.add_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-
-        if future.result().success:
-            self.get_logger().info(f"✅ Added sphere '{name}'")
-
-    def remove_object(self, name):
-        """Remove specific object"""
-        request = RemoveObject.Request()
-        request.name = name
-
-        future = self.remove_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-
-        if future.result().success:
-            self.get_logger().info(f"✅ Removed '{name}'")
-
-    def list_obstacles(self):
-        """List all obstacles"""
-        request = Trigger.Request()
-        future = self.get_obstacles_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-
-        if future.result().success:
-            obstacles = future.result().message.split(', ')
-            self.get_logger().info(f"📋 Obstacles: {obstacles}")
-            return obstacles
-        return []
-
-    def clear_all(self):
-        """Remove all obstacles"""
-        request = Trigger.Request()
-        future = self.clear_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-
-        if future.result().success:
-            self.get_logger().info("✅ All obstacles cleared")
-
-
-def main():
-    rclpy.init()
-    manager = ObjectManager()
-
-    # Build a scene
-    manager.add_cuboid('table', (0.5, 0.0, 0.15), (0.8, 1.0, 0.05), color=(0.6, 0.4, 0.2, 0.9))
-    manager.add_sphere('ball', (0.6, 0.3, 0.4), 0.08)
-    manager.add_cuboid('wall', (0.8, 0.0, 0.5), (0.05, 1.5, 1.0), color=(0.8, 0.8, 0.8, 0.5))
-
-    # List obstacles
-    manager.list_obstacles()
-
-    # Clean up
-    input("Press Enter to clear all obstacles...")
-    manager.clear_all()
-
-    manager.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-```
-
-**Save as** `object_manager_demo.py` and run:
-```bash
-python3 object_manager_demo.py
 ```
 
 ---
@@ -539,7 +382,6 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 - ✅ Adding different object types (cuboid, sphere, cylinder, mesh)
 - ✅ Managing objects dynamically
 - ✅ Visualizing collision checking
-- ✅ Using Python API for object management
 - ✅ Debugging collision issues
 
 ---
@@ -549,21 +391,4 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 - **[Dynamic Strategy Switching](04-strategy-switching.md)** - Control different robot types
 - **[Camera Integration](5_camera_pointcloud.md)** - Detect obstacles automatically with cameras
 - **[Parameters Guide](../concepts/parameters.md)** - Tune collision checking parameters
-
----
-
-## Advanced: Collision Checking Details
-
-**How it works:**
-
-1. Objects are converted to axis-aligned bounding boxes (AABB)
-2. AABBs are voxelized based on `voxel_size` parameter
-3. Robot collision spheres are checked against occupied voxels
-4. GPU performs thousands of checks in parallel
-5. Collision distance is minimum distance across all spheres
-
-**Performance tips:**
-- Fewer, simpler objects = faster planning
-- Larger `voxel_size` = faster but less accurate
-- Cuboids are most efficient (no conversion needed)
 
