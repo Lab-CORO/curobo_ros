@@ -1,6 +1,6 @@
 from functools import partial
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache
+from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache, GetRobotStrategies
 from visualization_msgs.msg import MarkerArray, Marker
 
 
@@ -14,7 +14,7 @@ class RosServiceManager:
     - Delegating service callbacks to appropriate managers
     """
 
-    def __init__(self, node, obstacle_manager, robot_model_manager, config_manager, config_wrapper=None):
+    def __init__(self, node, obstacle_manager, robot_model_manager, config_manager, config_wrapper=None, robot_context=None):
         """
         Initialize ROS service manager.
 
@@ -30,6 +30,7 @@ class RosServiceManager:
         self.robot_model_manager = robot_model_manager
         self.config_manager = config_manager
         self.config_wrapper = config_wrapper
+        self.robot_context = robot_context
 
         # Services (initialized in init_services)
         self.add_object_srv = None
@@ -96,6 +97,14 @@ class RosServiceManager:
             partial(self._callback_set_collision_cache, self.node)
         )
 
+        # Service to get available robot strategies (for RViz plugin)
+        if self.robot_context is not None:
+            self.get_robot_strategies_srv = self.node.create_service(
+                GetRobotStrategies,
+                self.node.get_name() + '/get_robot_strategies',
+                partial(self._callback_get_robot_strategies, self.node)
+            )
+
         # Create publisher for collision spheres
         self.publish_collision_spheres_pub = self.node.create_publisher(
             MarkerArray,
@@ -159,6 +168,10 @@ class RosServiceManager:
     def _callback_set_collision_cache(self, node, request: SetCollisionCache, response):
         """Delegate set_collision_cache service to ObstacleManager"""
         return self.obstacle_manager.set_collision_cache(node, request, response)
+
+    def _callback_get_robot_strategies(self, node, request: GetRobotStrategies.Request, response: GetRobotStrategies.Response):
+        """Delegate get_robot_strategies service to RobotContext"""
+        return self.robot_context.get_robot_strategies_callback(node, request, response)
 
     def publish_collision_spheres(self, node):
         """

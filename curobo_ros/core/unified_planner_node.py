@@ -13,9 +13,8 @@ from rclpy.action import ActionServer
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
-from std_srvs.srv import Trigger
 from sensor_msgs.msg import JointState as JointStateMsg
-from curobo_msgs.srv import TrajectoryGeneration, SetPlanner
+from curobo_msgs.srv import TrajectoryGeneration, SetPlanner, GetPlanners
 from curobo_msgs.action import SendTrajectory, MpcMove
 
 from curobo.types.base import TensorDeviceType
@@ -109,14 +108,13 @@ class UnifiedPlannerNode(Node):
             callback_group=MutuallyExclusiveCallbackGroup()
         )
 
-        # Also add a service to list available planners
-        self.list_planners_srv = self.create_service(
-            Trigger,
-            f'{self.get_name()}/list_planners',
-            self.list_planners_callback,
+        # Service to get available planners (structured, for RViz plugin)
+        self.get_planners_srv = self.create_service(
+            GetPlanners,
+            f'{self.get_name()}/get_planners',
+            self.get_planners_callback,
             callback_group=MutuallyExclusiveCallbackGroup()
         )
-
 
         # Create action server (unified for all planner types)
         self._action_server = ActionServer(
@@ -376,80 +374,34 @@ class UnifiedPlannerNode(Node):
 
         Usage:
             ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
-
-        Where:
-            0 = CLASSIC
-            1 = MPC
-            2 = BATCH
-            3 = CONSTRAINED
-            4 = MULTIPOINT
-            5 = JOINT_SPACE
         """
         try:
-            # Get current planner before switching
             previous = self.planner_manager.get_current_planner()
             previous_name = previous.get_planner_name() if previous else "None"
 
-            # Map enum to planner type string
-            match request.planner_type:
-                case SetPlanner.Request.CLASSIC:
-                    planner_type = 'classic'
-                case SetPlanner.Request.MPC:
-                    planner_type = 'mpc'
-                case SetPlanner.Request.BATCH:
-                    planner_type = 'batch'
-                case SetPlanner.Request.CONSTRAINED:
-                    planner_type = 'constrained'
-                case SetPlanner.Request.MULTIPOINT:
-                    planner_type = 'multi_point'
-                case SetPlanner.Request.JOINT_SPACE:
-                    planner_type = 'joint_space'
-                case _:
-                    response.success = False
-                    response.message = f"Unknown planner type: {request.planner_type}"
-                    response.previous_planner = previous_name
-                    response.current_planner = previous_name
-                    self.get_logger().error(response.message)
-                    return response
-
-            # Check if planner is available
-            available = PlannerFactory.get_available_planners()
-            if planner_type not in available:
+            key, error = PlannerFactory.switch_planner(request.planner_type, self.planner_manager)
+            if error:
                 response.success = False
-                response.message = (
-                    f"Planner '{planner_type}' not yet implemented. "
-                    f"Available: {available}"
-                )
+                response.message = error
                 response.previous_planner = previous_name
                 response.current_planner = previous_name
-                self.get_logger().warn(response.message)
+                self.get_logger().error(error)
                 return response
 
-            # Switch planner
-            self.planner_manager.set_current_planner(planner_type)
-
-            # Setup the new planner
             planner = self.planner_manager.get_current_planner()
             self._setup_planner(planner)
 
-            # Update response
             response.success = True
             response.message = f"Successfully switched to {planner.get_planner_name()}"
             response.previous_planner = previous_name
             response.current_planner = planner.get_planner_name()
-
-            self.get_logger().info(
-                f"✅ Planner switch: {previous_name} → {planner.get_planner_name()}"
-            )
-            self.get_logger().info(
-                f"Updated world: {self.config_wrapper_motion.obstacle_manager.get_world_cfg()} cuboids, meshes"
-            )
+            self.get_logger().info(f"✅ Planner switch: {previous_name} → {planner.get_planner_name()}")
 
         except Exception as e:
             response.success = False
             response.message = f"Failed to switch planner: {str(e)}"
             response.previous_planner = previous_name if 'previous_name' in locals() else "Unknown"
-            response.current_planner = previous_name if 'previous_name' in locals() else "Unknown"
+            response.current_planner = response.previous_planner
             self.get_logger().error(response.message)
             import traceback
             self.get_logger().error(traceback.format_exc())
@@ -487,44 +439,31 @@ class UnifiedPlannerNode(Node):
                 f"Received MPC goal but current planner is {planner.get_planner_name()}"
             )
 
-    def list_planners_callback(self, request: Trigger, response: Trigger.Response):
+    def get_planners_callback(self, request: GetPlanners.Request, response: GetPlanners.Response):
         """
-        List all available planners with their enum values.
+        Return the list of available planners with their enum IDs.
 
         Usage:
-            ros2 service call /unified_planner/list_planners std_srvs/srv/Trigger
+            ros2 service call /unified_planner/get_planners curobo_msgs/srv/GetPlanners
         """
-        available = PlannerFactory.get_available_planners()
         current_type = self.planner_manager.get_current_planner_type()
+        catalog = PlannerFactory.get_catalog()
 
-        # Build message with enum values
-        planner_info = []
+        response.planner_names = [name for _, _, name in catalog]
+        response.planner_ids   = [int(eid) for _, eid, _ in catalog]
 
-        # Helper to get enum value
-        enum_map = {
-            'classic': (SetPlanner.Request.CLASSIC, 'CLASSIC'),
-            'mpc': (SetPlanner.Request.MPC, 'MPC'),
-            'batch': (SetPlanner.Request.BATCH, 'BATCH'),
-            'constrained': (SetPlanner.Request.CONSTRAINED, 'CONSTRAINED'),
-        }
-
-        for planner_type in ['classic', 'mpc', 'batch', 'constrained']:
-            enum_val, enum_name = enum_map.get(planner_type, (None, 'UNKNOWN'))
-            marker = "→" if planner_type == current_type else " "
-            status = "✓" if planner_type in available else "✗"
-
-            planner_info.append(
-                f"{marker} {status} {enum_name} ({enum_val}): {planner_type}"
-            )
+        response.current_planner_name = 'Unknown'
+        response.current_planner_id   = 255
+        for key, eid, name in catalog:
+            if key == current_type:
+                response.current_planner_name = name
+                response.current_planner_id   = int(eid)
+                break
 
         response.success = True
-        response.message = (
-            f"Current: {current_type}\n\n"
-            "Available planners:\n" + "\n".join(planner_info) + "\n\n"
-            "Usage: ros2 service call /unified_planner/set_planner "
-            'curobo_msgs/srv/SetPlanner "{planner_type: N}"'
+        self.get_logger().info(
+            f"GetPlanners: {len(catalog)} planners, current={response.current_planner_name}"
         )
-
         return response
 
     def _setup_planner(self, planner):

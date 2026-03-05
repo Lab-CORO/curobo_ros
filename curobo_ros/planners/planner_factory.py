@@ -22,19 +22,22 @@ class PlannerFactory:
     available planner types.
     """
 
-    # Registry of available planner types
-    _PLANNER_REGISTRY = {
-        'classic': ClassicPlanner,
-        'motion_gen': ClassicPlanner,  # Alias
-        'mpc': MPCPlanner,
-        'model_predictive_control': MPCPlanner,  # Alias
-        # Future planners can be added here:
-        'multi_point': MultiPointPlanner,
-        'joint_space': JointSpacePlanner,
-        'grasp_mpc': GraspMPCPlanner,
-        # 'batch': BatchPlanner,
-        # 'constrained': ConstrainedPlanner,
-    }
+    # Single source of truth: (internal_key, class, enum_id, display_name)
+    # enum_id matches SetPlanner.Request constants (0=CLASSIC, 1=MPC, …)
+    _PLANNER_CATALOG = [
+        ('classic',     ClassicPlanner,    0, 'Classic'),
+        ('mpc',         MPCPlanner,        1, 'MPC'),
+        ('multi_point', MultiPointPlanner, 4, 'Multi Point'),
+        ('joint_space', JointSpacePlanner, 5, 'Joint Space'),
+        ('grasp_mpc',   GraspMPCPlanner,   6, 'Grasp MPC'),
+    ]
+
+    # Registry derived from catalog + aliases — used by create_planner()
+    _PLANNER_REGISTRY = {key: cls for key, cls, _, _ in _PLANNER_CATALOG}
+    _PLANNER_REGISTRY.update({
+        'motion_gen':               ClassicPlanner,  # Alias
+        'model_predictive_control': MPCPlanner,      # Alias
+    })
 
     @classmethod
     def create_planner(cls, planner_type: str, node, config_wrapper) -> Optional[TrajectoryPlanner]:
@@ -81,6 +84,42 @@ class PlannerFactory:
         """
         # Return only primary names (not aliases)
         return cls._PLANNER_REGISTRY.keys() #['classic', 'mpc', 'multi_point']
+
+    @classmethod
+    def switch_planner(cls, enum_id: int, planner_manager) -> tuple:
+        """
+        Resolve an enum id to a planner key and switch the manager to it.
+
+        Args:
+            enum_id:        SetPlanner.Request enum value (e.g. 0 = Classic)
+            planner_manager: PlannerManager instance to switch
+
+        Returns:
+            (key, error_msg) where error_msg is None on success,
+            or (None, str) on failure.
+        """
+        enum_to_key = {eid: key for key, _, eid, _ in cls._PLANNER_CATALOG}
+        key = enum_to_key.get(enum_id)
+        if key is None:
+            return None, f"Unknown planner enum id: {enum_id}"
+
+        if key not in cls._PLANNER_REGISTRY:
+            available = list(cls._PLANNER_REGISTRY.keys())
+            return None, f"Planner '{key}' not available. Available: {available}"
+
+        planner_manager.set_current_planner(key)
+        return key, None
+
+    @classmethod
+    def get_catalog(cls) -> list:
+        """
+        Return catalog entries for all available (non-alias) planners.
+
+        Returns:
+            List of (internal_key, enum_id, display_name) for planners present
+            in _PLANNER_REGISTRY.
+        """
+        return [(key, eid, name) for key, _, eid, name in cls._PLANNER_CATALOG]
 
     @classmethod
     def register_planner(cls, name: str, planner_class: type):

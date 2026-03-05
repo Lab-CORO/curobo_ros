@@ -70,7 +70,8 @@ class ConfigWrapper(ABC):
             self.obstacle_manager,
             self.robot_model_manager,
             self.config_manager,
-            self  # Pass self so RosServiceManager can call update_world_config()
+            self,   # Pass self so RosServiceManager can call update_world_config()
+            robot   # Pass robot_context so RosServiceManager can expose get_robot_strategies
         )
 
         # State information

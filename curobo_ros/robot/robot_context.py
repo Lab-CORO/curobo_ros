@@ -6,10 +6,16 @@ from rclpy.parameter import Parameter
 import threading
 from functools import partial
 
-_STRATEGY_INT_TO_STR = {
-    SetRobotStrategy.Request.DOOSAN_M1013: "doosan_m1013",
-    SetRobotStrategy.Request.EMULATOR:     "emulator",
-}
+# Single source of truth: (internal_key, enum_id, display_name)
+# enum_id matches SetRobotStrategy.Request constants
+_STRATEGY_CATALOG = [
+    ('doosan_m1013', SetRobotStrategy.Request.DOOSAN_M1013, 'Doosan M1013'),
+    ('emulator',     SetRobotStrategy.Request.EMULATOR,     'Emulator'),
+    ('ur10',         SetRobotStrategy.Request.UR10,         'UR10'),
+]
+
+# Derived lookup used by set_robot_strategy_callback
+_STRATEGY_INT_TO_STR = {eid: key for key, eid, _ in _STRATEGY_CATALOG}
 
 
 class RobotContext:
@@ -44,7 +50,7 @@ class RobotContext:
             partial(self.set_robot_strategy_callback, node)
         )
 
-        # Create service to get current strategy
+        # Create service to get current strategy (legacy text response)
         self.get_strategy_srv = node.create_service(
             Trigger,
             node.get_name() + '/get_robot_strategy',
@@ -153,6 +159,25 @@ class RobotContext:
         '''
         response.success = True
         response.message = self.current_strategy_name
+        return response
+
+    def get_robot_strategies_callback(self, node, request, response):
+        '''Return the list of available strategies with their enum IDs for the RViz plugin.'''
+        response.strategy_names = [name for _, _, name in _STRATEGY_CATALOG]
+        response.strategy_ids   = [int(eid) for _, eid, _ in _STRATEGY_CATALOG]
+
+        response.current_strategy_name = 'Unknown'
+        response.current_strategy_id   = 255
+        for key, eid, name in _STRATEGY_CATALOG:
+            if key == self.current_strategy_name:
+                response.current_strategy_name = name
+                response.current_strategy_id   = int(eid)
+                break
+
+        response.success = True
+        node.get_logger().info(
+            f"GetRobotStrategies: {len(_STRATEGY_CATALOG)} strategies, current={response.current_strategy_name}"
+        )
         return response
 
     def set_robot_strategy(self, robot_strategy, node, dt):
