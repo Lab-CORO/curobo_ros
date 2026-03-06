@@ -47,7 +47,8 @@ class ConfigWrapper(ABC):
         self.robot_model_manager = RobotModelManager(
             self.config_manager.robot_cfg,
             robot,
-            self.config_manager.base_link
+            self.config_manager.base_link,
+            node=node,
         )
 
         # Phase 4: ObstacleManager - Manage obstacles (before RosServiceManager)

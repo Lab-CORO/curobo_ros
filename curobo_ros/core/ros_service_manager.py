@@ -1,6 +1,6 @@
 from functools import partial
 from std_srvs.srv import Trigger, SetBool
-from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache, GetRobotStrategies
+from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache, GetRobotStrategies, SetLinkCollision
 from visualization_msgs.msg import MarkerArray, Marker
 
 
@@ -113,6 +113,13 @@ class RosServiceManager:
             1
         )
 
+        # Service to enable/disable individual link collision spheres
+        self.set_link_collision_srv = self.node.create_service(
+            SetLinkCollision,
+            self.node.get_name() + '/set_link_collision',
+            self.robot_model_manager.set_link_collision_callback
+        )
+
         # Service to enable/disable collision sphere publishing (disabled by default)
         self.set_collision_spheres_srv = self.node.create_service(
             SetBool,
@@ -201,10 +208,15 @@ class RosServiceManager:
         # Get collision spheres from robot model manager
         robot_spheres = self.robot_model_manager.get_collision_spheres()
 
-        # Create marker array
+        # Create marker array — prepend a DELETEALL to clear stale markers
         marker_array = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        marker_array.markers.append(clear)
 
         for i, sphere in enumerate(robot_spheres):
+            if sphere[3] <= 0:  # skip disabled spheres (radius = -100)
+                continue
             marker = Marker()
             marker.header.frame_id = self.config_manager.base_link
             marker.type = Marker.SPHERE
