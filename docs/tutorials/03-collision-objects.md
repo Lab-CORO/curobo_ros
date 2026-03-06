@@ -441,7 +441,8 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 
 - ✅ Adding different object types (cuboid, sphere, cylinder, mesh)
 - ✅ Managing objects dynamically
-- ✅ Visualizing collision checking
+- ✅ Disabling collision spheres per link (`set_link_collision`)
+- ✅ Visualizing collision checking and disabled links
 - ✅ Debugging collision issues
 
 ---
