@@ -189,11 +189,66 @@ message: "All objects cleared"
 
 ---
 
+## Disabling Link Collision Spheres
+
+You can enable or disable collision spheres for specific robot links at runtime.
+This is useful to allow the gripper to make contact with an object during grasping,
+or to ignore self-collision for a specific link during a constrained motion.
+
+All solvers (MotionGen, MPC) share the same kinematics configuration, so a single
+call immediately affects every active planner.
+
+### Disable a link
+
+```bash
+ros2 service call /unified_planner/set_link_collision \
+  curobo_msgs/srv/SetLinkCollision \
+  "{link_names: ['link6'], enabled: false}"
+```
+
+**Response:**
+```yaml
+success: true
+message: "Collision disabled for ['link6']"
+applied_links: ['link6']
+unknown_links: []
+```
+
+### Disable multiple links
+
+```bash
+ros2 service call /unified_planner/set_link_collision \
+  curobo_msgs/srv/SetLinkCollision \
+  "{link_names: ['link5', 'link6'], enabled: false}"
+```
+
+### Re-enable links
+
+```bash
+ros2 service call /unified_planner/set_link_collision \
+  curobo_msgs/srv/SetLinkCollision \
+  "{link_names: ['link5', 'link6'], enabled: true}"
+```
+
+**Notes:**
+- The state persists until an explicit call with the opposite `enabled` value.
+- Unknown link names are reported in `unknown_links` and ignored.
+- Disabled spheres are hidden from the collision sphere visualization (see below).
+
+---
+
 ## Visualizing Collision Checking
 
 ### Robot Collision Spheres
 
 The robot is represented as a collection of spheres for collision checking.
+Publishing is **disabled by default** to avoid interference during MPC initialization.
+
+**Enable publishing:**
+```bash
+ros2 service call /unified_planner/set_collision_spheres_enabled \
+  std_srvs/srv/SetBool "{data: true}"
+```
 
 **View collision spheres:**
 ```bash
@@ -204,6 +259,9 @@ ros2 topic echo /unified_planner/collision_spheres
 1. Add → MarkerArray
 2. Topic: `/unified_planner/collision_spheres`
 3. You'll see red semi-transparent spheres covering the robot
+
+Spheres belonging to disabled links (via `set_link_collision`) are automatically
+hidden from this visualization.
 
 **Update rate:** 0.5 Hz (twice per second)
 
@@ -328,6 +386,8 @@ All services work for both `/unified_planner` and `/curobo_ik` nodes:
 | `<node_name>/remove_all_objects` | `Trigger` | Clears all objects |
 | `<node_name>/get_voxel_grid` | [`GetVoxelGrid`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/GetVoxelGrid.srv) | Gets voxelized environment |
 | `<node_name>/get_collision_distance` | [`GetCollisionDistance`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/GetCollisionDistance.srv) | Gets distances to obstacles |
+| `<node_name>/set_link_collision` | [`SetLinkCollision`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/SetLinkCollision.srv) | Enable/disable collision spheres for specific links |
+| `<node_name>/set_collision_spheres_enabled` | `std_srvs/SetBool` | Enable/disable collision sphere visualization publishing |
 
 ### Topics
 
