@@ -29,7 +29,6 @@ class PlannerFactory:
         ('mpc',         MPCPlanner,        1, 'MPC'),
         ('multi_point', MultiPointPlanner, 4, 'Multi Point'),
         ('joint_space', JointSpacePlanner, 5, 'Joint Space'),
-        ('grasp_mpc',   GraspMPCPlanner,   6, 'Grasp MPC'),
     ]
 
     # Registry derived from catalog + aliases — used by create_planner()
