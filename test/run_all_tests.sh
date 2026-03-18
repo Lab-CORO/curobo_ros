@@ -18,6 +18,66 @@ FAILED_TESTS=0
 FAILED_TEST_LIST=()
 
 
+echo "Running test_test_robot_strategy..."
+if timeout 60 launch_test "${TEST_DIR}/test_test_robot_strategy.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_robot_strategy PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_robot_strategy FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_robot_strategy")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_trajectory..."
+if timeout 60 launch_test "${TEST_DIR}/test_test_trajectory.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_trajectory PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_trajectory FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_trajectory")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_kinematics..."
+if timeout 60 launch_test "${TEST_DIR}/test_test_kinematics.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_kinematics PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_kinematics FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_kinematics")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_planners..."
+if timeout 60 launch_test "${TEST_DIR}/test_test_planners.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_planners PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_planners FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_planners")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_collision..."
+if timeout 60 launch_test "${TEST_DIR}/test_test_collision.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_collision PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_collision FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_collision")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
 echo "Running test_test_object..."
 if timeout 60 launch_test "${TEST_DIR}/test_test_object.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_object PASSED"

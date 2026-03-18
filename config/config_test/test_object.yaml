@@ -10,7 +10,7 @@ environment:
 
 
 tests:
-  - name: "Add object"
+  - name: "01 Add object"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
     data: {type: 0, 
@@ -24,10 +24,45 @@ tests:
     expect: {success: True,
              message: 'Object cube added successfully'}
 
-  - name: "Remove object"
+  - name: "02 Add second object"
+    service: "/unified_planner/add_object"
+    type: curobo_msgs/srv/AddObject
+    data: {type: 0, 
+            name: "cube2", 
+            mesh_file_path: "", 
+            pose: {position: {x: 0.5, y: 0.5, z: 0.5}, 
+                  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}},
+            dimensions: {x: 0.5, y: 0.5, z: 0.5},
+            color: {r: 0.0, a: 0.0}
+          }
+    expect: {success: True,
+             message: 'Object cube2 added successfully'}
+
+  - name: "03 Get obstacles"
+    service: "/unified_planner/get_obstacles"
+    type: std_srvs/srv/Trigger
+    data: {}
+    expect: {success: True}
+
+  - name: "04 Get voxel grid"
+    service: "/unified_planner/get_voxel_grid"
+    type: curobo_msgs/srv/GetVoxelGrid
+    data: {}
+    expect: {voxel_grid: {size_x: 61, size_y: 61, size_z: 61, data: {$len: 226981}}}
+
+  - name: "05 Remove object"
     service: "/unified_planner/remove_object"
     type: curobo_msgs/srv/RemoveObject
     data: {name: "cube"} 
     expect: {success: True,
              message: "Object 'cube' removed successfully (cuboid)"}
+
+
+  - name: "06 Remove all object"
+    service: "/unified_planner/remove_all_objects"
+    type: std_srvs/srv/Trigger
+    data: {} 
+    expect: {success: True,
+            message: "All objects removed successfully (1 cuboids, 0 meshes)"}
+
 

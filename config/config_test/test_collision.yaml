@@ -1,0 +1,44 @@
+# Test collision management services
+
+package: curobo_ros
+environment:
+  launch:
+    - package: curobo_ros
+      executable: gen_traj.launch.py
+      name: gen_traj
+  startup_delay: 10.0
+
+tests:
+  - name: "01 Get collision distance"
+    service: "/unified_planner/get_collision_distance"
+    type: curobo_msgs/srv/GetCollisionDistance
+    data: {}
+    expect: {}
+
+  - name: "02 Set collision cache OBB"
+    service: "/unified_planner/set_collision_cache"
+    type: curobo_msgs/srv/SetCollisionCache
+    data: {obb: 100, mesh: -1, blox: -1}
+    expect: {success: True, obb_cache: 100}
+
+  - name: "03 Update motion gen config"
+    service: "/unified_planner/update_motion_gen_config"
+    type: std_srvs/srv/Trigger
+    data: {}
+    expect: {success: True}
+
+  - name: "04 Disable link collision"
+    service: "/unified_planner/set_link_collision"
+    type: curobo_msgs/srv/SetLinkCollision
+    data:
+      link_names: ['link6']
+      enabled: false
+    expect: {success: True}
+
+  - name: "05 Re-enable link collision"
+    service: "/unified_planner/set_link_collision"
+    type: curobo_msgs/srv/SetLinkCollision
+    data:
+      link_names: ['link6']
+      enabled: true
+    expect: {success: True}

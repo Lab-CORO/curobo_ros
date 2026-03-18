@@ -1,0 +1,37 @@
+# Test kinematics services (FK and IK)
+
+package: curobo_ros
+environment:
+  launch:
+    - package: curobo_ros
+      executable: gen_traj.launch.py
+      name: gen_traj
+  startup_delay: 10.0
+
+tests:
+  - name: "01 FK valid joints"
+    service: "/unified_planner/fk_compute"
+    type: curobo_msgs/srv/Fk
+    data:
+      joint_states:
+        - name: ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+          position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    expect: {}
+
+  - name: "02 IK valid pose"
+    service: "/unified_planner/ik_batch_poses"
+    type: curobo_msgs/srv/Ik
+    data:
+      pose:
+        position: {x: 0.5, y: 0.0, z: 0.5}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    expect: {success: True}
+
+  - name: "03 IK invalid pose"
+    service: "/unified_planner/ik_batch_poses"
+    type: curobo_msgs/srv/Ik
+    data:
+      pose:
+        position: {x: 10.0, y: 10.0, z: 10.0}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    expect: {success: False}
