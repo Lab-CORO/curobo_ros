@@ -8,6 +8,7 @@ DO NOT EDIT - Changes will be overwritten
 import unittest
 import rclpy
 from rclpy.node import Node
+from rosidl_runtime_py import set_message_fields
 import launch
 from launch import LaunchDescription
 from launch.actions import TimerAction
@@ -79,6 +80,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = GetPlanners.Request()
+        set_message_fields(request, {})
 
         # Call service
         future = client.call_async(request)
@@ -113,7 +115,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = SetPlanner.Request()
-        request.planner_type = 4
+        set_message_fields(request, {'planner_type': 4})
 
         # Call service
         future = client.call_async(request)
@@ -148,10 +150,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = TrajectoryGeneration.Request()
-        request.target_poses = [{'position': {'x': 0.5, 'y': 0.0, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}, {'position': {'x': 0.3, 'y': 0.3, 'z': 0.6}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}]
-        request.start_pose.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-        request.start_pose.position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        request.start_pose.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        set_message_fields(request, {'start_pose': {'name': ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'], 'position': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, 'target_poses': [{'position': {'x': 0.5, 'y': 0.0, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}, {'position': {'x': 0.3, 'y': 0.3, 'z': 0.6}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}]})
 
         # Call service
         future = client.call_async(request)
@@ -186,7 +185,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = SetPlanner.Request()
-        request.planner_type = 0
+        set_message_fields(request, {'planner_type': 0})
 
         # Call service
         future = client.call_async(request)
@@ -216,6 +215,6 @@ class PostShutdownTests(unittest.TestCase):
         """Test that all processes exited without critical errors"""
         launch_testing.asserts.assertExitCodes(
             proc_info,
-            allowable_exit_codes=[0, 1, -2, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -11: rviz2 SIGSEGV on shutdown
+            allowable_exit_codes=[0, 1, -2, -6, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -6: rviz2 SIGABRT, -11: rviz2 SIGSEGV on shutdown
         )
 

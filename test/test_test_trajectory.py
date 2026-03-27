@@ -8,6 +8,7 @@ DO NOT EDIT - Changes will be overwritten
 import unittest
 import rclpy
 from rclpy.node import Node
+from rosidl_runtime_py import set_message_fields
 import launch
 from launch import LaunchDescription
 from launch.actions import TimerAction
@@ -78,7 +79,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = SetPlanner.Request()
-        request.planner_type = 5
+        set_message_fields(request, {'planner_type': 5})
 
         # Call service
         future = client.call_async(request)
@@ -113,10 +114,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = TrajectoryGeneration.Request()
-        request.target_joint_positions = [0.5, -0.5, 0.5, -0.5, 0.5, -0.5]
-        request.start_pose.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-        request.start_pose.position = [0.1, 0.2, 0.3, 0.0, 0.0, 0.0]
-        request.start_pose.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        set_message_fields(request, {'start_pose': {'name': ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'], 'position': [0.1, 0.2, 0.3, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, 'target_joint_positions': [0.5, -0.5, 0.5, -0.5, 0.5, -0.5]})
 
         # Call service
         future = client.call_async(request)
@@ -151,7 +149,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = SetPlanner.Request()
-        request.planner_type = 0
+        set_message_fields(request, {'planner_type': 0})
 
         # Call service
         future = client.call_async(request)
@@ -186,16 +184,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = TrajectoryGeneration.Request()
-        request.start_pose.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-        request.start_pose.position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        request.start_pose.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        request.target_pose.position.x = 0.5
-        request.target_pose.position.y = 0.0
-        request.target_pose.position.z = 0.5
-        request.target_pose.orientation.x = 0.0
-        request.target_pose.orientation.y = 0.0
-        request.target_pose.orientation.z = 0.0
-        request.target_pose.orientation.w = 1.0
+        set_message_fields(request, {'start_pose': {'name': ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'], 'position': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, 'target_pose': {'position': {'x': 0.5, 'y': 0.0, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}})
 
         # Call service
         future = client.call_async(request)
@@ -230,16 +219,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = TrajectoryGeneration.Request()
-        request.start_pose.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-        request.start_pose.position = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        request.start_pose.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        request.target_pose.position.x = 10.0
-        request.target_pose.position.y = 10.0
-        request.target_pose.position.z = 10.0
-        request.target_pose.orientation.x = 0.0
-        request.target_pose.orientation.y = 0.0
-        request.target_pose.orientation.z = 0.0
-        request.target_pose.orientation.w = 1.0
+        set_message_fields(request, {'start_pose': {'name': ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'], 'position': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, 'target_pose': {'position': {'x': 10.0, 'y': 10.0, 'z': 10.0}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}})
 
         # Call service
         future = client.call_async(request)
@@ -269,6 +249,6 @@ class PostShutdownTests(unittest.TestCase):
         """Test that all processes exited without critical errors"""
         launch_testing.asserts.assertExitCodes(
             proc_info,
-            allowable_exit_codes=[0, 1, -2, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -11: rviz2 SIGSEGV on shutdown
+            allowable_exit_codes=[0, 1, -2, -6, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -6: rviz2 SIGABRT, -11: rviz2 SIGSEGV on shutdown
         )
 

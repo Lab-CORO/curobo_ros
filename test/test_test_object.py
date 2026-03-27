@@ -8,6 +8,7 @@ DO NOT EDIT - Changes will be overwritten
 import unittest
 import rclpy
 from rclpy.node import Node
+from rosidl_runtime_py import set_message_fields
 import launch
 from launch import LaunchDescription
 from launch.actions import TimerAction
@@ -80,21 +81,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = AddObject.Request()
-        request.type = 0
-        request.name = 'cube'
-        request.mesh_file_path = ''
-        request.dimensions.x = 0.5
-        request.dimensions.y = 0.5
-        request.dimensions.z = 0.5
-        request.color.r = 0.0
-        request.color.a = 0.0
-        request.pose.position.x = 0.0
-        request.pose.position.y = 0.0
-        request.pose.position.z = 0.0
-        request.pose.orientation.x = 0.0
-        request.pose.orientation.y = 0.0
-        request.pose.orientation.z = 0.0
-        request.pose.orientation.w = 0.0
+        set_message_fields(request, {'type': 0, 'name': 'cube', 'mesh_file_path': '', 'pose': {'position': {'x': 0.0, 'y': 0.0, 'z': 0.0}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 0.0}}, 'dimensions': {'x': 0.5, 'y': 0.5, 'z': 0.5}, 'color': {'r': 0.0, 'a': 0.0}})
 
         # Call service
         future = client.call_async(request)
@@ -135,21 +122,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = AddObject.Request()
-        request.type = 0
-        request.name = 'cube2'
-        request.mesh_file_path = ''
-        request.dimensions.x = 0.5
-        request.dimensions.y = 0.5
-        request.dimensions.z = 0.5
-        request.color.r = 0.0
-        request.color.a = 0.0
-        request.pose.position.x = 0.5
-        request.pose.position.y = 0.5
-        request.pose.position.z = 0.5
-        request.pose.orientation.x = 0.0
-        request.pose.orientation.y = 0.0
-        request.pose.orientation.z = 0.0
-        request.pose.orientation.w = 0.0
+        set_message_fields(request, {'type': 0, 'name': 'cube2', 'mesh_file_path': '', 'pose': {'position': {'x': 0.5, 'y': 0.5, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 0.0}}, 'dimensions': {'x': 0.5, 'y': 0.5, 'z': 0.5}, 'color': {'r': 0.0, 'a': 0.0}})
 
         # Call service
         future = client.call_async(request)
@@ -190,6 +163,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = Trigger.Request()
+        set_message_fields(request, {})
 
         # Call service
         future = client.call_async(request)
@@ -224,6 +198,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = GetVoxelGrid.Request()
+        set_message_fields(request, {})
 
         # Call service
         future = client.call_async(request)
@@ -276,7 +251,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = RemoveObject.Request()
-        request.name = 'cube'
+        set_message_fields(request, {'name': 'cube'})
 
         # Call service
         future = client.call_async(request)
@@ -317,6 +292,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = Trigger.Request()
+        set_message_fields(request, {})
 
         # Call service
         future = client.call_async(request)
@@ -352,6 +328,6 @@ class PostShutdownTests(unittest.TestCase):
         """Test that all processes exited without critical errors"""
         launch_testing.asserts.assertExitCodes(
             proc_info,
-            allowable_exit_codes=[0, 1, -2, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -11: rviz2 SIGSEGV on shutdown
+            allowable_exit_codes=[0, 1, -2, -6, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -6: rviz2 SIGABRT, -11: rviz2 SIGSEGV on shutdown
         )
 
