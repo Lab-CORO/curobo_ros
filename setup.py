@@ -28,17 +28,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'talker = curobo_ros.publisher_member_function:main',
-            'listener = curobo_ros.subscriber_member_function:main',
             'curobo_ik = curobo_ros.core.ik:main',
             'curobo_fk = curobo_ros.core.fk:main',
-            'curobo_gen_traj = curobo_ros.core.generate_trajectory:main',
-            'curobo_mpc = curobo_ros.core.mpc:main',
             'curobo_trajectory_planner = curobo_ros.core.unified_planner_node:main',
-            'curobo_int_mark = curobo_ros.interfaces.simple_arrow:main',
-            'viz_voxel_grid = curobo_ros.interfaces.show_voxel_grid:main',
             'robot_segmentation = curobo_ros.core.robot_segmentation:main',
-            'test_pointcloud_camera = curobo_ros.core.test_pointcloud_camera:main',
         ],
     },
 )

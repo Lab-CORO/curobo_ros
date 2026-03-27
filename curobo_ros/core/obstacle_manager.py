@@ -2,7 +2,9 @@ import os
 import math
 import numpy as np
 import torch
-import open3d as o3d
+import trimesh
+import trimesh.voxel.creation as vox_creation
+from scipy.ndimage import binary_fill_holes
 import ros2_numpy as rnp
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, SetCollisionCache
@@ -201,8 +203,34 @@ class ObstacleManager:
                     return response
 
                 try:
-                    # 1. Create Mesh object for MESH collision checker
-                    # Preserves precise mesh geometry for high-fidelity collision checking
+                    # 1. Voxelize first (before touching any state) to know the cuboid count
+                    node.get_logger().info(
+                        f"Voxelizing mesh '{request.name}' (voxel_size={self.mesh_voxel_size})..."
+                    )
+                    blox = MeshBloxilization(
+                        mesh_path=request.mesh_file_path,
+                        voxel_size=self.mesh_voxel_size,
+                        logger=node.get_logger()
+                    )
+                    cubes = blox.pipeline(
+                        scale=extracted_dimensions,
+                        pose=extracted_pose,
+                    )
+
+                    # 2. Pre-check: refuse if adding these cuboids would exceed the OBB cache
+                    current_cuboids = len(self.world_cfg.cuboid)
+                    obb_cache = self.collision_cache['obb']
+                    if current_cuboids + len(cubes) > obb_cache:
+                        response.success = False
+                        response.message = (
+                            f"OBB cache too small: adding {len(cubes)} cuboids would reach "
+                            f"{current_cuboids + len(cubes)} > cache {obb_cache}. "
+                            f"Use /set_collision_cache to increase it."
+                        )
+                        node.get_logger().error(response.message)
+                        return response
+
+                    # 3. Add Mesh object for MESH collision checker
                     mesh_obstacle = Mesh(
                         name=request.name,
                         pose=extracted_pose,
@@ -212,48 +240,24 @@ class ObstacleManager:
                     )
                     self.world_cfg.mesh.append(mesh_obstacle)
 
-                    # 2. Voxelize the mesh for BLOX collision checker
-                    # Apply scale and pose transformations before voxelization
-                    node.get_logger().info(
-                        f"Voxelizing mesh '{request.name}' (voxel_size={self.mesh_voxel_size})..."
-                    )
-                    cubes = MeshBloxilization.pipeline(
-                        request.mesh_file_path,
-                        voxel_size=self.mesh_voxel_size,
-                        scale=extracted_dimensions,  # Apply scale transformation
-                        pose=extracted_pose,          # Apply pose transformation
-                        nsamples=1,
-                        visualize=False,
-                        export_path=None
-                    )
-
-                    # 3. Create cuboids from voxelized cubes
-                    # Cubes are already in world coordinates thanks to transformations in pipeline()
+                    # 4. Create cuboids from merged cubes
                     cuboid_names = []
-                    for idx, (origin, size) in enumerate(cubes):
+                    for idx, (origin, dims) in enumerate(cubes):
                         cuboid_name = f"{request.name}_cuboid_{idx}"
-
-                        # origin is the cube corner (in world coordinates), compute center
-                        center = origin + np.array([size/2, size/2, size/2])
-
-                        # Cuboids are axis-aligned in world frame (no rotation)
-                        # The mesh was rotated before voxelization, so cuboids are correctly positioned
-                        cuboid_pose = list(center) + [1.0, 0.0, 0.0, 0.0]  # [x,y,z,qw,qx,qy,qz]
-
+                        center = origin + dims / 2.0
+                        cuboid_pose = list(center) + [1.0, 0.0, 0.0, 0.0]
                         cuboid = Cuboid(
                             name=cuboid_name,
                             pose=cuboid_pose,
-                            dims=[size, size, size],
+                            dims=list(dims),
                             color=extracted_color,
                         )
                         self.world_cfg.cuboid.append(cuboid)
                         cuboid_names.append(cuboid_name)
                         self.obstacle_names.append(cuboid_name)
 
-                    # 4. Save mapping for deletion
+                    # 5. Save mapping and register name
                     self.mesh_cuboid_mapping[request.name] = cuboid_names
-
-                    # 5. Add mesh name to obstacle_names
                     self.obstacle_names.append(request.name)
 
                     node.get_logger().info(
@@ -498,6 +502,10 @@ class ObstacleManager:
                 f"Collision cache: obb={response.obb_cache}, "
                 f"mesh={response.mesh_cache}, blox={response.blox_cache}"
             )
+            node.get_logger().warn(
+                f"Collision cache changed — a warmup is required. "
+                f"Call: ros2 service call /{node.get_name()}/update_motion_gen_config std_srvs/srv/Trigger"
+            )
 
         except Exception as e:
             response.success = False
@@ -635,278 +643,121 @@ class ObstacleManager:
 
 class MeshBloxilization():
     """
-    This class is temporary to convert mesh to cuboid.
-    Later the build-in solution from curobo will be used
+    Converts a mesh into a list of axis-aligned cuboids for cuRobo's BLOX collision checker.
+
+    Pipeline:
+      1. Load mesh, apply scale + pose
+      2. Surface voxelization (trimesh) → shell occupancy grid
+      3. binary_fill_holes → solid occupancy grid
+      4. Greedy 3D merge → fuse adjacent voxels into larger cuboids
     """
 
-    def __init__(self, mesh_path, voxel_size):
+    def __init__(self, mesh_path, voxel_size, logger=None):
         self.mesh_path = mesh_path
         self.voxel_size = voxel_size
+        self.logger = logger
 
-    @staticmethod
-    def ensure_power_of_two_dims(shape):
-        # pad shape to next power-of-two in each dimension
-        return [1 << math.ceil(math.log2(s)) for s in shape]
+    def _log(self, msg):
+        if self.logger:
+            self.logger.info(msg)
+        else:
+            print(msg)
 
-    @staticmethod
-    def build_dense_grid(mesh, voxel_size):
-        # bbox and grid shape (integer number of voxels to cover bbox)
-        bbox_min = mesh.get_min_bound()
-        bbox_max = mesh.get_max_bound()
-        extent = bbox_max - bbox_min
-        # number of voxels along each axis (ceil to cover full bbox)
-        Nx = int(np.ceil(extent[0] / voxel_size))
-        Ny = int(np.ceil(extent[1] / voxel_size))
-        Nz = int(np.ceil(extent[2] / voxel_size))
-
-        # pad to power-of-two sizes for merging convenience
-        Nx_p, Ny_p, Nz_p = MeshBloxilization.ensure_power_of_two_dims((Nx, Ny, Nz))
-        pad_x = Nx_p - Nx
-        pad_y = Ny_p - Ny
-        pad_z = Nz_p - Nz
-
-        print(f"Grid base (Nx,Ny,Nz) = {(Nx,Ny,Nz)}, padded -> {(Nx_p,Ny_p,Nz_p)}")
-
-        # compute centers for original (unpadded) grid, but we will map into padded array
-        # create coordinates for padded grid such that origin remains bbox_min
-        xs = (np.arange(Nx_p) + 0.5) * voxel_size + bbox_min[0]
-        ys = (np.arange(Ny_p) + 0.5) * voxel_size + bbox_min[1]
-        zs = (np.arange(Nz_p) + 0.5) * voxel_size + bbox_min[2]
-
-        # create array of centers in (N,3)
-        # to save memory, we generate flattened centers and query occupancy in batches
-        return {
-            "bbox_min": bbox_min,
-            "bbox_max": bbox_max,
-            "voxel_size": voxel_size,
-            "grid_shape": (Nx_p, Ny_p, Nz_p),
-            "orig_grid_shape": (Nx, Ny, Nz),
-            "coords_arrays": (xs, ys, zs),
-            "pad": (pad_x, pad_y, pad_z)
-        }
-
-    @staticmethod
-    def compute_occupancy(mesh, grid_meta, batch_size=200000, nsamples=1):
-        # Use RaycastingScene to compute occupancy at voxel centers.
-        # Convert legacy mesh to t.geometry
-        tmesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
-        scene = o3d.t.geometry.RaycastingScene()
-        scene.add_triangles(tmesh)
-
-        xs, ys, zs = grid_meta["coords_arrays"]
-        Nx, Ny, Nz = grid_meta["grid_shape"]
-
-        # We'll iterate over z slices to reduce memory pressure
-        occ = np.zeros((Nx, Ny, Nz), dtype=bool)
-
-        total = Nx * Ny * Nz
-        print(f"Computing occupancy for {total} voxels (in slices) ...")
-
-        # Prepare all centers per z slice
-        for k, z in enumerate(zs):
-            # create meshgrid for x,y for this z slice
-            xx, yy = np.meshgrid(xs, ys, indexing="ij")  # shape (Nx,Ny)
-            pts = np.stack([xx.ravel(), yy.ravel(), np.full(xx.size, z)], axis=-1)  # (Nx*Ny,3)
-            # convert to tensor (float32)
-            q = o3d.core.Tensor(pts.astype(np.float32))
-            occ_slice = scene.compute_occupancy(q, nsamples=nsamples).numpy().astype(bool)  # (Nx*Ny,)
-            occ[:, :, k] = occ_slice.reshape((Nx, Ny))
-            if (k+1) % 10 == 0 or (k+1)==Nz:
-                print(f"  slice {k+1}/{Nz} done")
-
-        return occ
-
-    @staticmethod
-    def merge_level(prev):
-        # prev: boolean numpy array shape (Nx,Ny,Nz)
-        Nx, Ny, Nz = prev.shape
-        # require even dims
-        assert Nx % 2 == 0 and Ny % 2 == 0 and Nz % 2 == 0
-        Nx2, Ny2, Nz2 = Nx//2, Ny//2, Nz//2
-        merged = np.zeros((Nx2, Ny2, Nz2), dtype=bool)
-
-        # vectorized approach using reshape and all over 2x2x2 blocks
-        # reshape to (Nx2, 2, Ny2, 2, Nz2, 2) then all over axes 1,3,5
-        m = prev.reshape(Nx2, 2, Ny2, 2, Nz2, 2)
-        merged = m.all(axis=(1,3,5))
-        return merged
-
-    @staticmethod
-    def build_levels(occ_base):
-        levels = [occ_base]
-        while True:
-            prev = levels[-1]
-            if prev.shape[0] % 2 != 0 or prev.shape[1] % 2 != 0 or prev.shape[2] % 2 != 0:
-                break
-            merged = MeshBloxilization.merge_level(prev)
-            if not merged.any():
-                break
-            levels.append(merged)
-        print(f"Built {len(levels)} levels (0..{len(levels)-1})")
-        return levels
-
-    @staticmethod
-    def extract_cubes(levels, grid_meta):
-        # Greedy extraction from largest to smallest to avoid overlaps
-        base_shape = levels[0].shape
-        Nx_base, Ny_base, Nz_base = base_shape
-        voxel_size = grid_meta["voxel_size"]
-        bbox_min = grid_meta["bbox_min"]
-
-        coverage = np.zeros(base_shape, dtype=bool)
-        cubes = []  # elements: (origin_xyz, size)
-
-        max_lvl = len(levels) - 1
-        for lvl in range(max_lvl, -1, -1):
-            grid = levels[lvl]
-            factor = 2 ** lvl
-            size = voxel_size * factor
-            Nx, Ny, Nz = grid.shape
-            it = np.ndindex(Nx, Ny, Nz)
-            for (i,j,k) in it:
-                if not grid[i,j,k]:
-                    continue
-                # compute corresponding base indices range
-                si = i * factor
-                sj = j * factor
-                sk = k * factor
-                ei = si + factor
-                ej = sj + factor
-                ek = sk + factor
-                # if already covered by a larger cube, skip
-                if coverage[si:ei, sj:ej, sk:ek].all():
-                    continue
-                # accept this cube
-                origin = bbox_min + np.array([si, sj, sk]) * voxel_size  # corner
-                cubes.append((origin, size))
-                # mark coverage
-                coverage[si:ei, sj:ej, sk:ek] = True
-        print(f"Extracted {len(cubes)} cubes")
-        return cubes
-
-    @staticmethod
-    def cubes_to_meshes(cubes, color=(0.7,0.7,0.7)):
-        meshes = []
-        for origin, size in cubes:
-            box = o3d.geometry.TriangleMesh.create_box(width=size, height=size, depth=size)
-            box.compute_vertex_normals()
-            # create_box is at [0,0,0]..[1,1,1]*size, so translate to origin
-            box.translate(origin)
-            box.paint_uniform_color(color)
-            meshes.append(box)
-        return meshes
-
-    @staticmethod
-    def export_combined_mesh(meshes, out_path):
-        if len(meshes) == 0:
-            print("No meshes to export")
-            return
-        combined = meshes[0]
-        for m in meshes[1:]:
-            combined += m
-        print(f"Writing combined mesh to {out_path} ...")
-        o3d.io.write_triangle_mesh(out_path, combined)
-
-    @staticmethod
-    def quat_to_rotation_matrix(quat):
+    def pipeline(self, scale=None, pose=None, visualize=False, export_path=None):
         """
-        Convert quaternion [qw, qx, qy, qz] to 3x3 rotation matrix.
+        Voxelize a mesh and merge adjacent voxels into larger cuboids.
 
         Args:
-            quat: Quaternion as [qw, qx, qy, qz] (scalar-first convention)
+            scale: Optional [sx, sy, sz] scaling factors
+            pose: Optional [x, y, z, qw, qx, qy, qz] pose in world frame
+            visualize: Show result in trimesh viewer
+            export_path: Optional path to export the voxel mesh
 
         Returns:
-            3x3 rotation matrix (numpy array)
+            List of (origin, dims) tuples where origin and dims are numpy arrays (shape (3,)).
+            Cuboids may have non-uniform dims when neighbouring voxels are merged.
         """
-        qw, qx, qy, qz = quat
+        mesh = trimesh.load(self.mesh_path, force='mesh')
+        if mesh.is_empty:
+            raise RuntimeError(f"Mesh empty or not loaded: {self.mesh_path}")
 
-        # Rotation matrix from quaternion (standard formula)
-        R = np.array([
-            [1 - 2*(qy**2 + qz**2),     2*(qx*qy - qw*qz),     2*(qx*qz + qw*qy)],
-            [    2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2),     2*(qy*qz - qw*qx)],
-            [    2*(qx*qz - qw*qy),     2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
-        ])
+        if scale is not None:
+            mesh.apply_scale(scale)
 
-        return R
+        if pose is not None:
+            T = trimesh.transformations.quaternion_matrix([pose[3], pose[4], pose[5], pose[6]])
+            T[:3, 3] = pose[:3]
+            mesh.apply_transform(T)
 
-    # -----------------------------
-    # Pipeline main
-    # -----------------------------
-    @staticmethod
-    def pipeline(mesh_path, voxel_size=0.05, scale=None, pose=None, nsamples=1, visualize=False, export_path=None):
-        """
-        Voxelize a mesh into cuboids with optional scaling and pose transformation.
+        self._log(f"Voxelizing mesh (pitch={self.voxel_size}m) ...")
+        vox = vox_creation.voxelize(mesh, pitch=self.voxel_size)
 
-        Transformations are applied to the mesh using Open3D before voxelization,
-        so the resulting cubes are already in world coordinates.
+        # Fill interior: surface voxelization produces a shell, this makes it solid
+        filled_vox = trimesh.voxel.VoxelGrid(binary_fill_holes(vox.matrix), vox.transform)
 
-        Args:
-            mesh_path: Path to mesh file
-            voxel_size: Voxel size for discretization
-            scale: Optional [sx, sy, sz] scaling factors to apply to mesh
-            pose: Optional [x,y,z,qw,qx,qy,qz] pose in world frame
-            nsamples: Number of samples for occupancy testing
-            visualize: Whether to visualize result
-            export_path: Optional path to export combined mesh
-
-        Returns:
-            List of (origin, size) tuples in world coordinates
-        """
-        mesh = o3d.io.read_triangle_mesh(mesh_path)
-        if mesh.is_empty():
-            raise RuntimeError("Mesh empty or not loaded")
-
-        mesh.compute_vertex_normals()
-
-        # Apply transformations using Open3D (before voxelization!)
-        if scale is not None or pose is not None:
-            # 1. Apply scaling
-            if scale is not None:
-                # Non-uniform scaling by modifying vertices directly
-                vertices = np.asarray(mesh.vertices)
-                vertices_scaled = vertices * np.array(scale)
-                mesh.vertices = o3d.utility.Vector3dVector(vertices_scaled)
-
-            # 2. Apply rotation and translation
-            if pose is not None:
-                translation = np.array(pose[:3])
-                quat = pose[3:]  # [qw, qx, qy, qz]
-
-                # Convert quaternion to rotation matrix
-                rot_matrix = MeshBloxilization.quat_to_rotation_matrix(quat)
-
-                # Apply rotation around mesh center, then translate
-                mesh.rotate(rot_matrix, center=mesh.get_center())
-                mesh.translate(translation)
-
-        # Voxelize the transformed mesh
-        # The cubes will already be in world coordinates!
-        grid_meta = MeshBloxilization.build_dense_grid(mesh, voxel_size)
-
-        # compute occupancy using RaycastingScene
-        occ = MeshBloxilization.compute_occupancy(mesh, grid_meta, nsamples=nsamples)
-
-        # build merging levels
-        levels = MeshBloxilization.build_levels(occ)
-
-        # extract final cubes
-        cubes = MeshBloxilization.extract_cubes(levels, grid_meta)
-
-        # create meshes for visualization
-        if visualize or export_path:
-            cube_meshes = MeshBloxilization.cubes_to_meshes(cubes)
+        # Greedy merging: fuse adjacent voxels into larger cuboids
+        half = self.voxel_size / 2.0
+        grid_origin = np.array(filled_vox.transform[:3, 3]) - half  # world-space corner of voxel [0,0,0]
+        raw_count = int(np.sum(filled_vox.matrix))
+        cubes = self._merge_cubes(filled_vox.matrix, grid_origin, self.voxel_size)
+        self._log(f"Merged {raw_count} voxels → {len(cubes)} cuboids "
+                  f"(ratio {raw_count / max(len(cubes), 1):.1f}x)")
 
         if visualize:
-            # show original mesh lightly and cubes semi-transparent
-            mesh_for_vis = mesh.paint_uniform_color([0.8,0.8,0.8])
-            to_draw = [mesh] + cube_meshes
-            o3d.visualization.draw_geometries(to_draw)
+            trimesh.Scene([mesh, filled_vox.as_boxes()]).show()
 
         if export_path:
-            ext = os.path.splitext(export_path)[1].lower()
-            # combine and export as one mesh
-            MeshBloxilization.export_combined_mesh(cube_meshes, export_path)
-            print("Export done")
+            filled_vox.as_boxes().export(export_path)
+            self._log(f"Exported voxel mesh to {export_path}")
 
-        # also return cubes list for further processing
         return cubes
+
+    def _merge_cubes(self, voxel_grid, origin, voxel_size):
+        """
+        Greedy 3D merging: fuses adjacent occupied voxels into larger axis-aligned cuboids.
+
+        Single pass in X→Y→Z order. For each unprocessed voxel, extend as far as possible
+        along X, then Y (full X slab), then Z (full XY slab). Mark the region as consumed.
+
+        Args:
+            voxel_grid: 3D boolean numpy array (solid occupancy grid)
+            origin: world-space corner of voxel at index [0,0,0], shape (3,)
+            voxel_size: size of one voxel in meters
+
+        Returns:
+            List of (cube_origin, cube_dims) — both numpy arrays, shape (3,).
+            cube_dims >= voxel_size on each axis.
+        """
+        grid = voxel_grid.copy()
+        nx, ny, nz = grid.shape
+        cuboids = []
+
+        for x in range(nx):
+            for y in range(ny):
+                for z in range(nz):
+                    if not grid[x, y, z]:
+                        continue
+
+                    # Extend along X
+                    dx = 1
+                    while x + dx < nx and grid[x + dx, y, z]:
+                        dx += 1
+
+                    # Extend along Y (entire X slab must be occupied)
+                    dy = 1
+                    while y + dy < ny and np.all(grid[x:x + dx, y + dy, z]):
+                        dy += 1
+
+                    # Extend along Z (entire XY slab must be occupied)
+                    dz = 1
+                    while z + dz < nz and np.all(grid[x:x + dx, y:y + dy, z + dz]):
+                        dz += 1
+
+                    # Consume merged region
+                    grid[x:x + dx, y:y + dy, z:z + dz] = False
+
+                    cube_origin = origin + np.array([x, y, z]) * voxel_size
+                    cube_dims = np.array([dx, dy, dz], dtype=float) * voxel_size
+                    cuboids.append((cube_origin, cube_dims))
+
+        return cuboids
