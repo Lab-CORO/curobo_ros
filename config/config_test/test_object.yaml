@@ -22,7 +22,7 @@ tests:
             color: {r: 0.0, a: 0.0}
           }
     expect: {success: True,
-             message: 'Object cube added successfully'}
+             message: "Object 'cube' added successfully (1 cuboids, 0 mesh in world)"}
 
   - name: "02 Add second object"
     service: "/unified_planner/add_object"
@@ -36,7 +36,7 @@ tests:
             color: {r: 0.0, a: 0.0}
           }
     expect: {success: True,
-             message: 'Object cube2 added successfully'}
+             message: "Object 'cube2' added successfully (2 cuboids, 0 mesh in world)"}
 
   - name: "03 Get obstacles"
     service: "/unified_planner/get_obstacles"

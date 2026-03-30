@@ -1,37 +1,51 @@
 # Test kinematics services (FK and IK)
+# Both are now part of the unified_planner node (lazy warmup via service call)
 
 package: curobo_ros
 environment:
   nodes:
     - package: curobo_ros
-      executable: curobo_ik
-      name: curobo_ik
-  startup_delay: 10.0
+      executable: curobo_trajectory_planner
+      name: unified_planner
+  startup_delay: 10.0  # unified_planner warms up MotionGen on start
 
 tests:
-  # - name: "01 FK valid joints"
-  #   service: "/curobo_ik/fk_compute"
-  #   type: curobo_msgs/srv/Fk
-  #   data:
-  #     joint_states:
-  #       - name: ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-  #         position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  #   expect: {}
+  - name: "01 warmup IK"
+    service: "/unified_planner/warmup_ik"
+    type: curobo_msgs/srv/WarmupIK
+    data:
+      batch_size: 1
+    expect: {success: True}
 
-  - name: "02 IK valid pose"
-    service: "/curobo_ik/ik_pose"
+  - name: "02 warmup FK"
+    service: "/unified_planner/warmup_fk"
+    type: curobo_msgs/srv/WarmupFK
+    data:
+      batch_size: 1
+    expect: {success: True}
+
+  - name: "03 IK valid pose"
+    service: "/unified_planner/ik"
     type: curobo_msgs/srv/Ik
     data:
       pose:
         position: {x: 0.5, y: 0.0, z: 0.5}
         orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-    expect: {success: True}
+    expect: {joint_states_valid: {data: True}}
 
-  - name: "03 IK invalid pose"
-    service: "/curobo_ik/ik_pose"
+  - name: "04 IK invalid pose"
+    service: "/unified_planner/ik"
     type: curobo_msgs/srv/Ik
     data:
       pose:
         position: {x: 10.0, y: 10.0, z: 10.0}
         orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-    expect: {success: False}
+    expect: {joint_states_valid: {data: False}}
+
+  - name: "05 FK valid joints"
+    service: "/unified_planner/fk"
+    type: curobo_msgs/srv/Fk
+    data:
+      joint_states:
+        - position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    expect: {}

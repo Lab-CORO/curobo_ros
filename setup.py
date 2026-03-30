@@ -28,8 +28,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'curobo_ik = curobo_ros.core.ik:main',
-            'curobo_fk = curobo_ros.core.fk:main',
             'curobo_trajectory_planner = curobo_ros.core.unified_planner_node:main',
             'robot_segmentation = curobo_ros.core.robot_segmentation:main',
         ],

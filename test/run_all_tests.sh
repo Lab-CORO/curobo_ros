@@ -66,6 +66,18 @@ fi
 ((TOTAL_TESTS++)) || true
 echo ""
 
+echo "Running test_test_mesh_obstacle..."
+if timeout 60 launch_test "${TEST_DIR}/test_test_mesh_obstacle.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_mesh_obstacle PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_mesh_obstacle FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_mesh_obstacle")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
 echo "Running test_test_collision..."
 if timeout 60 launch_test "${TEST_DIR}/test_test_collision.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_collision PASSED"

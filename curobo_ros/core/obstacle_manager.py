@@ -276,7 +276,12 @@ class ObstacleManager:
                 response.message = 'Object type "' + str(request.type) + '" not recognized'
 
         if response.success:
-            response.message = 'Object ' + request.name + ' added successfully'
+            num_cuboids = len(self.world_cfg.cuboid)
+            num_meshes = len(self.world_cfg.mesh)
+            response.message = (
+                f"Object '{request.name}' added successfully "
+                f"({num_cuboids} cuboids, {num_meshes} mesh in world)"
+            )
 
         return response
 

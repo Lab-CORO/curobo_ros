@@ -25,6 +25,8 @@ from curobo.geom.types import Cuboid
 
 from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion, ConfigWrapperMPC
+from curobo_ros.core.ik_services import IKServices
+from curobo_ros.core.fk_services import FKServices
 from curobo_ros.planners import PlannerFactory, PlannerManager, ClassicPlanner, MPCPlanner, SinglePlanner
 
 
@@ -80,6 +82,12 @@ class UnifiedPlannerNode(Node):
         # Initialize solvers (created on-demand)
         self.motion_gen = None
         self.mpc = None
+
+        # IK service — lazy warmup, shares obstacles with MotionGen
+        self.ik_services = IKServices(self, self.config_wrapper_motion)
+
+        # FK service — lazy warmup, depends only on robot_cfg (no world needed)
+        self.fk_services = FKServices(self, self.config_wrapper_motion.robot_cfg)
 
         # Planner manager (handles caching)
         self.planner_manager = PlannerManager(self, self.config_wrapper_motion)
@@ -234,6 +242,8 @@ class UnifiedPlannerNode(Node):
                  self.mpc.world_coll_checker is not self.motion_gen.world_coll_checker)):
             self.mpc.world_coll_checker.clear_cache()
             self.mpc.update_world(world_cfg)
+
+        self.ik_services.update_world()
 
     def generate_trajectory_callback(self, request: TrajectoryGeneration, response):
         """

@@ -1,0 +1,61 @@
+# Test mesh obstacle integration
+# Sequence:
+#   1. Set collision cache large enough for the voxelized duck (136 cuboids + 1 mesh)
+#   2. Reload MotionGen with new cache
+#   3. Add the Rubber Duck mesh at origin
+#   4. Verify the world state via response message
+#   5. Generate a trajectory that must fail (duck blocks the path)
+
+package: curobo_ros
+environment:
+  launch:
+    - package: curobo_ros
+      executable: gen_traj.launch.py
+      name: gen_traj
+  startup_delay: 10.0  # MotionGen warmup on startup
+
+tests:
+  - name: "01 set collision cache"
+    service: "/unified_planner/set_collision_cache"
+    type: curobo_msgs/srv/SetCollisionCache
+    data:
+      obb: 136
+      mesh: 1
+      blox: -1
+    expect:
+      success: True
+      obb_cache: 136
+      mesh_cache: 1
+
+  - name: "02 reload MotionGen with new cache"
+    service: "/unified_planner/update_motion_gen_config"
+    type: std_srvs/srv/Trigger
+    data: {}
+    expect:
+      success: True
+
+  - name: "03 add Rubber Duck mesh at origin"
+    service: "/unified_planner/add_object"
+    type: curobo_msgs/srv/AddObject
+    data:
+      type: 4
+      name: "rubber_duck"
+      mesh_file_path: "/home/ros2_ws/src/curobo_ros/config/config_test/Rubber_Duck.stl"
+      pose:
+        position: {x: 0.0, y: 0.0, z: 0.0}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+      dimensions: {x: 0.01, y: 0.01, z: 0.01}
+      color: {r: 1.0, g: 0.8, b: 0.0, a: 1.0}
+    expect:
+      success: True
+      message: "Object 'rubber_duck' added successfully (136 cuboids, 1 mesh in world)"
+
+  - name: "04 trajectory blocked by duck"
+    service: "/unified_planner/generate_trajectory"
+    type: curobo_msgs/srv/TrajectoryGeneration
+    data:
+      target_pose:
+        position: {x: 0.1, y: 0.0, z: 0.1}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    expect:
+      success: False
