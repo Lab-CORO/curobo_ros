@@ -23,13 +23,10 @@ A pre-built Docker image ships all dependencies (ROS 2 Humble, CUDA 12, curobo).
   - [1. Your First Trajectory](tutorials/01-first-trajectory.md)
   - [2. Adding Your Robot](tutorials/02-adding-your-robot.md)
   - [3. Managing Collision Objects](tutorials/03-collision-objects.md)
-  - [4. Dynamic Strategy Switching](tutorials/04-strategy-switching.md)
+  - [4. Robot Execution & Driver Connection](tutorials/04-robot-execution.md)
   - [5. MPC Planner](tutorials/05-mpc-planner.md)
   - [6. IK/FK Services](tutorials/06-ik-fk-services.md)
   - [7. Point Cloud Obstacle Detection](tutorials/07-pointcloud-detection.md)
-  - **[Examples](tutorials/examples/index.md)**
-    - [Doosan M1013 Complete Integration](tutorials/examples/doosan-m1013.md)
-    - [Camera Integration](tutorials/examples/camera-integration.md)
 - **[Concepts](concepts/index.md)**
   - [System Architecture](concepts/architecture.md)
   - [Manager Architecture](concepts/manager-architecture.md)
@@ -38,9 +35,6 @@ A pre-built Docker image ships all dependencies (ROS 2 Humble, CUDA 12, curobo).
   - [MPC Implementation](concepts/mpc-implementation.md)
   - [ROS 2 Interfaces](concepts/ros-interfaces.md)
   - [RViz Plugin](concepts/rviz-plugin.md)
-- **[Robots](robots/index.md)**
-  - [Doosan M1013](robots/doosan-m1013.md)
-
 ---
 
 ```{toctree}
@@ -62,11 +56,4 @@ tutorials/index
 :caption: Concepts
 :hidden:
 concepts/index
-```
-
-```{toctree}
-:maxdepth: 3
-:caption: Robots
-:hidden:
-robots/index
 ```

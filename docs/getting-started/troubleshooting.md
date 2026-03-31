@@ -107,7 +107,7 @@ docker rm curobo_ampere_dev
 bash start_docker_x86.sh
 ```
 
-See also: [Docker Workflow Guide](docker-workflow.md#troubleshooting-docker-issues)
+See also: [Installation Guide](installation.md)
 
 ---
 

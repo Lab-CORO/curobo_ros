@@ -171,57 +171,57 @@ current_planner: 'MPCPlanner'
 
 **Request Fields:**
 - `name` (string): Unique object identifier
-- `primitive_type` (uint8): 0=CUBOID, 1=CYLINDER, 2=SPHERE, 3=CAPSULE, 4=MESH
-- `dimensions` (float64[]): Object dimensions ([x,y,z] for cuboid, [radius, height] for cylinder, etc.)
+- `type` (int8): 0=CUBOID, 1=SPHERE, 2=CAPSULE, 3=CYLINDER, 4=MESH
+- `dimensions` (Vector3): Object dimensions — for cuboid: `{x, y, z}` full extents; for sphere: `{x: radius}`; for cylinder/capsule: `{x: radius, z: height}`
 - `pose` (Pose): Object pose in base frame
-- `mesh_file_path` (string): Path to mesh file (for MESH type only)
+- `mesh_file_path` (string): Absolute path to mesh file (for MESH type only)
+- `color` (ColorRGBA): Optional visualization color
 
 **Response Fields:**
 - `success` (bool): True if object added
-- `message` (string): Status message
+- `message` (string): Status message including world state counts, e.g. `"Object 'table' added successfully (3 cuboids, 0 mesh in world)"`
 
 **ROS2 CLI Examples:**
 
 ```bash
 # Add cuboid (table)
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'table', primitive_type: 0, dimensions: [1.0, 0.8, 0.05], \
+  "{name: 'table', type: 0, dimensions: {x: 1.0, y: 0.8, z: 0.05}, \
     pose: {position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}"
 
 # Add sphere (ball)
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'ball', primitive_type: 2, dimensions: [0.1], \
+  "{name: 'ball', type: 1, dimensions: {x: 0.1}, \
     pose: {position: {x: 0.4, y: 0.2, z: 0.3}, orientation: {w: 1.0}}}"
 
 # Add cylinder (pole)
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'pole', primitive_type: 1, dimensions: [0.05, 1.0], \
+  "{name: 'pole', type: 3, dimensions: {x: 0.05, z: 1.0}, \
     pose: {position: {x: 0.3, y: 0.3, z: 0.5}, orientation: {w: 1.0}}}"
 ```
 
 **Important Note - Mesh Handling:**
 
-When adding a MESH object, curobo internally converts it into multiple cuboids that are fused together to reduce the total number. This approach optimizes collision checking performance.
+When adding a MESH object, curobo internally voxelizes the mesh into oriented bounding boxes (OBBs) for the BLOX collision checker. Both the original mesh and the derived cuboids are stored in the world configuration.
 
 **Implications:**
-- **Collision cache**: You need to increase the **cuboid (OBB) collision cache** size when adding mesh objects, not the mesh cache
-- **Naming convention**: Each cuboid generated from a mesh will be named `{mesh_name}_cuboid_{id}`
-  - Example: A mesh named "complex_part" will create cuboids named "complex_part_cuboid_0", "complex_part_cuboid_1", etc.
-- **Cache sizing**: For a complex mesh that generates 20 cuboids, ensure your OBB cache size is sufficient
+- **Collision cache**: Increase the **cuboid (OBB) cache** size before adding a mesh — the number of derived cuboids depends on mesh complexity
+- **Naming convention**: Each derived cuboid is named `{mesh_name}_cuboid_{idx}` and tracked internally for cleanup
+- **Cache sizing**: Set the cache before calling `update_motion_gen_config`, then add the mesh
 
 **Example with mesh:**
 ```bash
-# Add mesh object (will be converted to cuboids internally)
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'part', primitive_type: 4, mesh_file_path: '/path/to/mesh.stl', \
-    pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
-
-# Increase OBB cache to accommodate the generated cuboids
+# 1. Set cache to accommodate derived cuboids (check mesh complexity first)
 ros2 service call /unified_planner/set_collision_cache \
-  curobo_msgs/srv/SetCollisionCache "{obb: 200, mesh: -1, blox: -1}"
+  curobo_msgs/srv/SetCollisionCache "{obb: 200, mesh: 1, blox: -1}"
 
-# Apply the cache changes
+# 2. Apply the cache change
 ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# 3. Add mesh object
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'part', type: 4, mesh_file_path: '/path/to/mesh.stl', \
+    pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
 ```
 
 ---
@@ -401,52 +401,132 @@ blox_cache: 10
 
 ### Kinematics Services
 
-#### 10. `fk_compute` - Forward Kinematics
+IK and FK solvers are **lazy-initialized** — they must be warmed up before use. Both live on the same node as the trajectory planner and share the same robot configuration.
 
-**Service Type**: `curobo_msgs/srv/Fk`
+> **Important**: Always call `warmup_ik` or `warmup_fk` before the first IK/FK service call. If the node is restarted, warmup must be called again.
 
-**Purpose**: Compute end-effector pose from joint positions.
+---
+
+#### 10. `warmup_ik` - Initialize IK Solver
+
+**Service Type**: `curobo_msgs/srv/WarmupIK`
+
+**Purpose**: Create and warm up the IK solver for a given batch size. Must be called before any `ik` or `ik_batch` call.
 
 **Request Fields:**
-- `joint_state` (JointState): Joint positions
+- `batch_size` (int32): Number of poses to solve simultaneously (default: 1)
 
 **Response Fields:**
-- `success` (bool)
-- `message` (string)
-- `end_effector_pose` (Pose): Computed end-effector pose
+- `success` (bool): True if solver initialized successfully
+- `message` (string): Status message
 
 **ROS2 CLI Example:**
 
 ```bash
-ros2 service call /unified_planner/fk_compute curobo_msgs/srv/Fk \
-  "{joint_state: {position: [0.0, -0.5, 0.5, 0.0, 1.57, 0.0]}}"
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
 ```
 
-**See Also**: [Tutorial 6: IK/FK Services](../tutorials/06-ik-fk-services.md)
+**Notes:**
+- The IK solver shares the obstacle world with MotionGen — obstacle changes are propagated automatically
+- If `ik_batch` is called with a different number of poses than the warmup `batch_size`, the solver reinitializes automatically (slower first call)
+- For batch workloads, warmup with the exact batch size you intend to use
 
 ---
 
-#### 11. `ik_batch_poses` - Inverse Kinematics
+#### 11. `warmup_fk` - Initialize FK Model
+
+**Service Type**: `curobo_msgs/srv/WarmupFK`
+
+**Purpose**: Create and warm up the FK model for a given batch size. Must be called before any `fk` call.
+
+**Request Fields:**
+- `batch_size` (int32): Expected number of joint states per call (default: 1)
+
+**Response Fields:**
+- `success` (bool): True if model initialized successfully
+- `message` (string): Status message
+
+**ROS2 CLI Example:**
+
+```bash
+ros2 service call /unified_planner/warmup_fk curobo_msgs/srv/WarmupFK "{batch_size: 1}"
+```
+
+**Notes:**
+- FK has **no obstacle dependency** — it depends only on the robot's kinematic model (URDF)
+- Unlike IK, FK does not need to reinitialize when batch size changes
+- No `update_world` propagation for FK (purely geometric computation)
+
+---
+
+#### 12. `ik` - Single Pose Inverse Kinematics
 
 **Service Type**: `curobo_msgs/srv/Ik`
 
-**Purpose**: Compute joint configuration for target end-effector pose.
+**Purpose**: Compute a joint configuration for a single target end-effector pose.
 
 **Request Fields:**
 - `pose` (Pose): Target end-effector pose
 
 **Response Fields:**
-- `success` (bool): True if solution found
+- `success` (bool): True if a valid solution was found
 - `joint_states` (JointState): IK solution
-- `joint_states_valid` (Bool): Validity flag
+- `joint_states_valid` (Bool): Validity flag for the solution
 - `error_msg` (String): Error message if failed
 
 **ROS2 CLI Example:**
 
 ```bash
-# Single pose IK
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
   "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
+```
+
+---
+
+#### 13. `ik_batch` - Batch Inverse Kinematics
+
+**Service Type**: `curobo_msgs/srv/IkBatch`
+
+**Purpose**: Compute joint configurations for multiple target poses simultaneously.
+
+**Request Fields:**
+- `poses` (Pose[]): List of target end-effector poses
+
+**Response Fields:**
+- `success` (bool): True if at least one solution was found
+- `joint_states` (JointState[]): IK solutions (one per input pose)
+- `joint_states_valid` (Bool[]): Validity flag per solution
+- `error_msg` (String): Error message if batch failed
+
+**ROS2 CLI Example:**
+
+```bash
+ros2 service call /unified_planner/ik_batch curobo_msgs/srv/IkBatch \
+  "{poses: [
+    {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}},
+    {position: {x: 0.4, y: 0.2, z: 0.5}, orientation: {w: 1.0}}
+  ]}"
+```
+
+---
+
+#### 14. `fk` - Forward Kinematics
+
+**Service Type**: `curobo_msgs/srv/Fk`
+
+**Purpose**: Compute end-effector poses for a list of joint configurations.
+
+**Request Fields:**
+- `joint_states` (JointState[]): List of joint configurations
+
+**Response Fields:**
+- `poses` (Pose[]): Computed end-effector poses (one per input joint state)
+
+**ROS2 CLI Example:**
+
+```bash
+ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
+  "{joint_states: [{position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}]}"
 ```
 
 **See Also**: [Tutorial 6: IK/FK Services](../tutorials/06-ik-fk-services.md)
@@ -455,7 +535,7 @@ ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
 
 ### Configuration Services
 
-#### 12. `update_motion_gen_config` - Reload Configuration
+#### 15. `update_motion_gen_config` - Reload Configuration
 
 **Service Type**: `std_srvs/srv/Trigger`
 
@@ -486,7 +566,7 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 
 ### Internal/Advanced Services
 
-#### 13. `scene_generator`, `generate_rm`, `collisions`
+#### 16. `scene_generator`, `generate_rm`, `collisions`
 
 These services are for internal testing and advanced use cases. See source code for details.
 

@@ -480,8 +480,9 @@ ros2 topic echo /unified_planner/interactive_marker/update --once
 
 **Solutions:**
 ```bash
-# Test if goal is reachable using IK
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+# Test if goal is reachable using IK (warmup first if not done)
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
   "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
 
 # If IK fails, adjust marker pose closer to robot

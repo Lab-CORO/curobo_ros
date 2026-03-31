@@ -381,7 +381,7 @@ The **collision cache** defines GPU memory allocation for different collision ch
 #### 1. OBB Cache (Oriented Bounding Boxes)
 
 **What it stores:**
-- Cuboid primitives added via `add_object` with `primitive_type: 0`
+- Cuboid primitives added via `add_object` with `type: 0`
 - **Fused cuboids generated from mesh voxelization** (most common use)
 
 **Default Size:** `100`
@@ -395,7 +395,7 @@ The **collision cache** defines GPU memory allocation for different collision ch
 ```bash
 # Add mesh object
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'gear', primitive_type: 4, mesh_file_path: '/path/to/gear.stl', \
+  "{name: 'gear', type: 4, mesh_file_path: '/path/to/gear.stl', \
     pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
 
 # Error: OBB cache exceeded!
@@ -515,7 +515,7 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 ```bash
 # 1. Add mesh object
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'part', primitive_type: 4, mesh_file_path: '/path/to/part.stl', \
+  "{name: 'part', type: 4, mesh_file_path: '/path/to/part.stl', \
     pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
 ```
 
@@ -553,17 +553,17 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 
 # 2. Add first mesh
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'gear1', primitive_type: 4, mesh_file_path: '/path/to/gear.stl', \
+  "{name: 'gear1', type: 4, mesh_file_path: '/path/to/gear.stl', \
     pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
 
 # 3. Add second mesh
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'gear2', primitive_type: 4, mesh_file_path: '/path/to/gear.stl', \
+  "{name: 'gear2', type: 4, mesh_file_path: '/path/to/gear.stl', \
     pose: {position: {x: 0.5, y: 0.3, z: 0.3}, orientation: {w: 1.0}}}"
 
 # 4. Add third mesh
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'bracket', primitive_type: 4, mesh_file_path: '/path/to/bracket.stl', \
+  "{name: 'bracket', type: 4, mesh_file_path: '/path/to/bracket.stl', \
     pose: {position: {x: 0.3, y: 0.0, z: 0.2}, orientation: {w: 1.0}}}"
 
 # 5. Verify obstacles added
@@ -778,11 +778,11 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 
 # Step 2: Add mesh objects
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'table', primitive_type: 4, mesh_file_path: '/meshes/table.stl', \
+  "{name: 'table', type: 4, mesh_file_path: '/meshes/table.stl', \
     pose: {position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}"
 
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'wall', primitive_type: 4, mesh_file_path: '/meshes/wall.stl', \
+  "{name: 'wall', type: 4, mesh_file_path: '/meshes/wall.stl', \
     pose: {position: {x: -0.3, y: 0.0, z: 0.5}, orientation: {w: 1.0}}}"
 
 # ... add 3 more meshes ...

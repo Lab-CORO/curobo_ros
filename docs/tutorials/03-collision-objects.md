@@ -1,4 +1,4 @@
-# Tutorial: Managing Collision Objects
+# Tutorial 3: Managing Collision Objects
 
 This tutorial covers everything about adding, managing, and debugging collision objects in curobo_ros. You'll learn how to:
 
@@ -25,7 +25,7 @@ curobo_ros supports dynamic obstacle management. You can add or remove objects a
 
 ## Prerequisites
 
-- unified_planner or curobo_ik node running
+- unified_planner node running
 - Basic understanding of 3D coordinates and orientations
 
 ```bash
@@ -43,11 +43,11 @@ curobo_ros supports 5 object types:
 |------|----|--------------|--------------------|
 | **CUBOID** | 0 | Box with width, length, height | `x, y, z` |
 | **SPHERE** | 1 | Ball with radius | `x = y = z = radius` |
-| **CYLINDER** | 2 | Cylinder with radius and height | `x = y = radius`, `z = height` |
-| **CAPSULE** | 3 | Cylinder with hemispherical caps | `x = y = radius`, `z = length` |
+| **CAPSULE** | 2 | Cylinder with hemispherical caps | `x = y = radius`, `z = length` |
+| **CYLINDER** | 3 | Cylinder with radius and height | `x = y = radius`, `z = height` |
 | **MESH** | 4 | Custom mesh from file | `x, y, z` = scale factors |
 
-**Note:** All non-cuboid shapes are converted to axis-aligned bounding boxes internally for collision checking.
+**Note:** Non-cuboid primitives are handled as their respective cuRobo geometry types. Meshes are voxelized into OBBs for the BLOX collision checker.
 
 ---
 
@@ -80,7 +80,7 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 **Response:**
 ```yaml
 success: true
-message: "Object 'table' added successfully"
+message: "Object 'table' added successfully (1 cuboids, 0 mesh in world)"
 ```
 
 ### 2. Adding a Sphere
@@ -107,7 +107,7 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 "{
   name: 'pillar',
-  type: 2,
+  type: 3,
   pose: {
     position: {x: 0.4, y: -0.3, z: 0.25},
     orientation: {w: 1.0, x: 0, y: 0, z: 0}
@@ -134,17 +134,17 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
     position: {x: 0.5, y: 0.0, z: 0.3},
     orientation: {w: 1.0, x: 0, y: 0, z: 0}
   },
-  file_path: '/path/to/mesh.stl',
+  mesh_file_path: '/path/to/mesh.stl',
   dimensions: {x: 1.0, y: 1.0, z: 1.0},
   color: {r: 0.0, g: 1.0, b: 1.0, a: 0.8}
 }"
 ```
 
 **Parameters:**
-- `file_path`: Absolute path to .stl or .obj mesh file
-- `dimensions`: Scale factors for x, y, z axes (1.0 = original size)
+- `mesh_file_path`: Absolute path to `.stl` or `.obj` mesh file
+- `dimensions`: Scale factors for x, y, z axes (1.0 = original size, 0.01 = 1/100th scale)
 
-**Important:** Meshes are converted to bounding boxes for collision checking. For accurate collision, the mesh bounding box should be tight.
+**Important:** Meshes are voxelized into oriented bounding boxes (OBBs) for the BLOX collision checker. Set the OBB cache large enough before adding the mesh (see [Tutorial 3: Collision Cache](../concepts/parameters.md#collision-cache-parameters)).
 
 ---
 
@@ -172,7 +172,7 @@ ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject \
 **Response:**
 ```yaml
 success: true
-message: "Object 'ball' removed successfully"
+message: "Object 'ball' removed successfully (sphere)"
 ```
 
 ### Remove All Objects
@@ -184,7 +184,7 @@ ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
 **Response:**
 ```yaml
 success: true
-message: "All objects cleared"
+message: "All objects removed successfully (0 cuboids, 0 meshes)"
 ```
 
 ---
@@ -353,48 +353,29 @@ ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/Trajector
 
 ---
 
-## Using with IK Node
+## Using IK with Obstacles
 
-The same object management works with the IK node:
+The IK solver on the unified planner shares the same obstacle world as the trajectory planners. Any object added via `add_object` is automatically visible to IK — no separate setup needed.
 
 ```bash
-# Start IK node
-ros2 run curobo_ros curobo_ik
+# Add an obstacle
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{name: 'obstacle', type: 0, dimensions: {x: 0.2, y: 0.2, z: 0.2}, \
+    pose: {position: {x: 0.5, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
 
-# Add obstacle
-ros2 service call /curobo_ik/add_object curobo_msgs/srv/AddObject \
-  "{name: 'obstacle', type: 0, ...}"
+# Warmup IK (required once)
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
 
-# Solve IK (will find collision-free solution)
-ros2 service call /curobo_ik/ik_pose curobo_msgs/srv/Ik \
-  "{target_pose: {position: {x: 0.5, y: 0, z: 0.3}, ...}}"
+# Solve IK — will return failure if target collides with the obstacle
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
+  "{pose: {position: {x: 0.5, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
 ```
+
+See [Tutorial 6: IK/FK Services](06-ik-fk-services.md) for the full IK workflow.
 
 ---
 
-## Service Reference
-
-### Services Available
-
-All services work for both `/unified_planner` and `/curobo_ik` nodes:
-
-| Service Name | Service Type | Description |
-|-------------|-------------|-------------|
-| `<node_name>/add_object` | [`AddObject`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/AddObject.srv) | Adds a new object to the scene |
-| `<node_name>/remove_object` | [`RemoveObject`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/RemoveObject.srv) | Removes a specific object |
-| `<node_name>/get_obstacles` | `Trigger` | Lists all obstacles |
-| `<node_name>/remove_all_objects` | `Trigger` | Clears all objects |
-| `<node_name>/get_voxel_grid` | [`GetVoxelGrid`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/GetVoxelGrid.srv) | Gets voxelized environment |
-| `<node_name>/get_collision_distance` | [`GetCollisionDistance`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/GetCollisionDistance.srv) | Gets distances to obstacles |
-| `<node_name>/set_link_collision` | [`SetLinkCollision`](https://github.com/Lab-CORO/curobo_msgs/blob/main/srv/SetLinkCollision.srv) | Enable/disable collision spheres for specific links |
-| `<node_name>/set_collision_spheres_enabled` | `std_srvs/SetBool` | Enable/disable collision sphere visualization publishing |
-
-### Topics
-
-| Topic Name | Message Type | Description |
-|-------------|-------------|-------------|
-| `<node_name>/collision_spheres` | `MarkerArray` | Robot collision spheres (visualization) |
-| `/visualization_marker_voxel` | `MarkerArray` | Voxel grid (when using viz_voxel_grid) |
+For the complete service and topic reference, see [ROS Interfaces — Collision Management](../concepts/ros-interfaces.md#collision-management-services).
 
 ---
 
@@ -449,7 +430,7 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 
 ## Next Steps
 
-- **[Dynamic Strategy Switching](04-strategy-switching.md)** - Control different robot types
-- **[Camera Integration](5_camera_pointcloud.md)** - Detect obstacles automatically with cameras
+- **[Robot Execution](04-robot-execution.md)** - Connect to real robot or emulator
+- **[Camera Integration](07-pointcloud-detection.md)** - Detect obstacles automatically with cameras
 - **[Parameters Guide](../concepts/parameters.md)** - Tune collision checking parameters
 

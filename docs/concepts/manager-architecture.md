@@ -33,8 +33,9 @@ classDiagram
         +tensor_args
         +robot_context
         +config_wrapper_motion
-        +shared_world_cfg
         +planner_manager
+        +ik_services
+        +fk_services
         +motion_gen
         +generate_trajectory()
         +set_planner()
@@ -134,6 +135,18 @@ classDiagram
         +execute()
     }
 
+    class IKServices {
+        +warmup_ik()
+        +ik()
+        +ik_batch()
+        +update_world()
+    }
+
+    class FKServices {
+        +warmup_fk()
+        +fk()
+    }
+
     class JointCommandStrategy {
         <<abstract>>
         +send_trajectory()
@@ -153,6 +166,16 @@ classDiagram
     }
 
     class MPCPlanner {
+        +plan()
+        +execute()
+    }
+
+    class MultiPointPlanner {
+        +plan()
+        +execute()
+    }
+
+    class JointSpacePlanner {
         +plan()
         +execute()
     }
@@ -199,9 +222,16 @@ classDiagram
     MotionGen --> ObstacleManager : reads world_cfg
     PlannerManager --> ObstacleManager : reads world_cfg
 
+    UnifiedPlannerNode --> IKServices : contains
+    UnifiedPlannerNode --> FKServices : contains
+
     PlannerManager --> TrajectoryPlanner : creates
     TrajectoryPlanner <|-- ClassicPlanner : implements
     TrajectoryPlanner <|-- MPCPlanner : implements
+    TrajectoryPlanner <|-- MultiPointPlanner : implements
+    TrajectoryPlanner <|-- JointSpacePlanner : implements
+
+    IKServices --> ObstacleManager : shares world
 
     RobotContext --> JointCommandStrategy : uses
     JointCommandStrategy <|-- DoosanControl : implements
@@ -347,8 +377,11 @@ When you add a mesh object:
 ```bash
 # Add mesh (stored in both mesh and cuboid lists)
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'part', primitive_type: 4, mesh_file_path: '/path/to/mesh.stl', \
+  "{name: 'part', type: 4, mesh_file_path: '/path/to/mesh.stl', \
     pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
+
+# Response message shows world state counts:
+# "Object 'part' added successfully (N cuboids, 1 mesh in world)"
 
 # Mesh internally stored as:
 # - world_cfg.mesh: ["part"] (original mesh)
@@ -369,7 +402,7 @@ ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject \
 ```bash
 # 1. Add obstacle
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'table', primitive_type: 0, dims: [1.0, 0.8, 0.05], \
+  "{name: 'table', type: 0, dimensions: {x: 1.0, y: 0.8, z: 0.05}, \
     pose: {position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}"
 
 # 2. Verify obstacle added
@@ -472,7 +505,7 @@ Response returned to client
 
 ```bash
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'box', primitive_type: 0, dims: [0.2, 0.2, 0.2], \
+  "{name: 'box', type: 0, dimensions: {x: 0.2, y: 0.2, z: 0.2}, \
     pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
 ```
 
@@ -841,11 +874,11 @@ Response: success=true
 ```bash
 # Add table
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'table', primitive_type: 0, dims: [1.2, 0.8, 0.05], \
+  "{name: 'table', type: 0, dimensions: {x: 1.2, y: 0.8, z: 0.05}, \
     pose: {position: {x: 0.6, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}"
 
 # Plan trajectory (automatically avoids table)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/GenerateTrajectory \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{goal_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
 ```
 
@@ -869,7 +902,7 @@ Response: trajectory waypoints + success status
 **CLI Example:**
 ```bash
 # Plan trajectory to goal pose
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/GenerateTrajectory \
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{goal_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
 ```
 

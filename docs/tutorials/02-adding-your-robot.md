@@ -1,4 +1,4 @@
-# Tutorial: Adding Your Robot
+# Tutorial 2: Adding Your Robot
 
 This tutorial shows you how to integrate your own robot with curobo_ros. We'll use the **Doosan M1013** as a complete example, walking through:
 
@@ -174,8 +174,9 @@ ros2 topic echo /unified_planner/collision_spheres --once
 
 # Shows MarkerArray with robot collision geometry
 
-# 4. Test IK for reachability
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+# 4. Test IK for reachability (warmup first)
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
   "{pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
 
 # Response shows if pose is reachable and joint solution
@@ -201,23 +202,24 @@ ros2 topic echo /rosout | grep unified_planner
 Ensure joint limits in your config match the URDF and are safe:
 
 ```bash
-# 1. Test each joint individually
-ros2 service call /unified_planner/fk_batch_joints curobo_msgs/srv/Fk \
-  "{joint_state: {position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+# 0. Warmup FK first (required before any fk call)
+ros2 service call /unified_planner/warmup_fk curobo_msgs/srv/WarmupFK "{batch_size: 1}"
 
-# Returns end-effector pose for given joint configuration
+# 1. Test home position (all zeros)
+ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
+  "{joint_states: [{position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}]}"
 
-# 2. Test near joint limit (example for joint 1 near +3.14)
-ros2 service call /unified_planner/fk_batch_joints curobo_msgs/srv/Fk \
-  "{joint_state: {position: [3.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+# Returns end-effector pose — verify it matches expected home pose
 
-# Should succeed if within limits
+# 2. Test near a joint limit (example: joint 1 near +3.14 rad)
+ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
+  "{joint_states: [{position: [3.0, 0.0, 0.0, 0.0, 0.0, 0.0]}]}"
 
-# 3. Test beyond joint limit (should fail)
-ros2 service call /unified_planner/fk_batch_joints curobo_msgs/srv/Fk \
-  "{joint_state: {position: [4.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+# Should return a valid pose if within limits
 
-# Should return error or clamp to limit
+# 3. Test a known configuration from your robot documentation
+ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
+  "{joint_states: [{position: [0.0, -0.785, 1.57, 0.0, 1.57, 0.0]}]}"
 ```
 
 ---
@@ -858,7 +860,7 @@ position_limits: [[-3.5, 3.5]]  # ERROR - exceeds URDF
 ## Next Steps
 
 - **[Managing Obstacles](03-collision-objects.md)** - Add obstacles to avoid collisions
-- **[Dynamic Strategy Switching](04-strategy-switching.md)** - Switch between robot control modes
+- **[Robot Execution](04-robot-execution.md)** - Connect to real robot or emulator
 - **[Parameters Guide](../concepts/parameters.md)** - Tune performance parameters
 
 ---

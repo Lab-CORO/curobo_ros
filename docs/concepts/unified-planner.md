@@ -1,739 +1,236 @@
 # Unified Planner Architecture
 
-> **📋 Implementation Status**: This document describes the planned unified planner architecture. The design is complete and serves as a specification for ongoing implementation. The Classic planner (open-loop) is currently functional using the existing MotionGen integration. MPC, Batch, and Constrained planners are planned for future releases.
-
-The **Unified Planner** is a flexible, extensible architecture for trajectory planning in curobo_ros that supports multiple planning algorithms through a unified interface.
+The **Unified Planner** is the central node of curobo_ros. It exposes a single ROS 2 node (`unified_planner`) that supports multiple planning algorithms, kinematics services, and obstacle management through a unified interface.
 
 ---
- 
+
 ## Overview
- 
-The unified planner architecture uses the **Strategy Pattern** to encapsulate different trajectory planning algorithms, making it easy to switch between planning methods at runtime without modifying your code.
- 
+
+The unified planner uses the **Strategy Pattern** to encapsulate different trajectory planning algorithms, making it easy to switch between planning methods at runtime without modifying client code.
+
 ### Available Planners
- 
-| Planner | Mode | Description | Use Case |
-|---------|------|-------------|----------|
-| **ClassicPlanner** | Open-loop | Complete trajectory generation then execution | Simple navigation, pre-computed paths |
-| **MPCPlanner** | Closed-loop | Real-time recalculation at each step | Reactive control, dynamic environments |
-| **BatchPlanner** | Open-loop | Generate multiple alternative trajectories | Multi-task optimization |
-| **ConstrainedPlanner** | Open-loop | Planning with custom constraints | Specific constraints (orientation, velocity) |
- 
+
+| Planner | Enum ID | Mode | Description | Use Case |
+|---------|---------|------|-------------|----------|
+| **Classic** | 0 | Open-loop | Single-shot trajectory generation | Static environments, pre-computed paths |
+| **MPC** | 1 | Closed-loop | Real-time replanning at each step | Dynamic environments, moving obstacles |
+| **Multi-Point** | 4 | Open-loop | Waypoint-based trajectory generation | Pick-and-place, inspection paths |
+| **Joint Space** | 5 | Open-loop | Planning in joint space | Direct joint configuration targets |
+
+> **Note**: Constrained planning (hold orientation, lock axes) is available in Classic and Multi-Point planners via the `trajectory_constraints` field — it does not require a separate planner type.
+
 ---
- 
+
 ## Architecture
 
-### Class Hierarchy
+### Node Structure
 
 ```
-TrajectoryPlanner (Abstract Base Class)
-├── plan(start, goal, config) → PlannerResult
-├── execute(robot_context, goal_handle) → bool
-└── get_execution_mode() → ExecutionMode
-
-├── SinglePlanner (MotionGen-based planners) ⭐ Shared warmup
-│   ├── ClassicPlanner (single-shot planning)
-│   ├── MultiPointPlanner (waypoint planning)
-│   ├── JointSpacePlanner (joint space planning) [Future]
-│   └── GraspPlanner (grasp planning) [Future]
+UnifiedPlannerNode  (/unified_planner)
 │
-└── MPCPlanner (MpcSolver-based)
-    ├── Mode: CLOSED_LOOP
-    └── Execution: Iterative real-time loop
+├── Trajectory Planners (Strategy Pattern)
+│   ├── ClassicPlanner       — MotionGen, open-loop
+│   ├── MPCPlanner           — MpcSolver, closed-loop
+│   ├── MultiPointPlanner    — MotionGen, waypoints
+│   └── JointSpacePlanner    — MotionGen, joint targets
+│
+├── Kinematics Services (lazy warmup)
+│   ├── IKServices           — IkSolver, shares obstacles
+│   └── FKServices           — CudaRobotModel, geometry only
+│
+└── Shared Infrastructure
+    ├── ObstacleManager      — single source of truth for world
+    ├── RobotContext         — robot strategy (real/emulator/ghost)
+    └── ConfigWrapperMotion  — robot config, camera, parameters
 ```
 
-### SinglePlanner: Shared MotionGen Architecture
+### Planner Class Hierarchy
 
-**SinglePlanner** is an abstract intermediate class for all planners that use cuRobo's MotionGen as their underlying solver. It provides infrastructure for efficient planner management:
-
-#### Key Design Decisions
-
-1. **Shared MotionGen Instance**
-   - All `SinglePlanner` children share a **single** MotionGen instance (class-level variable)
-   - Warmup is performed **only once** by `ConfigWrapperMotion`
-   - Switching between SinglePlanner-based planners is **instantaneous** (no re-warmup)
-   - Saves significant GPU memory and initialization time
-
-2. **Separation of Concerns**
-   - `SinglePlanner` handles: execution logic, cancellation, feedback, trajectory storage
-   - Child classes implement: `_plan_trajectory()` (how to plan) and optionally `_process_trajectory()` (post-processing)
-
-3. **Open-Loop Execution**
-   - All SinglePlanner children use open-loop execution
-   - Trajectory fully generated in `plan()`, then executed in `execute()`
-   - Different from `MPCPlanner` which uses closed-loop
-
-#### Architecture Comparison
-
-| Aspect | SinglePlanner Children | MPCPlanner |
-|--------|----------------------|------------|
-| **Solver** | MotionGen (shared) | MpcSolver (independent) |
-| **Warmup** | Once for all children | Independent |
-| **Execution** | Open-loop | Closed-loop |
-| **Switching Cost** | Instant | Requires MPC setup |
-| **Memory** | Single instance | Separate instance |
-
-#### Example: ClassicPlanner
-
-```python
-class ClassicPlanner(SinglePlanner):
-    """Simple single-goal planner using MotionGen."""
-
-    def get_planner_name(self) -> str:
-        return "Classic Motion Generation"
-
-    def _plan_trajectory(self, start_state, goal_pose, config):
-        # Only implement HOW to plan - everything else handled by SinglePlanner
-        return self.motion_gen.plan_single(
-            start_state,
-            goal_pose,
-            MotionGenPlanConfig(
-                max_attempts=config.get('max_attempts', 1),
-                timeout=config.get('timeout', 5.0),
-                time_dilation_factor=config.get('time_dilation_factor', 0.5),
-            )
-        )
-
-    # execute(), cancel(), plan() all inherited from SinglePlanner!
 ```
- 
-### Execution Modes
- 
-- **OPEN_LOOP**: Generate complete trajectory, then execute
-  - More predictable and reproducible
-  - Efficient for static environments
-  - Requires replanning if disturbed
- 
-- **CLOSED_LOOP**: Continuous replanning during execution
-  - Reactive to perturbations
-  - Adaptive in real-time
-  - Handles dynamic environments
- 
+TrajectoryPlanner (abstract)
+│
+├── SinglePlanner (shared MotionGen instance)
+│   ├── ClassicPlanner
+│   ├── MultiPointPlanner
+│   └── JointSpacePlanner
+│
+└── MPCPlanner (independent MpcSolver)
+```
+
+**SinglePlanner** is an intermediate abstract class for all planners that use cuRobo's MotionGen. All `SinglePlanner` children share a **single** MotionGen instance — warmup is performed only once, and switching between them is instantaneous with no re-warmup cost.
+
+**MPCPlanner** uses a separate `MpcSolver` instance. It can optionally share the world collision checker with MotionGen to avoid duplicating obstacle data in VRAM.
+
 ---
- 
-## Using the Unified Planner
- 
-### 1. ROS 2 Command Line
- 
+
+## Planner Details
+
+### Classic Planner
+
+Generates a complete collision-free trajectory from start to goal in one shot, then executes it open-loop.
+
+**Strengths:** Predictable, reproducible, low GPU overhead during execution.
+**Limitations:** No reaction to environment changes mid-execution.
+**Best for:** Static, well-defined environments.
+
+Supports optional trajectory constraints (hold orientation, lock axes) via the `trajectory_constraints` field.
+
+---
+
+### MPC Planner
+
+Continuously replans in a closed-loop at high frequency using cuRobo's Model Predictive Control solver.
+
+**Strengths:** Reactive to perturbations and dynamic obstacles, high-precision tracking.
+**Limitations:** Sustained GPU usage, less predictable completion time.
+**Best for:** Dynamic environments, moving targets, disturbance rejection.
+
+Convergence is declared when the end-effector reaches within `convergence_threshold` (default 0.01m) of the target.
+
+---
+
+### Multi-Point Planner
+
+Plans a trajectory through a sequence of Cartesian waypoints in a single optimized pass.
+
+**Strengths:** Efficient multi-waypoint tasks without chaining multiple service calls.
+**Limitations:** All waypoints must be reachable; failure at one invalidates the whole plan.
+**Best for:** Pick-and-place sequences, inspection paths, structured workflows.
+
+---
+
+### Joint Space Planner
+
+Plans a trajectory to a target joint configuration instead of a Cartesian pose.
+
+**Strengths:** Precise joint-level control, avoids IK ambiguity.
+**Best for:** Moving to a known home configuration, calibration poses.
+
+---
+
+## IK and FK Services
+
+IK and FK are **services on the same node** as the trajectory planner. They are **not initialized at startup** — each solver is created only when the corresponding warmup service is called (lazy initialization).
+
+### Design Rationale
+
+| | IKServices | FKServices |
+|---|---|---|
+| Solver | `IkSolver` (cuRobo) | `CudaRobotModel` (cuRobo) |
+| Obstacle dependency | **Yes** — shares `ObstacleManager` | **No** — geometry only |
+| World updates | Receives obstacle changes automatically | Not needed |
+| Warmup service | `warmup_ik` (with `batch_size`) | `warmup_fk` (with `batch_size`) |
+
+Because IK uses collision avoidance, it shares the same obstacle world as the trajectory planners. When obstacles are added or removed, the IK solver is updated automatically — no manual synchronization needed.
+
+FK is purely geometric (forward kinematics has no collision component), so it depends only on the robot's kinematic model.
+
+### Warmup and Batch Size
+
+The IK solver pre-allocates GPU memory for a fixed batch size. If you call `ik_batch` with a different number of poses than the warmup batch size, the solver reinitializes automatically (the first call will be slower). For best performance, warmup with the batch size you intend to use.
+
+FK warmup primes the CUDA kernels with the expected batch size but does not require reinitialization when the batch size changes.
+
+See [ROS Interfaces — Kinematics Services](ros-interfaces.md#kinematics-services) for full service specifications and CLI examples.
+
+---
+
+## Runtime Planner Switching
+
+Planners can be switched at runtime without restarting the node:
+
 ```bash
-# Launch the unified planner node
-ros2 run curobo_ros curobo_trajectory_planner
- 
-# List available planners
-ros2 service call /unified_planner/list_planners std_srvs/srv/Trigger
- 
-# Switch planners (using enum type-safe values)
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 0}"  # CLASSIC
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"  # MPC
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 2}"  # BATCH
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 3}"  # CONSTRAINED
- 
-# Generate a trajectory
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "..."
- 
-# Execute trajectory
-ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}"
-```
- 
-### 2. Python API
- 
-```python
-from curobo_ros.planners import PlannerFactory, PlannerManager
- 
-# Create a planner directly
-planner = PlannerFactory.create_planner('classic', node, config_wrapper)
- 
-# Or use the manager to handle multiple planners
-manager = PlannerManager(node, config_wrapper)
-manager.set_current_planner('classic')
- 
-# Plan
-result = planner.plan(start_state, goal_pose, config)
- 
-if result.success:
-    # Execute
-    success = planner.execute(robot_context, goal_handle)
-```
- 
-### 3. Launch File Configuration
- 
-You can specify the default planner in your launch file:
- 
-```python
-from launch import LaunchDescription
-from launch_ros.actions import Node
- 
-def generate_launch_description():
-    return LaunchDescription([
-        Node(
-            package='curobo_ros',
-            executable='unified_planner',
-            parameters=[{
-                'default_planner': 'classic',  # or 'mpc', 'batch', 'constrained'
-                'robot_type': 'doosan_m1013',
-                'time_dilation_factor': 0.5
-            }]
-        )
-    ])
-```
- 
----
- 
-## Planner Comparison
- 
-### ClassicPlanner (Open-loop)
- 
-**Advantages:**
-- ✅ Complete optimized trajectory
-- ✅ Predictable and reproducible
-- ✅ Efficient for static environments
-- ✅ Lower computational cost
- 
-**Disadvantages:**
-- ❌ No reaction to changes
-- ❌ Requires replanning if disturbed
-- ❌ Not suitable for dynamic obstacles
- 
-**Configuration:**
-```python
-config = {
-    'max_attempts': 1,
-    'timeout': 5.0,
-    'time_dilation_factor': 0.5,
-    'enable_graph': False,
-    'use_cuda_graph': True
-}
-```
- 
-**When to use:**
-- Static, predictable environments
-- Pre-computed trajectories
-- Maximum efficiency needed
-- Reproducible results required
- 
----
- 
-### MPCPlanner (Closed-loop)
- 
-**Advantages:**
-- ✅ Reactive to perturbations
-- ✅ Real-time adaptive
-- ✅ Handles dynamic environments
-- ✅ Better tracking performance
- 
-**Disadvantages:**
-- ❌ Higher computational cost
-- ❌ Requires GPU for real-time
-- ❌ Less predictable
-- ❌ May oscillate near goal
- 
-**Configuration:**
-```python
-config = {
-    'convergence_threshold': 0.01,  # meters
-    'max_iterations': 1000,
-    'horizon': 10,  # MPC horizon
-    'control_frequency': 100  # Hz
-}
-```
- 
-**When to use:**
-- Dynamic, unpredictable environments
-- Real-time obstacle avoidance
-- High-precision tracking needed
-- Disturbance rejection required
- 
----
- 
-### BatchPlanner (Open-loop)
- 
-**Purpose:** Generate multiple alternative trajectories simultaneously for task optimization or failure recovery.
- 
-**Advantages:**
-- ✅ Multiple solutions at once
-- ✅ Can select best trajectory
-- ✅ Failure recovery options
- 
-**When to use:**
-- Need backup plans
-- Multi-task optimization
-- Exploring solution space
- 
----
- 
-### ConstrainedPlanner (Open-loop)
- 
-**Purpose:** Planning with custom constraints beyond standard collision avoidance.
- 
-**Advantages:**
-- ✅ Custom constraint support
-- ✅ Task-specific requirements
-- ✅ Orientation/velocity constraints
- 
-**When to use:**
-- Specific end-effector orientation required
-- Velocity/acceleration limits
-- Custom geometric constraints
- 
----
- 
-## Factory Pattern
- 
-The `PlannerFactory` centralizes planner creation:
- 
-```python
-class PlannerFactory:
-    @staticmethod
-    def create_planner(planner_type: str, node, config_wrapper):
-        """Create a planner instance"""
- 
-    @staticmethod
-    def register_planner(name: str, planner_class):
-        """Register a custom planner"""
- 
-    @staticmethod
-    def list_planners() -> list:
-        """List all registered planners"""
-```
- 
-### Creating Custom Planners
+# Switch to MPC
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 
-#### Option 1: MotionGen-based Planner (Recommended)
+# Switch back to Classic
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 0}"
 
-If your planner uses cuRobo's MotionGen, **inherit from `SinglePlanner`** to automatically get warmup sharing:
-
-```python
-from curobo_ros.planners import SinglePlanner
-from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig, MotionGenResult
-
-class MyMotionGenPlanner(SinglePlanner):
-    """Benefits: warmup sharing, execution/cancel/feedback already implemented"""
-
-    def get_planner_name(self) -> str:
-        return "My MotionGen Planner"
-
-    def _plan_trajectory(self, start_state, goal_pose, config) -> MotionGenResult:
-        """Define HOW to generate the trajectory - everything else is inherited"""
-        return self.motion_gen.plan_single(
-            start_state,
-            goal_pose,
-            MotionGenPlanConfig(
-                max_attempts=config.get('max_attempts', 1),
-                timeout=config.get('timeout', 5.0),
-            )
-        )
-
-    # Optional: override to post-process trajectory
-    def _process_trajectory(self, trajectory, config):
-        # Add custom modifications here
-        return trajectory
-
-# No need to call set_motion_gen() - already shared!
-PlannerFactory.register_planner('my_custom', MyMotionGenPlanner)
+# Query available planners and their enum IDs
+ros2 service call /unified_planner/get_planners curobo_msgs/srv/GetPlanners
 ```
 
-**When to use SinglePlanner:**
-- ✅ Uses cuRobo MotionGen
-- ✅ Wants automatic warmup sharing
-- ✅ Open-loop execution
-- ✅ Examples: ClassicPlanner, MultiPointPlanner
+Switching between Classic / Multi-Point / Joint Space is **instantaneous** (shared MotionGen). Switching to or from MPC requires its solver to be initialized (lazy warmup on first switch, ~5–15s).
 
 ---
 
-#### Option 2: Fully Custom Planner
+## Execution Modes
 
-If not using MotionGen, inherit from `TrajectoryPlanner`:
+**Open-loop** (Classic, Multi-Point, Joint Space):
+- Full trajectory computed during `generate_trajectory`, then sent to robot via `execute_trajectory`
+- Predictable and reproducible
+- Requires replanning if environment changes mid-execution
 
-```python
-from curobo_ros.planners import TrajectoryPlanner, ExecutionMode, PlannerResult
+**Closed-loop** (MPC):
+- No pre-computed trajectory — the solver computes the next command at each control cycle
+- Reactive to real-time changes
+- Execution continues until convergence or cancellation via the `execute_trajectory` action
 
-class MyCustomPlanner(TrajectoryPlanner):
-    def _get_execution_mode(self) -> ExecutionMode:
-        return ExecutionMode.OPEN_LOOP
-
-    def get_planner_name(self) -> str:
-        return "My Custom Planner"
-
-    def plan(self, start_state, goal_pose, config, robot_context=None) -> PlannerResult:
-        # Your custom planning algorithm
-        trajectory = my_algorithm(start_state, goal_pose)
-        return PlannerResult(success=True, trajectory=trajectory)
-
-    def execute(self, robot_context, goal_handle=None) -> bool:
-        # Your execution logic
-        robot_context.set_command(...)
-        return True
-
-PlannerFactory.register_planner('custom', MyCustomPlanner)
-```
-
-**When to use TrajectoryPlanner directly:**
-- ✅ Uses different solver (not MotionGen)
-- ✅ Needs full control
-- ✅ Example: MPCPlanner uses MpcSolver
- 
 ---
- 
-## Planner Manager
- 
-The `PlannerManager` manages multiple planner instances:
- 
-```python
-class PlannerManager:
-    def __init__(self, node, config_wrapper):
-        """Initialize with available planners"""
- 
-    def set_current_planner(self, planner_name: str) -> bool:
-        """Switch to a different planner"""
- 
-    def get_current_planner(self) -> TrajectoryPlanner:
-        """Get the active planner"""
- 
-    def list_available_planners(self) -> list:
-        """List all available planners"""
-```
- 
-### Example Usage
- 
-```python
-class MyNode(Node):
-    def __init__(self):
-        super().__init__('my_node')
- 
-        # Initialize planner manager
-        self.planner_manager = PlannerManager(self, config_wrapper)
-        self.planner_manager.set_current_planner('classic')
- 
-        # Create service to switch planners
-        self.create_service(
-            SetPlanner,
-            'set_planner',
-            self.set_planner_callback
-        )
- 
-    def set_planner_callback(self, request, response):
-        success = self.planner_manager.set_current_planner(request.planner_type)
-        response.success = success
-        return response
- 
-    def plan_and_execute(self, goal):
-        planner = self.planner_manager.get_current_planner()
-        result = planner.plan(start, goal, config)
-        if result.success:
-            planner.execute(robot_context, goal_handle)
-```
- 
+
+## Services and Actions Summary
+
+| Service / Action | Type | Description |
+|-----------------|------|-------------|
+| `generate_trajectory` | `TrajectoryGeneration` | Plan with current planner |
+| `execute_trajectory` (action) | `SendTrajectory` | Execute planned trajectory |
+| `set_planner` | `SetPlanner` | Switch active planner |
+| `get_planners` | `GetPlanners` | List available planners with enum IDs |
+| `warmup_ik` | `WarmupIK` | Initialize IK solver |
+| `warmup_fk` | `WarmupFK` | Initialize FK model |
+| `ik` | `Ik` | Single IK query |
+| `ik_batch` | `IkBatch` | Batch IK query |
+| `fk` | `Fk` | Batch FK query |
+
 ---
- 
-## Integration with Existing Code
- 
-### Migrating from Old API
- 
-**Before:**
-```python
-# Old trajectory generation
-result = self.motion_gen.plan_single(start, goal, config)
-traj = result.get_interpolated_plan()
-robot_context.set_command(traj.joint_names, ...)
-robot_context.send_trajectory()
-```
- 
-**After:**
-```python
-# New unified planner
-planner = PlannerFactory.create_planner('classic', self, config_wrapper)
-planner.set_motion_gen(self.motion_gen)
-result = planner.plan(start, goal, config)
-if result.success:
-    planner.execute(robot_context, goal_handle)
-```
- 
-### Supporting Multiple Planners
- 
-```python
-class TrajectoryGeneratorNode(Node):
-    def __init__(self):
-        super().__init__('trajectory_generator')
- 
-        # Initialize planner manager
-        self.planner_manager = PlannerManager(self, config_wrapper)
- 
-        # Set default planner
-        default_planner = self.declare_parameter('default_planner', 'classic').value
-        self.planner_manager.set_current_planner(default_planner)
- 
-    def generate_trajectory_callback(self, request, response):
-        # Get current planner
-        planner = self.planner_manager.get_current_planner()
- 
-        # Plan and execute
-        result = planner.plan(start, goal, config)
-        if result.success:
-            success = planner.execute(robot_context, goal_handle)
-            response.success = success
- 
-        return response
-```
- 
----
- 
+
 ## File Structure
- 
+
 ```
-curobo_ros/planners/
-├── __init__.py                  # Public exports
-├── trajectory_planner.py        # Abstract base class
-├── classic_planner.py           # Classic implementation
-├── mpc_planner.py               # MPC implementation
-├── batch_planner.py             # Batch implementation (future)
-├── constrained_planner.py       # Constrained implementation (future)
-├── planner_factory.py           # Factory and Manager
-└── README.md                    # Implementation documentation
+curobo_ros/
+├── core/
+│   ├── unified_planner_node.py   # Main node
+│   ├── ik_services.py            # IK lazy services
+│   ├── fk_services.py            # FK lazy services
+│   ├── config_wrapper_motion.py  # MotionGen config
+│   └── obstacle_manager.py       # World state
+│
+└── planners/
+    ├── trajectory_planner.py     # Abstract base class
+    ├── single_planner.py         # Shared MotionGen base
+    ├── classic_planner.py
+    ├── mpc_planner.py
+    ├── multi_point_planner.py
+    ├── joint_space_planner.py
+    └── planner_factory.py        # Factory and Manager
 ```
- 
+
 ---
- 
+
+## Performance
+
+| Planner | Planning time | GPU during execution | Notes |
+|---------|--------------|---------------------|-------|
+| Classic | 10–100ms | Idle | Best for static environments |
+| Multi-Point | 20–200ms | Idle | Scales with number of waypoints |
+| Joint Space | 10–100ms | Idle | Fastest when goal is in joint space |
+| MPC | 1–10ms/iter | Sustained | Continuous replanning loop |
+
+---
+
 ## Design Patterns
- 
-The unified planner architecture uses several design patterns:
- 
-1. **Strategy Pattern**: Encapsulates different planning algorithms
-   - Makes algorithms interchangeable
-   - Easy to add new planners
-   - Client code doesn't need to change
- 
-2. **Factory Pattern**: Centralized planner creation
-   - Consistent planner instantiation
-   - Easy registration of custom planners
-   - Decouples client from concrete classes
- 
-3. **Template Method**: Common methods in base class
-   - Defines skeleton algorithm
-   - Subclasses implement specific steps
-   - Ensures consistent interface
- 
----
- 
-## ROS 2 Services and Actions
- 
-### Services
- 
-| Service | Type | Description |
-|---------|------|-------------|
-| `~/set_planner` | `curobo_msgs/srv/SetPlanner` | Switch to a different planner |
-| `~/list_planners` | `std_srvs/srv/Trigger` | List available planners |
-| `~/generate_trajectory` | `curobo_msgs/srv/TrajectoryGeneration` | Generate trajectory with current planner |
- 
-### Actions
- 
-| Action | Type | Description |
-|--------|------|-------------|
-| `~/execute_trajectory` | `curobo_msgs/action/SendTrajectory` | Execute generated trajectory |
- 
----
- 
-## Performance Considerations
- 
-### ClassicPlanner
-- **Planning time**: 10-100ms (depends on complexity)
-- **Execution**: Single trajectory send
-- **GPU usage**: Burst during planning
-- **Best for**: Static environments, predictable paths
- 
-### MPCPlanner
-- **Planning time**: 1-10ms per iteration
-- **Execution**: Continuous replanning loop
-- **GPU usage**: Sustained during execution
-- **Best for**: Dynamic environments, real-time adaptation
- 
-### Memory Usage
-- Each planner instance: ~100-500MB GPU memory
-- Planner manager overhead: Minimal (<10MB)
-- Recommended: Pre-warm planners at startup
- 
----
- 
-## Troubleshooting
- 
-### Planner Not Found
-```
-Error: Planner 'mpc' not found
-```
-**Solution**: Check planner is registered in factory. List available planners:
-```bash
-ros2 service call /unified_planner/list_planners std_srvs/srv/Trigger
-```
- 
-### MPC Not Converging
-```
-Warning: MPC failed to converge after 1000 iterations
-```
-**Solution**:
-- Increase `max_iterations`
-- Decrease `convergence_threshold`
-- Check goal is reachable
-- Verify no collision in path
- 
-### GPU Out of Memory
-```
-RuntimeError: CUDA out of memory
-```
-**Solution**:
-- Use only one planner at a time
-- Reduce batch size for BatchPlanner
-- Decrease MPC horizon length
- 
----
 
-## Implementation Roadmap
-
-### Current Status (Phase 1: ✅ Complete)
-
-**What's Working:**
-- ✅ **Classic Planner** - Fully functional using existing `MotionGen` integration
-- ✅ **Robot Strategy Pattern** - Dynamic switching between real/emulator/visualization modes
-- ✅ **Configuration Framework** - `ConfigWrapper` and parameter management
-- ✅ **Collision Detection** - Voxel-based BLOX integration with camera support
-- ✅ **ROS 2 Integration** - Services, actions, and topics for trajectory generation
-
-**Current Limitations:**
-- Only Classic (open-loop) planner is implemented
-- No runtime planner switching (UnifiedPlannerNode not yet implemented)
-- MPC, Batch, and Constrained planners exist as specifications only
-
-### Phase 2: Unified Planner Framework (🚧 In Progress)
-
-**To Implement:**
-```
-curobo_ros/planners/
-├── __init__.py
-├── base_planner.py           # TrajectoryPlanner abstract base class
-├── planner_factory.py        # PlannerFactory for creating planners
-├── planner_manager.py        # PlannerManager for runtime switching
-├── classic_planner.py        # Wrapper around existing MotionGen
-└── execution_modes.py        # ExecutionMode enum
-```
-
-**Services to Add:**
-- `~/set_planner` - Switch between planners at runtime
-- `~/list_planners` - Query available planners
-- `~/get_current_planner` - Get active planner name
-
-**Key Implementation Tasks:**
-1. Create `TrajectoryPlanner` abstract base class with `plan()` and `execute()` methods
-2. Implement `PlannerFactory` with registration system
-3. Build `PlannerManager` for runtime switching
-4. Wrap existing trajectory generation in `ClassicPlanner`
-5. Create `UnifiedPlannerNode` to expose new services
-6. Add planner type enum to `curobo_msgs`
-
-### Phase 3: MPC Planner (📋 Planned)
-
-**To Implement:**
-```python
-curobo_ros/planners/mpc_planner.py
-```
-
-**Key Features:**
-- Closed-loop control with continuous replanning
-- Integration with cuRobo's MPC solver
-- Configurable horizon, frequency, convergence thresholds
-- Real-time obstacle adaptation
-- Performance monitoring via `/mpc_stats` topic
-
-**Dependencies:**
-- cuRobo MPC solver API
-- Real-time control loop framework
-- GPU resource management for sustained computation
-
-### Phase 4: Batch & Constrained Planners (📋 Future)
-
-**Batch Planner:**
-- Generate multiple alternative trajectories
-- Parallel GPU computation
-- Cost-based trajectory selection
-
-**Constrained Planner:**
-- Custom constraint specification API
-- Orientation constraints
-- Velocity/acceleration limits
-- Task-space constraints
-
-### Developer Notes
-
-**For Contributors Implementing Phase 2:**
-
-1. **Start with base_planner.py**:
-   ```python
-   from abc import ABC, abstractmethod
-   from enum import Enum
-
-   class ExecutionMode(Enum):
-       OPEN_LOOP = 0
-       CLOSED_LOOP = 1
-
-   class TrajectoryPlanner(ABC):
-       @abstractmethod
-       def plan(self, start_state, goal_pose, config) -> PlannerResult:
-           pass
-
-       @abstractmethod
-       def execute(self, robot_context, goal_handle) -> bool:
-           pass
-   ```
-
-2. **Preserve Existing Functionality**: The Classic planner should wrap existing code without breaking changes
-
-3. **Use Existing Patterns**: Follow the Robot Strategy pattern already in `curobo_ros/robot/`
-
-4. **Testing**: Write unit tests for each planner and integration tests for switching
-
-5. **Documentation**: Update this doc with actual implementation details as you code
-
-**Reference Implementations:**
-- Robot strategies: `curobo_ros/robot/robot_strategy.py`
-- Config management: `curobo_ros/core/config_wrapper.py`
-- Service patterns: Look at existing `set_robot_strategy` service
-
-**Detailed Implementation Guide:**
-- See [MPC Implementation Guide](mpc_implementation_guide.md) for complete technical specifications, code templates, and testing strategies
+- **Strategy Pattern** — planning algorithms are interchangeable at runtime
+- **Factory Pattern** — `PlannerFactory` centralizes planner creation and registration
+- **Template Method** — `SinglePlanner` defines the execution skeleton; children implement only the planning logic
+- **Lazy Initialization** — IK, FK, and MPC solvers are created only when first needed
 
 ---
 
-## Future Extensions
-
-Additional planner types being considered:
- 
-```python
-# Hybrid planner
-class HybridPlanner(TrajectoryPlanner):
-    """Combines Classic + MPC: fast initial plan, MPC tracking"""
-    pass
- 
-# Learning-based planner
-class LearningPlanner(TrajectoryPlanner):
-    """Uses learned models for planning"""
-    pass
- 
-# Multi-agent planner
-class MultiAgentPlanner(TrajectoryPlanner):
-    """Coordinates multiple robots"""
-    pass
-```
- 
----
- 
 ## Related Documentation
- 
-- [MPC Planner Tutorial](../tutorials/5_mpc_planner.md) - Step-by-step MPC usage
-- [Architecture](architecture.md) - Overall system architecture
-- [ROS Interfaces](ros_interfaces.md) - Services and messages
-- [Dynamic Strategy Switching](../tutorials/dynamic_strategy_switching.md) - Robot control strategies
- 
----
- 
-## References
- 
-- [Design Patterns (Strategy)](https://refactoring.guru/design-patterns/strategy)
-- [cuRobo Documentation](https://curobo.org/)
-- [ROS 2 Actions Tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Actions/Understanding-ROS2-Actions.html)
+
+- [ROS Interfaces](ros-interfaces.md) — complete service and action reference
+- [Tutorial 1: First Trajectory](../tutorials/01-first-trajectory.md)
+- [Tutorial 5: MPC Planner](../tutorials/05-mpc-planner.md)
+- [Tutorial 6: IK/FK Services](../tutorials/06-ik-fk-services.md)
+- [Manager Architecture](manager-architecture.md)

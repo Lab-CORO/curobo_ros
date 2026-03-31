@@ -1,4 +1,4 @@
-# Tutorial: Your First Trajectory
+# Tutorial 1: Your First Trajectory
 
 This tutorial walks you through generating your first motion plan with curobo_ros. You'll learn how to:
 - Request trajectory generation
@@ -215,8 +215,8 @@ ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
 **Object types**:
 - `0`: CUBOID
 - `1`: SPHERE
-- `2`: CYLINDER
-- `3`: CAPSULE
+- `2`: CAPSULE
+- `3`: CYLINDER
 - `4`: MESH (from file)
 
 ### Generate Trajectory (Will Avoid Obstacle)
@@ -354,14 +354,12 @@ If you have a real robot or emulator configured, you can execute the trajectory.
 
 ```bash
 # Switch the strategy to use the emulator
-ros2 service call /unified_planner/set_robot_strategy curobo_msgs/srv/SetRobotStrategy "{robot_strategy: 1}"
-
+ros2 param set /unified_planner robot_type "emulator"
+ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
 
 # Generate a trajectory first
-
 ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
   "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
- 
 
 # Execute it
 ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory {}
@@ -424,9 +422,8 @@ ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/Sen
 - ✅ Generate trajectories to target poses
 - ✅ Understand orientation with quaternions
 - ✅ Add and manage obstacles
-- ✅ Tune parameters (`time_dilation_factor`, `max_attempts`, `timeout`)
-- ✅ Use the trajectory service from Python
-- ✅ Execute trajectories (optional)
+- ✅ Tune parameters (`time_dilation_factor`, `max_attempts`, `timeout`, `voxel_size`)
+- ✅ Execute trajectories with the emulator
 
 ---
 
@@ -435,6 +432,6 @@ ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/Sen
 - **[Adding Your Robot](02-adding-your-robot.md)** - Integrate your own robot (Doosan M1013 example)
 - **[Managing Obstacles](03-collision-objects.md)** - Advanced obstacle management
 - **[Parameters Guide](../concepts/parameters.md)** - Deep dive into all parameters
-- **[Dynamic Strategy Switching](04-strategy-switching.md)** - Switch between robot modes
+- **[Robot Execution](04-robot-execution.md)** - Connect to real robot or emulator
 
 

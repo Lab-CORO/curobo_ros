@@ -1,513 +1,449 @@
-# Point Cloud Obstacle Detection Pipeline
+# Tutorial 7: Camera-Based Obstacle Detection
 
-This section is not working.
-
-This tutorial explains how to use the point cloud from `robot_segmentation` to detect obstacles for cuRobo trajectory generation.
+🟡 **Difficulty**: Intermediate
+⏱️ **Estimated Time**: 30-45 minutes
 
 ## Overview
 
-The pipeline integrates point cloud data into cuRobo's collision checking system using a camera strategy pattern. The flow is:
+curobo_ros can integrate depth camera data directly into the collision checker. As new depth frames arrive, the BLOX world model is updated in real time, and any subsequent `generate_trajectory` call plans around the detected obstacles.
 
-1. **robot_segmentation node** - Segments the robot from the point cloud and publishes a filtered point cloud
-2. **PointCloudCameraStrategy** - Converts the point cloud into a synthetic depth image
-3. **CameraContext** - Manages multiple camera sources
-4. **ConfigWrapperMotion** - Integrates camera observations into the world model
-5. **generate_trajectory node** - Uses the updated world model for collision-free planning
+The recommended strategy is `depth_camera`, which subscribes to a depth image topic and feeds frames into cuRobo's BLOX voxel world. A `point_cloud` strategy also exists but is experimental.
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────┐
-│ robot_segmentation  │ Publishes /masked_pointcloud
-└──────────┬──────────┘
-           │
-           v
-┌─────────────────────────────┐
-│ PointCloudCameraStrategy    │ Converts to synthetic depth image
-└──────────┬──────────────────┘
-           │
-           v
-┌──────────────────────┐
-│   CameraContext      │ Manages camera observations
-└──────────┬───────────┘
-           │
-           v
-┌──────────────────────────┐
-│  ConfigWrapperMotion     │ Updates cuRobo world model
-└──────────┬───────────────┘
-           │
-           v
-┌──────────────────────┐
-│ generate_trajectory  │ Plans collision-free trajectories
-└──────────────────────┘
+Depth Camera (RealSense, Azure Kinect, etc.)
+       │  /depth_to_rgb/image_raw  (raw — includes robot body)
+       ▼
+robot_segmentation node             (recommended — see Section 6)
+  ├── joint states → collision spheres (CudaRobotModel)
+  └── removes robot pixels → /masked_depth_image
+       │
+       ▼
+DepthMapCameraStrategy              (configured in cameras.yaml)
+  ├── intrinsics: camera_info topic or hardcoded
+  ├── extrinsics: config [x,y,z,qw,qx,qy,qz] or TF
+  └── each frame → add to cuRobo BLOX world model
+       │
+       ▼
+World Model (BLOX voxels)
+       │
+       ▼
+generate_trajectory → collision-free planning
 ```
 
-## Components
+The world model update happens inside the depth image callback — there is no manual trigger required. Each new depth frame automatically updates the voxel occupancy.
 
-### 1. CameraStrategy (Base Class)
+---
 
-Abstract base class that defines the interface for all camera strategies:
+## Prerequisites
 
-- `get_camera_observation()` - Returns a CameraObservation for cuRobo
-- `is_ready()` - Checks if camera has data available
-- `get_camera_pose()` - Returns camera pose in world frame
+- Completed [Tutorial 1: Your First Trajectory](01-first-trajectory.md)
+- A depth camera publishing to a ROS2 topic (`sensor_msgs/Image`, encoding `16UC1` or `32FC1`)
+- Camera info topic available (`sensor_msgs/CameraInfo`) if you are not hardcoding intrinsics
+- TF transform available for `base_link → camera_frame` if you are not hardcoding extrinsics
 
-### 2. PointCloudCameraStrategy
+---
 
-Converts point cloud data to camera observations:
+## Section 1: Camera Configuration File
 
-```python
-from curobo_ros.cameras import PointCloudCameraStrategy
+Cameras are configured in a YAML file and passed to the node at launch via `cameras_config_file`.
 
-# Initialize with custom parameters
-pointcloud_camera = PointCloudCameraStrategy(
-    node,
-    pointcloud_topic='/masked_pointcloud',
-    camera_pose=[0.0, 0.0, 1.5, 1.0, 0.0, 0.0, 0.0],  # [x, y, z, qw, qx, qy, qz]
-    image_width=640,
-    image_height=480,
-    fx=525.0,  # Focal length x
-    fy=525.0,  # Focal length y
-    cx=319.5,  # Principal point x
-    cy=239.5   # Principal point y
-)
+### 1.1 File Structure
+
+```yaml
+cameras:
+  - name: <unique_camera_name>
+    type: depth_camera          # recommended; 'point_cloud' is experimental
+    topic: <depth_image_topic>
+    frame_id: <camera_tf_frame>
+    camera_info: <camera_info_topic>   # used if intrinsics are empty
+    intrinsics: []              # empty = read from camera_info topic
+    extrinsics: []              # empty = read from TF (base_link → frame_id)
 ```
 
-The strategy:
-- Subscribes to a PointCloud2 topic
-- Projects 3D points onto a 2D image plane
-- Creates a synthetic depth image
-- Wraps it in a CameraObservation for cuRobo
+### 1.2 Example: Single RealSense / Azure Kinect Camera
 
-### 3. CameraContext
-
-Manages multiple camera strategies:
-
-```python
-from curobo_ros.cameras import CameraContext
-
-camera_context = CameraContext(node)
-
-# Add cameras
-camera_context.add_camera('pointcloud', pointcloud_camera)
-camera_context.add_camera('realsense', realsense_camera)
-
-# Update world model with all cameras
-camera_context.update_world_collision_model(world_model, "world")
+```yaml
+cameras:
+  - name: depth_camera_front
+    type: depth_camera
+    topic: /depth_to_rgb/image_raw
+    frame_id: rgb_camera_link
+    camera_info: /depth_to_rgb/camera_info
+    intrinsics: []
+    extrinsics: [0.161, -0.428, 1.585, -0.3409296, 0.6840516, -0.6215661, 0.1717437]
 ```
 
-### 4. ConfigWrapperMotion Integration
+### 1.3 Intrinsics Formats
 
-The `ConfigWrapperMotion` class now automatically:
-- Initializes a CameraContext
-- Adds cameras based on ROS parameters
-- Updates the world model before trajectory planning
+**Option A: read from `camera_info` topic (recommended)**
 
-## Configuration
-
-### ROS2 Parameters
-
-Configure the point cloud camera in your launch file:
-
-```python
-parameters=[{
-    'use_pointcloud_camera': True,
-    'pointcloud_topic': '/masked_pointcloud',
-    'camera_pose': [0.0, 0.0, 1.5, 1.0, 0.0, 0.0, 0.0],  # Virtual camera position
-    'voxel_size': 0.05,
-    'collision_activation_distance': 0.025,
-}]
+```yaml
+intrinsics: []
+camera_info: /depth_to_rgb/camera_info
 ```
 
-Parameters:
-- `use_pointcloud_camera` (bool): Enable/disable point cloud camera
-- `pointcloud_topic` (string): Topic name for the point cloud
-- `camera_pose` (array): Camera pose [x, y, z, qw, qx, qy, qz] in world frame
-- `voxel_size` (float): Size of voxels for BLOX collision checking
-- `collision_activation_distance` (float): Distance threshold for collision detection
+The node waits up to 5 seconds at startup for a `CameraInfo` message on that topic.
 
-## Usage
+**Option B: 9-element K matrix**
 
-### 1. Launch robot_segmentation
+The K matrix is flattened row-major: `[fx, 0, cx, 0, fy, cy, 0, 0, 1]`
 
-Start the robot segmentation node to filter the robot from the point cloud:
+```yaml
+intrinsics: [615.3, 0.0, 320.5, 0.0, 615.8, 240.5, 0.0, 0.0, 1.0]
+```
+
+### 1.4 Extrinsics Formats
+
+Extrinsics define the camera pose in the robot's base frame.
+
+**Option A: read from TF at runtime (recommended for dynamic setups)**
+
+```yaml
+extrinsics: []
+frame_id: rgb_camera_link   # TF lookup: base_link → rgb_camera_link
+```
+
+**Option B: 7-element list `[x, y, z, qw, qx, qy, qz]`**
+
+```yaml
+extrinsics: [0.161, -0.428, 1.585, -0.3409296, 0.6840516, -0.6215661, 0.1717437]
+```
+
+
+> **Note**: When static extrinsics are provided in the config, TF is not queried. Static extrinsics are preferred for fixed-mount cameras.
+
+---
+
+## Section 2: Launch with Camera
+
+Pass the YAML file to the launch command:
 
 ```bash
+ros2 launch curobo_ros gen_traj.launch.py \
+  cameras_config_file:=/path/to/cameras.yaml
+```
+
+A default example file is provided at `config/cameras.yaml` inside the `curobo_ros` package.
+
+```bash
+ros2 launch curobo_ros gen_traj.launch.py \
+  cameras_config_file:=$(ros2 pkg prefix curobo_ros)/share/curobo_ros/config/cameras.yaml
+```
+
+At startup, the node logs each camera that is successfully initialized:
+
+```
+[INFO] Loading camera configuration from: /path/to/cameras.yaml
+[INFO] Added camera strategy 'depth_camera_front' of type 'depth_camera'
+[INFO] Camera intrinsics from topic: fx=615.30, fy=615.80, cx=320.50, cy=240.50
+[INFO] Using static extrinsics from config file
+[INFO] DepthMap camera initialized with depth topic: /depth_to_rgb/image_raw
+```
+
+---
+
+## Section 3: How the World Model Updates
+
+Once the camera is initialized, it subscribes to the depth topic. For each incoming frame:
+
+1. The depth image is converted to a float tensor (mm → m if `16UC1`)
+2. The camera pose is applied (static from config, or queried from TF)
+3. The frame is added to the cuRobo BLOX world model:
+   - `world_model.add_camera_frame(observation, "world")`
+   - `world_model.process_camera_frames("world")`
+   - `world_model.update_blox_hashes()`
+
+This happens automatically on every depth frame. There is no manual trigger service needed.
+
+When `generate_trajectory` is called, the world model already reflects the latest camera observations.
+
+---
+
+## Section 4: Verifying the Pipeline
+
+### Check the camera is initialized
+
+```bash
+ros2 node list | grep unified_planner
+ros2 service call /unified_planner/is_available std_srvs/srv/Trigger
+```
+
+### Check depth topic is publishing
+
+```bash
+ros2 topic hz /depth_to_rgb/image_raw
+ros2 topic info /depth_to_rgb/image_raw
+```
+
+Expected: `sensor_msgs/msg/Image` at your camera's configured rate.
+
+### Inspect the voxel grid
+
+```bash
+ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
+```
+
+The number of occupied voxels (`data` array) should increase when obstacles are placed in front of the camera.
+
+### Check collision distance
+
+```bash
+ros2 service call /unified_planner/get_collision_distance curobo_msgs/srv/GetCollisionDistance
+```
+
+Positive values = distance to nearest obstacle. Negative values = collision (penetration).
+
+### Visualize voxels in RViz
+
+You can vizualise collision on rviz with curobo_rviz panel.   
+
+Then in RViz: **Add → MarkerArray → `/visualization_marker_voxel`**
+
+---
+
+## Section 5: Multiple Cameras
+
+Multiple cameras can be declared in the same YAML file:
+
+```yaml
+cameras:
+  - name: camera_front
+    type: depth_camera
+    topic: /front_camera/depth/image_raw
+    frame_id: front_camera_link
+    camera_info: /front_camera/depth/camera_info
+    intrinsics: []
+    extrinsics: []
+
+  - name: camera_top
+    type: depth_camera
+    topic: /top_camera/depth/image_raw
+    frame_id: top_camera_link
+    camera_info: /top_camera/depth/camera_info
+    intrinsics: []
+    extrinsics: [0.0, 0.0, 1.5, 1.0, 0.0, 0.0, 0.0]
+```
+
+Each camera runs independently. If one camera fails to initialize, the others continue. The world model accumulates observations from all ready cameras.
+
+---
+
+## Section 6: Robot Segmentation
+
+Without filtering, the camera sees the robot's own body as obstacles in the depth image. The planner detects a collision at the current configuration and refuses to plan. The `robot_segmentation` node removes the robot from the depth image before it reaches the collision checker.
+
+### 6.1 How It Works
+
+At 100 Hz, the node:
+
+1. Reads the current joint positions from the robot
+2. Computes the robot's collision spheres for that configuration (GPU via CudaRobotModel)
+3. Converts the raw depth image into a 3D point cloud (using camera intrinsics)
+4. Removes every point that falls within `distance_threshold` meters of any collision sphere
+5. Converts the filtered point cloud back to a depth image
+6. Publishes the cleaned image on `/masked_depth_image`
+
+```
+/depth_to_rgb/image_raw  ──►  robot_segmentation  ──►  /masked_depth_image
+                                      ▲
+                               joint states → collision spheres
+```
+
+The `cameras.yaml` must then point to `/masked_depth_image` instead of the raw camera topic so that the planner receives pre-filtered frames.
+
+### 6.2 Launch
+
+The node is a separate executable that runs alongside the planner:
+
+```bash
+# Terminal 1: planner + camera
+ros2 launch curobo_ros gen_traj.launch.py \
+  cameras_config_file:=/path/to/cameras.yaml
+
+# Terminal 2: robot segmentation
 ros2 run curobo_ros robot_segmentation
 ```
 
-This publishes the filtered point cloud on `/masked_pointcloud`.
+### 6.3 Parameters
 
-**Verify it's working:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `robot_config_file` | `m1013.yml` (package default) | Path to robot YAML — must match the planner's config |
+| `depth_image_topic` | `/depth_to_rgb/image_raw` | Raw depth image input |
+| `camera_info_topic` | `/depth_to_rgb/camera_info` | Intrinsics topic for 3D projection |
+| `joint_states_topic` | `/dsr01/joint_states` | Robot joint positions |
+| `robot_base_frame` | `base_link` | Frame for collision sphere projection |
 
-```bash
-# Check if segmentation node is running
-ros2 node list | grep robot_segmentation
-
-# Inspect published point cloud
-ros2 topic info /masked_pointcloud
-
-# Expected output: Type sensor_msgs/msg/PointCloud2
-
-# Check point cloud data rate
-ros2 topic hz /masked_pointcloud
-
-# Expected: ~5-30 Hz depending on camera
-
-# View point cloud statistics
-ros2 topic echo /masked_pointcloud --once | head -20
-
-# Shows header, dimensions, and point count
-```
-
-### 2. Launch trajectory generation
-
-Start the trajectory generation node with point cloud camera enabled:
+Override any parameter with `--ros-args`:
 
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py use_pointcloud_camera:=true
+ros2 run curobo_ros robot_segmentation --ros-args \
+  -p robot_config_file:=/path/to/my_robot.yml \
+  -p depth_image_topic:=/camera/depth/image_rect_raw \
+  -p camera_info_topic:=/camera/depth/camera_info \
+  -p joint_states_topic:=/my_robot/joint_states \
+  -p robot_base_frame:=base_link
 ```
 
-### 3. Generate trajectories
+> **`distance_threshold`** (default: `0.05 m`) controls how much margin is added around each collision sphere. It is a constructor argument and cannot be changed at runtime. Increase it if the robot is occasionally self-detected due to calibration error.
 
-The trajectory generation automatically updates the world model from cameras before planning:
+### 6.4 Topics
+
+**Subscriptions:**
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `<depth_image_topic>` | `sensor_msgs/Image` | Raw depth image (`16UC1` mm or `32FC1` m) |
+| `<camera_info_topic>` | `sensor_msgs/CameraInfo` | Intrinsics for depth→3D projection |
+
+**Publications:**
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `/masked_depth_image` | `sensor_msgs/Image` | Filtered depth image — robot pixels zeroed (`16UC1`) |
+| `/collision_spheres` | `visualization_msgs/MarkerArray` | Robot collision spheres at current config (RViz debug) |
+| `/robot_pointcloud_debug` | `sensor_msgs/PointCloud2` | Points that were removed (RViz debug, only published if subscribed) |
+
+### 6.5 Integration with cameras.yaml
+
+Point the `depth_camera` entry at the segmentation output:
+
+```yaml
+cameras:
+  - name: depth_camera_front
+    type: depth_camera
+    topic: /masked_depth_image          # ← output of robot_segmentation
+    frame_id: rgb_camera_link
+    camera_info: /depth_to_rgb/camera_info
+    intrinsics: []
+    extrinsics: [0.161, -0.428, 1.585, -0.3409296, 0.6840516, -0.6215661, 0.1717437]
+```
+
+> The `camera_info` field still points to the **original** camera info topic — the segmentation node does not alter intrinsics, only pixel values.
+
+### 6.6 Verify the Segmentation
 
 ```bash
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0, x: 0.0, y: 0.0, z: 0.0}}}"
+# Check the filtered image is publishing
+ros2 topic hz /masked_depth_image
+
+# Visualize in RViz:
+#   Add → Image → /masked_depth_image   (should show black pixels where the robot is)
+#   Add → MarkerArray → /collision_spheres  (red spheres around robot links)
+#   Add → PointCloud2 → /robot_pointcloud_debug  (points removed by segmentation)
 ```
 
-### 4. Manual world update (optional)
+If `robot_pointcloud_debug` shows points clustered around the robot's links and the masked image has black patches in those areas, segmentation is working correctly.
 
-You can manually trigger a world update from cameras:
+---
+
+## Section 7: Tuning Parameters
+
+Voxel resolution and collision safety margin can be adjusted while the node is running:
 
 ```bash
-ros2 service call /unified_planner/update_world_from_cameras std_srvs/srv/Trigger
+# Finer resolution (slower, more accurate)
+ros2 param set /unified_planner voxel_size 0.02
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Coarser resolution (faster, less memory)
+ros2 param set /unified_planner voxel_size 0.08
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
+
+# Increase collision safety margin
+ros2 param set /unified_planner collision_activation_distance 0.04
+ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 ```
 
-### 5. Debug Camera Pipeline
+| `voxel_size` | Resolution | Speed | Memory |
+|---|---|---|---|
+| 0.02 m | Fine (2 cm) | Slow | High |
+| 0.05 m | Default (5 cm) | Moderate | Moderate |
+| 0.08 m | Coarse (8 cm) | Fast | Low |
 
-Use these CLI commands to inspect and debug the camera observation pipeline:
-
-```bash
-# 1. Check camera is ready
-ros2 service call /unified_planner/update_world_from_cameras std_srvs/srv/Trigger
-
-# Response includes camera names that provided observations
-# Example: message: "Updated from cameras: pointcloud"
-
-# 2. Inspect voxel grid
-ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
-
-# Shows voxelized environment from camera observations
-
-# 3. Visualize voxels in RViz
-ros2 run curobo_ros viz_voxel_grid &
-
-# Then in RViz, add MarkerArray display for /visualization_marker_voxel
-
-# 4. Check collision distance with obstacles
-ros2 service call /unified_planner/get_collision_distance curobo_msgs/srv/GetCollisionDistance
-
-# Positive values = distance to obstacle (meters)
-# Negative values = penetration (collision!)
-
-# 5. Monitor camera observation rate
-ros2 topic hz /camera/depth/image_raw
-
-# Should match your camera's configured rate
-
-# 6. Check camera TF transforms
-ros2 run tf2_ros tf2_echo world camera_link
-
-# Verifies camera pose is correct
-
-# 7. List all active cameras
-ros2 param get /unified_planner use_pointcloud_camera
-
-# Shows if point cloud camera is enabled
-
-# 8. Verify point cloud in world frame
-ros2 run tf2_ros tf2_echo world <point_cloud_frame_id>
-
-# Checks if point cloud frame is properly linked to world
-```
-
-### 6. Performance Monitoring
-
-Monitor the performance of the point cloud detection pipeline:
-
-```bash
-# 1. Check planning time with obstacles
-ros2 topic echo /unified_planner/planning_time
-
-# Should be < 100ms for typical scenes
-
-# 2. Monitor GPU memory usage (if CUDA)
-nvidia-smi -l 1
-
-# Watch GPU memory while adding obstacles
-
-# 3. Check node CPU usage
-top -p $(pgrep -f unified_planner)
-
-# Monitor CPU % during trajectory generation
-
-# 4. Measure end-to-end latency
-time ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.3}, orientation: {w: 1.0}}}"
-
-# Includes camera update + planning time
-
-# 5. Check point cloud processing rate
-ros2 topic bw /masked_pointcloud
-
-# Shows bandwidth usage (KB/s)
-```
-
-## Services
-
-| Service Name | Service Type | Description |
-|-------------|-------------|-------------|
-| `/unified_planner/update_world_from_cameras` | `Trigger` | Manually update world model from all camera observations |
-
-## Advanced: Adding Custom Camera Strategies
-
-You can create custom camera strategies by inheriting from `CameraStrategy`:
-
-```python
-from curobo_ros.cameras import CameraStrategy
-from curobo.types.camera import CameraObservation
-
-class MyCustomCameraStrategy(CameraStrategy):
-    def __init__(self, node):
-        super().__init__(node)
-        # Your initialization
-
-    def get_camera_observation(self) -> CameraObservation:
-        # Return your camera observation
-        pass
-
-    def is_ready(self) -> bool:
-        # Check if data is available
-        pass
-
-    def get_camera_pose(self) -> Pose:
-        # Return camera pose
-        pass
-```
-
-Then add it to the CameraContext:
-
-```python
-custom_camera = MyCustomCameraStrategy(node)
-camera_context.add_camera('my_custom', custom_camera)
-```
+---
 
 ## Troubleshooting
 
-### No obstacles detected
+### Camera not initialized at startup
 
-1. Check that robot_segmentation is publishing:
-   ```bash
-   ros2 topic echo /masked_pointcloud --once
+**Symptoms**: No log line `Added camera strategy '...'`
 
-   # If no output, check if node is running
-   ros2 node list | grep robot_segmentation
+1. Verify `cameras_config_file` path is correct and the file is readable
+2. Check the YAML is valid (no indentation errors)
+3. Ensure the `cameras:` key is present with at least one entry
 
-   # Check source point cloud topic
-   ros2 topic list | grep points
+### Intrinsics error at startup
 
-   # Verify source camera is publishing
-   ros2 topic hz /camera/depth/points
-   ```
+**Symptoms**: `Failed to receive camera info from /your/topic`
 
-2. Verify camera is ready:
-   ```bash
-   ros2 service call /unified_planner/update_world_from_cameras std_srvs/srv/Trigger
+The node waits 5 seconds for a `CameraInfo` message. If the camera is not publishing yet:
+- Start the camera driver before the planner, or
+- Hardcode intrinsics in the YAML (Option B or C in Section 1.3)
 
-   # Should return: success: True with camera names
-   # Example: message: "Updated from cameras: pointcloud"
+### Obstacles not detected in trajectory planning
 
-   # If no cameras listed, check parameter
-   ros2 param get /unified_planner use_pointcloud_camera
+1. Confirm depth frames are arriving: `ros2 topic hz <depth_topic>`
+2. Inspect the voxel grid — it should show occupied voxels near the obstacle
+3. Check `frame_id` is correct — TF lookup failure falls back to identity pose (obstacles at wrong location)
+4. Reduce `voxel_size` for finer detection
+5. Increase `collision_activation_distance` so the planner avoids obstacles with more margin
 
-   # Should return: bool value: True
-   ```
+### TF lookup failure
 
-3. Check camera pose is correct - the virtual camera should "see" the workspace:
-   ```bash
-   # View current camera pose parameter
-   ros2 param get /unified_planner camera_pose
+**Symptoms**: `Could not transform base_link to <frame_id>`
 
-   # Check TF transform for camera frame
-   ros2 run tf2_ros tf2_echo world camera_link
+Either:
+- Provide static extrinsics in the YAML config to bypass TF, or
+- Ensure the camera TF frame is published (check `ros2 run tf2_ros tf2_echo base_link <frame_id>`)
 
-   # Visualize camera frustum in RViz
-   # Add Camera display and set topic to camera info
-   ```
+### Planner rejects all trajectories (collision at start)
 
-4. Verify voxelization is working:
-   ```bash
-   # Get voxel grid
-   ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
+**Symptoms**: `generate_trajectory` always returns `success: false`, even for simple goals
 
-   # Check number of occupied voxels (should be > 0)
+The most likely cause is that the robot's own body is visible in the depth image and is detected as an obstacle. The planner sees a collision at the current state and cannot plan.
 
-   # Visualize voxels
-   ros2 run curobo_ros viz_voxel_grid
+**Solution**: Run `robot_segmentation` and point `cameras.yaml` to `/masked_depth_image` (see Section 6).
 
-   # In RViz: Add → MarkerArray → /visualization_marker_voxel
-   ```
+**Verify**: Check the voxel grid with and without `robot_segmentation` running:
 
-### Trajectories collide with obstacles
-
-1. Reduce `voxel_size` for finer resolution (but slower):
-   ```bash
-   # Check current voxel size
-   ros2 param get /unified_planner voxel_size
-
-   # Set smaller voxel size for finer resolution
-   ros2 param set /unified_planner voxel_size 0.02
-
-   # Apply changes
-   ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-
-   # Test trajectory again
-   ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "{...}"
-   ```
-
-2. Increase `collision_activation_distance` for more conservative planning:
-   ```bash
-   # Check current collision distance
-   ros2 param get /unified_planner collision_activation_distance
-
-   # Increase safety margin
-   ros2 param set /unified_planner collision_activation_distance 0.04
-
-   # Apply and test
-   ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-   ```
-
-3. Verify point cloud quality and filtering:
-   ```bash
-   # Check point cloud statistics
-   ros2 topic echo /masked_pointcloud --once | grep -E "(width|height|point_step)"
-
-   # Count points in cloud
-   ros2 topic echo /masked_pointcloud --once | grep "is_dense"
-
-   # Visualize filtered cloud in RViz
-   # Add → PointCloud2 → /masked_pointcloud
-   ```
-
-### Performance issues
-
-1. Increase `voxel_size` for faster processing:
-   ```bash
-   # Current voxel size
-   ros2 param get /unified_planner voxel_size
-
-   # Increase for faster performance
-   ros2 param set /unified_planner voxel_size 0.08
-
-   # Apply changes
-   ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-
-   # Measure planning time improvement
-   time ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "{...}"
-   ```
-
-2. Reduce point cloud density in robot_segmentation:
-   ```bash
-   # Check current point cloud size
-   ros2 topic echo /masked_pointcloud --once | grep "width"
-
-   # If using voxel grid filter, adjust leaf size parameter
-   ros2 param list | grep voxel_leaf_size
-
-   # Restart with larger leaf size for fewer points
-   ```
-
-3. Check GPU memory usage:
-   ```bash
-   # Monitor GPU memory
-   watch -n 1 nvidia-smi
-
-   # Check specific process memory
-   nvidia-smi --query-compute-apps=pid,used_memory --format=csv
-
-   # If out of memory, reduce cache sizes
-   ros2 service call /unified_planner/set_collision_cache \
-     curobo_msgs/srv/SetCollisionCache "{obb: 100, mesh: -1, blox: 20}"
-
-   ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-   ```
-
-4. Profile node performance:
-   ```bash
-   # Check CPU usage
-   top -p $(pgrep -f unified_planner)
-
-   # Monitor message processing delays
-   ros2 topic delay /masked_pointcloud
-
-   # Check service call latency
-   time ros2 service call /unified_planner/update_world_from_cameras std_srvs/srv/Trigger
-
-   # Analyze with ros2_tracing (if installed)
-   ros2 run tracetools trace -o curobo_trace
-   ```
-
-## Examples
-
-### Example 1: Point cloud from segmentation
-
-```python
-# In your launch file
-Node(
-    package='curobo_ros',
-    executable='generate_trajectory',
-    parameters=[{
-        'use_pointcloud_camera': True,
-        'pointcloud_topic': '/masked_pointcloud',
-        'camera_pose': [0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0],
-        'voxel_size': 0.05,
-    }]
-)
+```bash
+ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
 ```
 
-### Example 2: Multiple cameras
+With segmentation, the number of occupied voxels near the robot's body should drop significantly.
 
-```python
-# In ConfigWrapperMotion.__init__ after initialization
-realsense_camera = RealsenseStrategy(
-    node,
-    depth_topic='/camera/depth/image_rect_raw',
-    camera_info_topic='/camera/depth/camera_info',
-    camera_pose=[0.5, 0.5, 1.0, 1.0, 0.0, 0.0, 0.0]
-)
-self.camera_context.add_camera('realsense', realsense_camera)
-```
+### robot_segmentation not publishing
 
-## Pipeline Complete Workflow
+**Symptoms**: `/masked_depth_image` has no publishers or very low rate
 
-1. **Setup**: Launch robot_segmentation and generate_trajectory nodes
-2. **Initialization**: PointCloudCameraStrategy subscribes to /masked_pointcloud
-3. **Data Flow**:
-   - robot_segmentation publishes filtered point cloud
-   - PointCloudCameraStrategy receives and converts to depth image
-   - CameraContext manages the observation
-4. **Planning**: When trajectory is requested:
-   - ConfigWrapperMotion calls update_world_from_cameras()
-   - CameraContext gets observations from all ready cameras
-   - World model is updated with BLOX voxels
-   - Trajectory is planned avoiding detected obstacles
-5. **Execution**: Trajectory is sent to robot
+1. Check that both the depth image and camera info topics are publishing:
+   ```bash
+   ros2 topic hz /depth_to_rgb/image_raw
+   ros2 topic hz /depth_to_rgb/camera_info
+   ```
+2. Check that joint states are arriving (without them the timer callback does nothing):
+   ```bash
+   ros2 topic hz /dsr01/joint_states
+   ```
+3. If the joint states topic is different, override it:
+   ```bash
+   ros2 run curobo_ros robot_segmentation --ros-args \
+     -p joint_states_topic:=/my_robot/joint_states
+   ```
 
-## See Also
+---
 
-- [Robot Segmentation](../core/robot_segmentation.py)
-- [Camera Strategies](../../curobo_ros/cameras/)
-- [Motion Generation](./examples/doosan-m1013.md)
-- [Adding Collision Objects](./03-collision-objects.md)
+## Related Documentation
+
+- [ROS Interfaces Reference — Parameters](../concepts/ros-interfaces.md#parameters)
+- [Parameters Guide — voxel_size, collision_activation_distance](../concepts/parameters.md)
+- [Tutorial 3: Collision Objects](03-collision-objects.md)
+
+---
+
+[← Tutorial 6: IK/FK Services](06-ik-fk-services.md) | [← Back to Tutorials](index.md)

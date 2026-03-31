@@ -517,8 +517,8 @@ Target performance:
 - [cuRobo MPC Documentation](https://curobo.org/source/getting_started/2b_mpc_example.html)
 - [ROS 2 Real-Time Best Practices](https://design.ros2.org/articles/realtime_background.html)
 - [MPC Theory (Wikipedia)](https://en.wikipedia.org/wiki/Model_predictive_control)
-- [Unified Planner Architecture](unified_planner.md)
-- [MPC Planner Tutorial](../tutorials/5_mpc_planner.md)
+- [Unified Planner Architecture](unified-planner.md)
+- [MPC Planner Tutorial](../tutorials/05-mpc-planner.md)
 
 ---
 

@@ -5,116 +5,99 @@
 
 ## Overview
 
-This tutorial covers how to use the Forward Kinematics (FK) and Inverse Kinematics (IK) services in curobo_ros. These services are essential tools for:
-- **FK**: Computing end-effector pose from joint positions
-- **IK**: Computing joint configurations that achieve a desired end-effector pose
+This tutorial covers how to use the Inverse Kinematics (IK) and Forward Kinematics (FK) services on the unified planner node.
 
-Unlike full trajectory planning, these services provide quick kinematic solutions without generating collision-free paths.
+- **IK**: Compute joint configurations that achieve a desired end-effector pose
+- **FK**: Compute end-effector pose from a set of joint positions
 
-**For detailed information about cuRobo's kinematics capabilities and underlying algorithms, visit [curobo.org](https://curobo.org) - the official cuRobo documentation.**
+Both solvers are **lazy-initialized** — they are not created at startup. You must call the warmup service before using IK or FK. This allows the node to start quickly and avoids allocating GPU memory for solvers you don't need.
+
+**For detailed information about cuRobo's kinematics capabilities and underlying algorithms, visit [curobo.org](https://curobo.org).**
+
+---
 
 ## When to Use IK/FK vs Motion Planning
 
-| Use Case | FK Service | IK Service | Motion Planning |
-|----------|-----------|-----------|-----------------|
-| Verify current robot pose | ✅ | ❌ | ❌ |
-| Check if pose is reachable | ❌ | ✅ | ❌ |
-| Find joint configuration for target | ❌ | ✅ | ❌ |
+| Use Case | FK | IK | Motion Planning |
+|----------|----|----|-----------------|
+| Get end-effector pose from joint state | ✅ | ❌ | ❌ |
+| Check if a pose is reachable | ❌ | ✅ | ❌ |
+| Find joint config for a target pose | ❌ | ✅ | ❌ |
 | Generate collision-free trajectory | ❌ | ❌ | ✅ |
-| Plan motion from A to B | ❌ | ❌ | ✅ |
 
-**Key Difference**: IK/FK services perform kinematic calculations only. Use `generate_trajectory` service for collision-free motion planning.
+**Key rule**: Use IK/FK for kinematic queries. Use `generate_trajectory` for actual robot motion.
+
+---
 
 ## Prerequisites
 
-Before starting this tutorial, ensure you have:
 - Completed [Tutorial 1: Your First Trajectory](01-first-trajectory.md)
-- curobo_ros installed and running
-- Robot configured (if using your own robot, see [Tutorial 2](02-adding-your-robot.md))
+- curobo_ros running with the unified planner
 - Basic understanding of ROS 2 services
+
+---
 
 ## Section 1: Forward Kinematics (FK)
 
 ### 1.1 What is Forward Kinematics?
 
-Forward Kinematics computes the end-effector pose (position + orientation) given a set of joint positions.
+Forward kinematics computes the end-effector pose from a given set of joint positions. It is a purely geometric computation — no collision checking, no obstacle dependency.
 
-**Input**: Joint angles [j1, j2, j3, j4, j5, j6]
-**Output**: End-effector pose (x, y, z, qx, qy, qz, qw)
+**Input**: Joint positions `[j1, j2, j3, j4, j5, j6]`
+**Output**: End-effector pose `(x, y, z, qx, qy, qz, qw)` in the robot base frame
 
-**Use Cases**:
-- Verify robot's current pose after motion
-- Validate joint configurations before execution
-- Compute workspace reach from joint limits
+### 1.2 Warmup FK
 
-### 1.2 Using the FK Service
+Before calling `fk`, initialize the FK model:
 
-**Service Interface:**
-- **Service Name**: `<node_name>/fk_compute`
-- **Service Type**: `curobo_msgs/srv/Fk`
-- **Request**: `sensor_msgs/JointState` (joint positions)
-- **Response**: `geometry_msgs/Pose` (end-effector pose)
+```bash
+ros2 service call /unified_planner/warmup_fk curobo_msgs/srv/WarmupFK "{batch_size: 1}"
+```
+
+The `batch_size` parameter tells the model how many joint states to expect per call, allowing CUDA kernels to be pre-compiled for that size. Unlike IK, FK does not require reinitialization when the batch size changes.
+
+**Expected response:**
+```yaml
+success: true
+message: 'FK model initialized with batch_size=1'
+```
 
 ### 1.3 FK Service Examples
 
-#### Example 1: Compute FK for Home Position
+#### Example 1: Single joint configuration
 
 ```bash
-# FK for home position (all zeros for Doosan M1013)
-ros2 service call /unified_planner/fk_compute curobo_msgs/srv/Fk \
-  "{joint_state: {position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
+ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
+  "{joint_states: [{position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}]}"
 ```
 
-**Expected Output:**
-```yaml
-success: true
-message: 'Forward kinematics computed successfully'
-end_effector_pose:
-  position:
-    x: 0.796
-    y: 0.0
-    z: 0.413
-  orientation:
-    x: 0.0
-    y: 0.0
-    z: 0.0
-    w: 1.0
-```
+#### Example 2: Multiple joint configurations in one call
 
-#### Example 2: Compute FK for Specific Configuration
+Warmup with the batch size you intend to use, then call `fk` with that many joint states:
 
 ```bash
-# FK for a bent-arm configuration
-ros2 service call /unified_planner/fk_compute curobo_msgs/srv/Fk \
-  "{joint_state: {position: [0.0, -0.785, 1.57, 0.0, 1.57, 0.0]}}"
+ros2 service call /unified_planner/warmup_fk curobo_msgs/srv/WarmupFK "{batch_size: 3}"
+
+ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
+  "{joint_states: [
+    {position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+    {position: [0.0, -0.785, 1.57, 0.0, 1.57, 0.0]},
+    {position: [0.5, -0.5, 0.5, 0.0, 1.0, 0.0]}
+  ]}"
 ```
 
-**Expected Output:**
+**Response:**
 ```yaml
-success: true
-message: 'Forward kinematics computed successfully'
-end_effector_pose:
-  position:
-    x: 0.452
-    y: 0.0
-    z: 0.627
-  orientation:
-    x: 0.0
-    y: 0.707
-    z: 0.0
-    w: 0.707
+poses:
+  - position: {x: 0.796, y: 0.0, z: 0.413}
+    orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+  - position: {x: 0.452, y: 0.0, z: 0.627}
+    orientation: {x: 0.0, y: 0.707, z: 0.0, w: 0.707}
+  - position: {x: ..., y: ..., z: ...}
+    orientation: {...}
 ```
 
-### 1.4 Understanding FK Response
-
-The response contains:
-- **success** (bool): `true` if FK computation succeeded
-- **message** (string): Status message
-- **end_effector_pose** (Pose):
-  - **position** (x, y, z): Cartesian coordinates in meters (base frame)
-  - **orientation** (x, y, z, w): Quaternion representation
-
-**Coordinate Frame**: All poses are in the robot's base frame (typically `base_0` or `base_link`).
+All poses are in the robot's base frame.
 
 ---
 
@@ -122,66 +105,50 @@ The response contains:
 
 ### 2.1 What is Inverse Kinematics?
 
-Inverse Kinematics computes joint configurations that achieve a desired end-effector pose.
+Inverse kinematics computes a joint configuration that places the end-effector at a given pose. The IK solver in curobo_ros uses cuRobo's `IkSolver`, which:
+- Performs **collision checking** (self-collision + obstacle avoidance)
+- Shares the **same obstacle world** as the trajectory planners — obstacle changes are propagated automatically
 
-**Input**: Target pose (x, y, z, qx, qy, qz, qw)
-**Output**: Joint configuration
+**Input**: Target pose `(x, y, z, qx, qy, qz, qw)`
+**Output**: Joint configuration or failure if no valid solution exists
 
-**Use Cases**:
-- Check if target pose is reachable
-- Find joint configuration for specific end-effector pose
-- Validate poses before planning
+### 2.2 Warmup IK
 
-### 2.2 IK Service Interface
-
-**Service Interface:**
-- **Service Name**: `<node_name>/ik_batch_poses`
-- **Service Type**: `curobo_msgs/srv/Ik`
-- **Request**:
-  - `pose` (Pose): Target end-effector pose
-- **Response**:
-  - `success` (bool): True if solution found
-  - `joint_states` (JointState): IK solution
-  - `joint_states_valid` (Bool): Validity flag
-  - `error_msg` (String): Error message if failed
-
-### 2.3 IK Service Examples
-
-#### Example 1: Single Pose IK
+Before calling `ik` or `ik_batch`, initialize the IK solver:
 
 ```bash
-# IK for a target pose
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
-  "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {x: 0.0, y: 0.707, z: 0.0, w: 0.707}}}"
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
 ```
 
-**Expected Output:**
+The `batch_size` parameter pre-allocates GPU memory for that number of poses. If you later call `ik_batch` with a different number of poses, the solver reinitializes automatically (the first call will be slower). For best performance, warmup with the batch size you intend to use.
+
+**Expected response:**
+```yaml
+success: true
+message: 'IK solver initialized with batch_size=1'
+```
+
+### 2.3 Single Pose IK
+
+Use the `ik` service for a single target pose:
+
+```bash
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
+  "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"
+```
+
+**Response (success):**
 ```yaml
 success: true
 joint_states:
   position: [0.523, -0.234, 1.245, -0.523, 1.456, 0.234]
-  velocity: []
-  effort: []
 joint_states_valid:
   data: true
 error_msg:
   data: ''
 ```
 
-**Interpretation**:
-- **success**: `true` means a solution was found
-- **joint_states**: The joint configuration that achieves the target pose
-- **joint_states_valid**: `true` confirms the solution is valid
-
-#### Example 2: Check if Pose is Reachable
-
-```bash
-# Try IK for a potentially unreachable pose (far from robot)
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
-  "{pose: {position: {x: 2.0, y: 0.0, z: 0.5}, orientation: {w: 1.0}}}"
-```
-
-**Expected Output (if unreachable):**
+**Response (failure — pose unreachable):**
 ```yaml
 success: false
 joint_states:
@@ -189,139 +156,100 @@ joint_states:
 joint_states_valid:
   data: false
 error_msg:
-  data: 'IK failed: Pose is outside workspace'
+  data: 'IK failed: no valid solution found'
 ```
 
-**Interpretation**: `success: false` and `joint_states_valid: false` indicate no valid solution found - the pose is unreachable.
+### 2.4 Batch IK
 
-#### Example 3: IK for Different Orientations
+Use `ik_batch` to solve multiple poses in one call. Warmup with the matching batch size first:
 
 ```bash
-# IK with pointing down orientation (end-effector pointing downward)
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
-  "{pose: {position: {x: 0.5, y: 0.0, z: 0.4}, orientation: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}}}"
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 2}"
+
+ros2 service call /unified_planner/ik_batch curobo_msgs/srv/IkBatch \
+  "{poses: [
+    {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}},
+    {position: {x: 0.4, y: 0.2, z: 0.5}, orientation: {w: 1.0}}
+  ]}"
 ```
 
-**Expected Output:**
+**Response:**
 ```yaml
 success: true
 joint_states:
-  position: [0.234, -0.567, 1.456, -0.345, 1.678, 0.123]
+  - position: [0.523, -0.234, 1.245, -0.523, 1.456, 0.234]
+  - position: [0.312, -0.445, 1.102, -0.234, 1.234, 0.456]
 joint_states_valid:
-  data: true
-error_msg:
-  data: ''
+  - data: true
+  - data: true
 ```
+
+### 2.5 IK with Obstacles
+
+Because the IK solver shares the obstacle world with the trajectory planners, any obstacle you add via `add_object` is automatically reflected in IK solutions. No manual synchronization is needed.
+
+For example, after adding a box obstacle that blocks a target pose, IK will return `success: false` for poses that collide with that obstacle.
 
 ---
 
 ## Section 3: Troubleshooting
 
-### Issue 1: IK Fails to Find Solution
+### IK returns no solution
 
-**Symptoms**: `success: false`, `joint_states_valid: false`
+1. **Pose outside workspace** — check that the target is within the robot's reach (typically 0.3–1.0 m from base for a 6-DOF arm)
+2. **Collision** — the IK solver checks collisions; an obstacle at the target pose will cause failure
+3. **Invalid quaternion** — ensure the quaternion is normalized (`x²+y²+z²+w² = 1`)
 
-**Possible Causes**:
-1. **Pose is outside workspace** → Reduce distance from base, check z-height
-2. **Invalid orientation** → Check quaternion is normalized (x²+y²+z²+w²=1)
-3. **Collision with obstacles** → Remove obstacles or adjust pose
-
-**Solution**:
+Verify with a known reachable pose:
 ```bash
-# Verify pose is within reasonable workspace bounds
-# For typical 6-DOF arm: reach is typically 0.3m to 1.0m from base
-
-# Try a known reachable pose
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
   "{pose: {position: {x: 0.5, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
 ```
 
-### Issue 2: FK Returns Unexpected Pose
+### Service not available
 
-**Symptoms**: End-effector pose doesn't match expected position
+IK and FK solvers are not initialized until warmup is called. If you see `Service not available`, check that the node is running and that you have called the warmup service:
 
-**Possible Causes**:
-1. **Joint order mismatch** → Verify joint positions match robot's joint order
-2. **Wrong coordinate frame** → Check base_link parameter
-3. **Joint values out of range** → Check joint limits in robot config
-
-**Solution**:
 ```bash
-# Verify joint names and order
-ros2 topic echo /joint_states --once
-
-# Use exact joint order from topic
-ros2 service call /unified_planner/fk_compute curobo_msgs/srv/Fk \
-  "{joint_state: {position: [j1, j2, j3, j4, j5, j6]}}"
-```
-
-### Issue 3: Service Not Available
-
-**Symptoms**: `Service not available: /unified_planner/fk_compute`
-
-**Solution**:
-```bash
-# Check if unified_planner node is running
 ros2 node list | grep unified_planner
-
-# List available services
-ros2 service list | grep -E "(fk_compute|ik_batch)"
-
-# Restart the planner
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 service list | grep unified_planner
 ```
 
-### Issue 4: Quaternion Normalization Error
+### Batch size mismatch (slower first call)
 
-**Symptoms**: IK returns error about invalid orientation
-
-**Solution**:
-```bash
-# Ensure quaternion is normalized
-# For identity orientation (no rotation), use: {x: 0, y: 0, z: 0, w: 1}
-# For 180° rotation around Y: {x: 0, y: 1, z: 0, w: 0}
-
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
-  "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {x: 0, y: 0, z: 0, w: 1}}}"
-```
+If you call `ik_batch` with a different number of poses than the warmup batch size, the solver reinitializes automatically. The first call will be slower. To avoid this, warmup with the batch size you intend to use most often.
 
 ---
 
-## Section 4: Comparison with Motion Planning
+## Section 4: Comparison
 
-| Feature | IK/FK Services | Motion Planning |
-|---------|---------------|-----------------|
-| **Speed** | < 10 ms | 50-500 ms |
-| **Output** | Joint config or pose | Full trajectory |
-| **Collision checking** | No | Always included |
-| **Path planning** | No | Yes |
-| **Use for execution** | No (config only) | Yes (trajectory) |
-| **Typical use** | Validation, calibration | Robot motion |
+| Feature | FK | IK | Motion Planning |
+|---------|----|-----|-----------------|
+| Speed | < 5 ms | < 10 ms | 50–500 ms |
+| Output | End-effector pose | Joint configuration | Full trajectory |
+| Collision checking | No | Yes (self + obstacles) | Yes |
+| Path planning | No | No | Yes |
+| Suitable for execution | No | No | Yes |
 
-**Rule of Thumb**: Use IK/FK for quick kinematic checks. Use `generate_trajectory` for actual robot motion.
+**Rule of thumb**: Use IK/FK for validation and workspace checks. Use `generate_trajectory` for motion execution.
 
 ---
 
 ## Next Steps
 
-Now that you understand IK/FK services, you can:
-
-- **Integrate with motion planning**: Use IK to validate poses before calling `generate_trajectory`
-- **Implement pose validation**: Check reachability before attempting robot motion
-- **Add collision detection**: Combine IK with obstacle management ([Tutorial 3](03-collision-objects.md))
-- **Explore point clouds**: Use camera integration for dynamic obstacles ([Tutorial 7](07-pointcloud-detection.md))
-- **Learn more about cuRobo**: Visit [curobo.org](https://curobo.org) for in-depth kinematics documentation
+- **Combine IK with planning**: Use IK to validate a pose is reachable before calling `generate_trajectory`
+- **Add obstacles**: See [Tutorial 3: Collision Objects](03-collision-objects.md) — obstacles added there are automatically visible to the IK solver
+- **Explore point clouds**: See [Tutorial 7: Point Cloud Detection](07-pointcloud-detection.md)
 
 ---
 
 ## Related Documentation
 
-- [Tutorial 1: Your First Trajectory](01-first-trajectory.md) - Basic motion planning
-- [Tutorial 3: Collision Objects](03-collision-objects.md) - Obstacle management
-- [ROS Interfaces Reference](../concepts/ros-interfaces.md) - Complete service API
-- [curobo_msgs Package](https://github.com/Lab-CORO/curobo_msgs) - Message definitions
-- [cuRobo Official Documentation](https://curobo.org) - Detailed kinematics algorithms
+- [Unified Planner — IK and FK Services](../concepts/unified-planner.md#ik-and-fk-services)
+- [ROS Interfaces — Kinematics Services](../concepts/ros-interfaces.md#kinematics-services)
+- [Tutorial 3: Collision Objects](03-collision-objects.md)
+- [cuRobo Official Documentation](https://curobo.org)
 
 ---
 
-[← Back to Tutorials](README.md) | [Continue to Tutorial 7: Point Cloud Detection →](07-pointcloud-detection.md)
+[← Tutorial 5: MPC Planner](05-mpc-planner.md) | [Tutorial 7: Point Cloud Detection →](07-pointcloud-detection.md)

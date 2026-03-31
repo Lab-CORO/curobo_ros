@@ -1,4 +1,4 @@
-# Tutorial: Using the MPC Planner
+# Tutorial 5: Using the MPC Planner
 
 > **📋 Implementation Status**: This tutorial describes the planned MPC planner functionality. The MPC planner architecture is fully specified and documented, but the implementation is currently in progress. This document serves as both a specification for developers and a preview of upcoming features for users.
 
@@ -397,7 +397,7 @@ MpcMove automatically adapts to obstacles in the world configuration:
 ```bash
 # 1. Add obstacle
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'wall', primitive_type: 0, dims: [0.1, 1.0, 1.5], \
+  "{name: 'wall', type: 0, dimensions: {x: 0.1, y: 1.0, z: 1.5}, \
     pose: {position: {x: 0.4, y: 0.0, z: 0.5}, orientation: {w: 1.0}}}"
 
 # 2. Send MpcMove goal (will automatically avoid wall)
@@ -421,7 +421,7 @@ ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
 # Terminal 2: Add obstacle mid-execution (after 2 seconds)
 sleep 2
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'dynamic_box', primitive_type: 0, dims: [0.15, 0.15, 0.15], \
+  "{name: 'dynamic_box', type: 0, dimensions: {x: 0.15, y: 0.15, z: 0.15}, \
     pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
 
 # Observe: MPC automatically avoids the new obstacle without stopping!
@@ -440,8 +440,9 @@ result:
 
 **Solutions:**
 ```bash
-# Check if goal is reachable using IK service
-ros2 service call /unified_planner/ik_batch_poses curobo_msgs/srv/Ik \
+# Check if goal is reachable using IK service (warmup first if not done)
+ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
+ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
   "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
 
 # If IK fails, adjust goal pose to be within workspace
@@ -557,15 +558,9 @@ ros2 topic echo /joint_states
  
 2. **Add dynamic obstacle** while robot is moving:
    ```bash
-   ros2 service call /unified_planner/add_collision_object curobo_msgs/srv/ManageCollisionObject \
-     "{
-       object: {
-         name: 'dynamic_box',
-         primitive_type: 1,
-         dimensions: [0.2, 0.2, 0.2],
-         pose: {position: {x: 0.4, y: 0.2, z: 0.3}}
-       }
-     }"
+   ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+     "{name: 'dynamic_box', type: 0, dimensions: {x: 0.2, y: 0.2, z: 0.2}, \
+       pose: {position: {x: 0.4, y: 0.2, z: 0.3}, orientation: {w: 1.0}}}"
    ```
  
 3. **Observe**: MPC automatically avoids new obstacle without stopping!

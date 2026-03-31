@@ -38,7 +38,7 @@ Think of it as a "smart motion planner" that uses your GPU to compute safe paths
 | **Node** | An executable program that does one job | `unified_planner` (plans trajectories) |
 | **Topic** | A named data stream (publish/subscribe) | `/joint_states` (robot joint positions) |
 | **Service** | Request/response communication | `/generate_trajectory` (ask for a path) |
-| **Action** | Long-running task with feedback | `/send_trajectrory` (execute a trajectory) |
+| **Action** | Long-running task with feedback | `/unified_planner/execute_trajectory` (execute a trajectory) |
 | **Message** | Data structure sent between nodes | `geometry_msgs/Pose` (position + orientation) |
 
 #### Common ROS Commands
@@ -132,6 +132,7 @@ Before starting, make sure you have:
 Ready to get started?
 
 1. **[Installation Guide](installation.md)** - Set up Docker, build the image, and run your first trajectory
+2. **[Your First Trajectory](../tutorials/01-first-trajectory.md)** - Generate your first motion plan
 3. **[Parameters Guide](../concepts/parameters.md)** - Understand important configuration parameters
 
 ---
