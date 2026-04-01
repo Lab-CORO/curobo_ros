@@ -14,6 +14,7 @@ release = "0.0.0"
 extensions = [
     "myst_parser",           # Parse .md files with MyST
     "sphinxcontrib.mermaid", # Render Mermaid diagrams (architecture.md)
+    "sphinxcontrib.youtube", # Embed YouTube videos with {youtube} directive
 ]
 
 # Accept both .rst and .md source files.
