@@ -13,12 +13,9 @@ from cv_bridge import CvBridge, CvBridgeError
 import tf2_ros
 import struct
 
-# cuRobo imports
-from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
-from curobo.types.base import TensorDeviceType
-from curobo.types.robot import RobotConfig
-from curobo.types.state import JointState
-from curobo.util_file import load_yaml
+# cuRobo imports (v2)
+from curobo.kinematics import Kinematics, KinematicsCfg
+from curobo.types import DeviceCfg, JointState
 
 from curobo_ros.robot.robot_context import RobotContext
 
@@ -35,22 +32,15 @@ class DepthMapRobotSegmentation(Node):
         """
         super().__init__('curobo_depth_map_robot_segmentation')
 
-        # Initialize tensor arguments with CUDA device
-        tensor_args = TensorDeviceType(device='cuda', dtype=torch.float32)
-
         # Get the path to your curobo_ros package
         package_share_directory = get_package_share_directory('curobo_ros')
         self.declare_parameter('robot_config_file', os.path.join(
             package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
         robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
-        config_file = load_yaml(robot_config_file)
-        robot_cfg_dict = config_file["robot_cfg"]
-        robot_cfg_dict.pop('cspace', None)
-        robot_cfg = RobotConfig.from_dict(robot_cfg_dict, tensor_args)
-        urdf_file = robot_cfg.kinematics.generator_config.urdf_path
 
-
-        kin_model = CudaRobotModel(robot_cfg.kinematics)
+        # v2: Kinematics replaces CudaRobotModel; KinematicsCfg.create loads the
+        # robot YAML directly — no manual load_yaml/RobotConfig.from_dict dance.
+        kin_model = Kinematics(KinematicsCfg.create(robot=robot_config_file))
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)

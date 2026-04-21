@@ -6,9 +6,11 @@ import numpy as np
 import rclpy
 from scipy.spatial.transform import Rotation
 
+# v2: curobo.types is a flat module; CameraObservation stays in types.camera.
+# TensorDeviceType → DeviceCfg.
 from curobo.types.camera import CameraObservation
 from curobo.types.math import Pose
-from curobo.types.base import TensorDeviceType
+from curobo.types import DeviceCfg
 
 from tf2_ros import Buffer, TransformListener, TransformException
 import ros2_numpy
@@ -40,7 +42,9 @@ class CameraStrategy(ABC):
         self._topic = topic
         self._camera_info = camera_info
         self._frame_id = frame_id
-        self.tensor_args = TensorDeviceType()
+        # v2: DeviceCfg carries device/dtype. The object still has .device / .dtype
+        # attributes that the rest of this file consumes.
+        self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
 
         # Get camera pose from TF
         self.tf_buffer = Buffer()

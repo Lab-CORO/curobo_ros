@@ -21,9 +21,8 @@ from typing import Optional, Any
 import time
 
 import torch
-from curobo.types.robot import JointState
-from curobo.types.math import Pose
-from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenResult
+from curobo.types import JointState
+from curobo.motion_planner import MotionPlanner
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 from curobo_msgs.action import SendTrajectory
@@ -33,22 +32,22 @@ import traceback
 
 class SinglePlanner(TrajectoryPlanner):
     """
-    Abstract base class for MotionGen-based planners.
+    Abstract base class for MotionPlanner-based planners (v2).
 
-    This class implements the shared infrastructure that all MotionGen-based
+    This class implements the shared infrastructure that all MotionPlanner-based
     planners need:
-    - Shared MotionGen instance (set once, used by all child planners)
+    - Shared MotionPlanner instance (set once, used by all child planners)
     - Common execution logic for open-loop trajectory execution
     - Trajectory storage and state management
     - Cancellation handling
 
     Child classes only need to implement:
-    - _plan_trajectory(): How to generate the trajectory using MotionGen
+    - _plan_trajectory(): How to generate the trajectory using plan_pose()
     - _process_trajectory(): Optional post-processing of the generated trajectory
     - get_planner_name(): Name of the specific planner
 
     Key design decisions:
-    1. All child planners share the SAME MotionGen instance
+    1. All child planners share the SAME MotionPlanner instance
        - Warmup is done only ONCE by ConfigWrapperMotion
        - Switching between SinglePlanner children does NOT trigger warmup
        - This saves significant initialization time (~seconds)
@@ -59,14 +58,20 @@ class SinglePlanner(TrajectoryPlanner):
        - Different from MPC which uses closed-loop
 
     3. Thread safety: NOT thread-safe by design
-       - MotionGen instance is shared without locks
+       - MotionPlanner instance is shared without locks
        - Assumes single-threaded sequential execution
        - If concurrent planning needed, add synchronization in child classes
+
+    v2 notes:
+    - MotionGen → MotionPlanner (curobo.motion_planner).
+    - MotionGenResult → MotionPlannerResult, but we only use the `.success`,
+      `.status`, `.solve_time` duck-typed attributes here.
+    - MotionGenPlanConfig is gone: per-call params are kwargs on plan_pose().
     """
 
-    # Class-level shared MotionGen instance
+    # Class-level shared MotionPlanner instance
     # This is shared across ALL instances of SinglePlanner and its children
-    _shared_motion_gen: Optional[MotionGen] = None
+    _shared_motion_planner: Optional[MotionPlanner] = None
 
     def __init__(self, node, config_wrapper):
         """
@@ -97,33 +102,37 @@ class SinglePlanner(TrajectoryPlanner):
         return ExecutionMode.OPEN_LOOP
 
     @classmethod
-    def set_motion_gen(cls, motion_gen: MotionGen):
+    def set_motion_planner(cls, motion_planner: MotionPlanner):
         """
-        Set the shared MotionGen instance.
+        Set the shared MotionPlanner instance (v2).
 
         This is called ONCE after ConfigWrapperMotion.set_motion_gen_config()
         completes the warmup. All SinglePlanner instances (current and future)
-        will use this same MotionGen instance.
+        will use this same MotionPlanner instance.
 
         Args:
-            motion_gen: Warmed-up MotionGen instance from ConfigWrapperMotion
+            motion_planner: Warmed-up MotionPlanner instance from ConfigWrapperMotion
 
-        Example usage in node initialization:
+        Example:
             >>> config_wrapper = ConfigWrapperMotion(node, robot)
-            >>> config_wrapper.set_motion_gen_config(node, None, None)  # Creates and warms up
-            >>> SinglePlanner.set_motion_gen(node.motion_gen)  # Share with all planners
+            >>> config_wrapper.set_motion_gen_config(node, None, None)
+            >>> SinglePlanner.set_motion_planner(node.motion_planner)
         """
-        cls._shared_motion_gen = motion_gen
+        cls._shared_motion_planner = motion_planner
+
+    # Legacy alias: keeps older call sites (`set_motion_gen`, `.motion_gen`) working
+    # during the v2 transition.
+    set_motion_gen = set_motion_planner
 
     @property
-    def motion_gen(self) -> Optional[MotionGen]:
-        """
-        Access the shared MotionGen instance.
+    def motion_planner(self) -> Optional[MotionPlanner]:
+        """Access the shared MotionPlanner instance."""
+        return self._shared_motion_planner
 
-        Returns:
-            Shared MotionGen instance, or None if not yet initialized
-        """
-        return self._shared_motion_gen
+    @property
+    def motion_gen(self) -> Optional[MotionPlanner]:
+        """Legacy alias for motion_planner."""
+        return self._shared_motion_planner
 
     def cancel(self):
         """
@@ -165,13 +174,13 @@ class SinglePlanner(TrajectoryPlanner):
         Returns:
             PlannerResult with success status and trajectory or error message
         """
-        # Validate MotionGen is initialized
-        if self.motion_gen is None:
+        # Validate MotionPlanner is initialized
+        if self.motion_planner is None:
             return PlannerResult(
                 success=False,
                 message=(
-                    "MotionGen not initialized. "
-                    "Call SinglePlanner.set_motion_gen() after warmup."
+                    "MotionPlanner not initialized. "
+                    "Call SinglePlanner.set_motion_planner() after warmup."
                 ),
             )
 
@@ -245,18 +254,15 @@ class SinglePlanner(TrajectoryPlanner):
         start_state: JointState,
         goal_request: Any,
         config: dict
-    ) -> MotionGenResult:
+    ):
         """
-        Generate trajectory using MotionGen.
+        Generate trajectory using MotionPlanner.plan_pose() (v2).
 
-        This is the main method that child classes must implement.
-        It defines HOW the trajectory is generated using MotionGen.
-
-        Different child planners extract different data from goal_request:
-        - ClassicPlanner: Extracts goal_request.target_pose → single Pose
-        - MultiPointPlanner: Extracts goal_request.target_poses → list of Poses
-        - JointSpacePlanner: Extracts goal_request.target_joints → joint positions
-        - GraspPlanner: Extracts goal_request.target_pose + gripper config
+        Child planners extract different data from goal_request:
+        - ClassicPlanner: goal_request.target_pose  → single GoalToolPose
+        - MultiPointPlanner: goal_request.target_poses → goalset GoalToolPose
+        - JointSpacePlanner: goal_request.target_joints → joint goal
+        - GraspPlanner: goal_request.target_pose + gripper config
 
         Args:
             start_state: Initial joint configuration
@@ -264,28 +270,21 @@ class SinglePlanner(TrajectoryPlanner):
             config: Dictionary with planner-specific configuration
 
         Returns:
-            MotionGenResult with trajectory and status
+            MotionPlannerResult-like object with `.success`, `.status`,
+            `.solve_time`, and `.get_interpolated_plan()`.
 
-        Example implementation (ClassicPlanner):
-            >>> from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
-            >>> from curobo.types.math import Pose
-            >>>
-            >>> def _plan_trajectory(self, start_state, goal_request, config):
-            >>>     # Extract single pose from request
-            >>>     goal_pose = Pose.from_list([
-            >>>         goal_request.target_pose.position.x,
-            >>>         goal_request.target_pose.position.y,
-            >>>         goal_request.target_pose.position.z,
-            >>>         goal_request.target_pose.orientation.x,
-            >>>         goal_request.target_pose.orientation.y,
-            >>>         goal_request.target_pose.orientation.z,
-            >>>         goal_request.target_pose.orientation.w
-            >>>     ])
-            >>>     return self.motion_gen.plan_single(
-            >>>         start_state,
-            >>>         goal_pose,
-            >>>         MotionGenPlanConfig(...)
-            >>>     )
+        Example (ClassicPlanner):
+            >>> from curobo.types import ToolPose, GoalToolPose
+            >>> goal = GoalToolPose(tool_pose=ToolPose.from_list([
+            ...     p.position.x, p.position.y, p.position.z,
+            ...     p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z,
+            ... ]))
+            >>> return self.motion_planner.plan_pose(
+            ...     start_state, goal,
+            ...     max_attempts=config['max_attempts'],
+            ...     timeout=config['timeout'],
+            ...     time_dilation_factor=config['time_dilation_factor'],
+            ... )
         """
         pass
 

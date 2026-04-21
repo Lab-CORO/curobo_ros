@@ -1,91 +1,61 @@
 import torch
-from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
-from curobo.types.robot import RobotConfig
-from curobo.types.state import JointState
-from curobo_msgs.srv import SetLinkCollision
 from typing import List, Tuple
+
+from curobo.kinematics import Kinematics, KinematicsCfg
+from curobo.types import JointState
+from curobo_msgs.srv import SetLinkCollision
 
 
 class RobotModelManager:
     """
-    Manages the robot model, kinematics, and collision geometry.
-    Responsible for:
-    - Managing CudaRobotModel for kinematics computations
-    - Computing robot collision spheres for visualization and masking
-    - Providing joint state management
-    - Enabling/disabling link collision spheres (shared with all solvers)
+    Manages the robot kinematics and collision geometry.
+
+    v2 notes:
+    - `CudaRobotModel` → `Kinematics` (curobo.kinematics)
+    - `RobotConfig` no longer exists — kinematics is built from a YAML path
+      or dict via `KinematicsCfg.create(robot=…)`.
+    - KinematicsTensorConfig still lives on the kinematics instance; the
+      `enable_link_spheres` / `disable_link_spheres` API is unchanged.
     """
 
-    def __init__(self, robot_cfg: RobotConfig, robot, base_link: str, node=None):
+    def __init__(self, robot_config_file: str, robot, base_link: str, node=None):
         """
-        Initialize the robot model manager.
-
         Args:
-            robot_cfg: Robot configuration from cuRobo
-            robot: Robot interface object for accessing joint states
-            base_link: Robot base frame name
-            node: ROS2 node (for logging and service registration)
+            robot_config_file: Path to the robot YAML config (v2 accepts this directly).
+            robot: Robot interface object for accessing joint states.
+            base_link: Robot base frame name.
+            node: ROS2 node (for logging and service registration).
         """
-        self.robot_cfg = robot_cfg
+        self.robot_config_file = robot_config_file
         self.robot = robot
         self.base_link = base_link
         self.node = node
 
-        # Create CUDA robot model for kinematics
-        self.kin_model = CudaRobotModel(robot_cfg.kinematics)
+        self.kin_model = Kinematics(KinematicsCfg.create(robot=robot_config_file))
 
-        # Device configuration for operations
         self._ops_dtype = torch.float32
         self._device = torch.device('cuda')
 
     def get_kinematics_state(self, joint_positions):
-        """
-        Compute the kinematics state from joint positions.
-
-        Args:
-            joint_positions: Tensor of joint positions
-
-        Returns:
-            Kinematics state containing link poses, spheres, etc.
-        """
         return self.kin_model.get_state(joint_positions)
 
     def get_collision_spheres(self) -> List[List[float]]:
-        """
-        Get the robot's collision spheres in current configuration.
-        Useful for visualization and point cloud masking.
-
-        Returns:
-            List of spheres, each as [x, y, z, radius]
-        """
         q_js = JointState(
             position=torch.tensor(
                 self.robot.get_joint_pose(),
                 dtype=self._ops_dtype,
-                device=self._device
+                device=self._device,
             ),
-            joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
+            joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'],
         )
 
         kinematics_state = self.kin_model.get_state(q_js.position)
-
         robot_spheres = kinematics_state.link_spheres_tensor.view(-1, 4)
-        robot_spheres = robot_spheres.cpu().numpy().tolist()
-
-        return robot_spheres
+        return robot_spheres.cpu().numpy().tolist()
 
     def set_link_collision(
         self, link_names: List[str], enabled: bool
     ) -> Tuple[List[str], List[str]]:
-        """
-        Enable or disable collision spheres for a list of links.
-
-        Modifies link_spheres in-place on the shared KinematicsTensorConfig,
-        so the change is immediately visible to all solvers (MotionGen, MPC).
-
-        Returns:
-            Tuple[List[str], List[str]]: (applied_links, unknown_links)
-        """
         kc = self.kin_model.kinematics_config
         applied, unknown = [], []
         for link in link_names:
@@ -104,13 +74,6 @@ class RobotModelManager:
         request: SetLinkCollision.Request,
         response: SetLinkCollision.Response,
     ) -> SetLinkCollision.Response:
-        """
-        ROS service callback — enable or disable collision spheres for a list of links.
-
-        All solvers (MotionGen, MPC) share the same KinematicsTensorConfig, so a
-        single in-place modification affects every active solver simultaneously.
-        The state persists until an explicit call with the opposite value.
-        """
         applied, unknown = self.set_link_collision(list(request.link_names), request.enabled)
 
         response.applied_links = applied
@@ -137,17 +100,11 @@ class RobotModelManager:
         return response
 
     def get_joint_state(self) -> JointState:
-        """
-        Get current joint state from robot interface.
-
-        Returns:
-            JointState object with current joint positions
-        """
         return JointState(
             position=torch.tensor(
                 self.robot.get_joint_pose(),
                 dtype=self._ops_dtype,
-                device=self._device
+                device=self._device,
             ),
-            joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
+            joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'],
         )

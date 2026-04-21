@@ -158,12 +158,19 @@ class DepthMapCameraStrategy(CameraStrategy):
                 pose=self.camera_pose
             )
 
-            # Add camera frame to world model if available
-            if hasattr(self.node, 'world_model') and self.node.world_model is not None:
-                self.node.world_model.add_camera_frame(data_camera, "world")
-                self.node.world_model.process_camera_frames("world", False)
+            # v2: depth frames are integrated by the node's `Mapper`.
+            # `world_model.add_camera_frame(...)` / `process_camera_frames(...)` /
+            # `update_blox_hashes()` are gone — `mapper.integrate(obs)` does it all.
+            mapper = getattr(self.node, 'mapper', None)
+            if mapper is not None:
+                mapper.integrate(data_camera)
                 torch.cuda.synchronize()
-                self.node.world_model.update_blox_hashes()
+            else:
+                self.node.get_logger().warn(
+                    "No mapper on node — depth frame ignored. "
+                    "Unified planner should expose `node.mapper` (curobo.perception.Mapper).",
+                    throttle_duration_sec=5.0,
+                )
 
             self.depth_map = depth_tensor
 

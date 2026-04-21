@@ -1,7 +1,22 @@
 # CuRobo ROS Manager Architecture
 
-**Last Updated:** December 2025
+**Last Updated:** April 2026 (cuRobo v0.8.0 migration)
 **Introduced:** December 10, 2025 refactoring
+
+> **cuRobo v2 migration note.** This document still uses v1 vocabulary in a few
+> places (`MotionGen`, `CudaRobotModel`, `WorldConfig`, `world_coll_checker`).
+> The manager layout is unchanged; only the underlying cuRobo types were
+> renamed — see the table below and [docs/MIGRATION_V2.md](../MIGRATION_V2.md).
+>
+> | v1 (in this doc) | v2 (actual code) |
+> |---|---|
+> | `MotionGen` / `MotionGenConfig` | `MotionPlanner` / `MotionPlannerCfg` |
+> | `CudaRobotModel` | `Kinematics` / `KinematicsCfg` |
+> | `WorldConfig` | `Scene` (`curobo.scene.Scene`) |
+> | `TensorDeviceType` | `DeviceCfg` (`curobo.types`) |
+> | `MpcSolver` | `ModelPredictiveControl` |
+> | `world_coll_checker` | planner owns `scene_model`; dynamic data via `node.mapper.integrate(...)` |
+> | `VoxelGrid` / `BloxMap` | `Mapper` (TSDF block-sparse + ESDF) |
 
 ## Overview
 

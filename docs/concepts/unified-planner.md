@@ -2,6 +2,8 @@
 
 The **Unified Planner** is the central node of curobo_ros. It exposes a single ROS 2 node (`unified_planner`) that supports multiple planning algorithms, kinematics services, and obstacle management through a unified interface.
 
+> **cuRobo v2 terminology.** References to `MotionGen`, `MpcSolver`, `CudaRobotModel`, and `IkSolver` in this document describe the **architecture** — the actual v0.8.0 code uses `MotionPlanner`, `ModelPredictiveControl`, `Kinematics`, and `InverseKinematics`. See [docs/MIGRATION_V2.md](../MIGRATION_V2.md). `world_cfg` / `world_coll_checker` mentions map to `Scene` and `Mapper` respectively.
+
 ---
 
 ## Overview

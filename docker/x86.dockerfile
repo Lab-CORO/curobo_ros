@@ -70,28 +70,19 @@ ENV TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 
 # Add cache date to avoid using cached layers older than this
-ARG CACHE_DATE=2024-07-19
+ARG CACHE_DATE=2026-04-20
 
 RUN pip install "robometrics[evaluator] @ git+https://github.com/fishbotics/robometrics.git"
 
-
-# if you want to use a different version of curobo, create folder as docker/pkgs and put your
-# version of curobo there. Then uncomment below line and comment the next line that clones from
-# github
-
-# COPY pkgs /pkgs
-RUN mkdir /pkgs && cd /pkgs && git clone  https://github.com/NVlabs/curobo.git
+# cuRobo v2 (v0.8.0) upstream — Mapper v2 natif remplace nvblox.
+ARG CUROBO_REF=v0.8.0
+RUN mkdir /pkgs && cd /pkgs && \
+    git clone -b ${CUROBO_REF} https://github.com/NVlabs/curobo.git
 
 WORKDIR /pkgs/curobo
 RUN pip3 install .[dev,usd] --no-build-isolation
 
-# Optionally install nvblox:
-
-# we require this environment variable to  render images in unit test curobo/tests/nvblox_test.py
-
 ENV PYOPENGL_PLATFORM=egl
-
-# add this file to enable EGL for rendering
 
 RUN echo '{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}' >> /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
@@ -99,17 +90,6 @@ RUN apt-get update && \
     apt-get install -y libbenchmark-dev libgoogle-glog-dev libgtest-dev libsqlite3-dev && \
     cd /usr/src/googletest && cmake . && cmake --build . --target install && \
     rm -rf /var/lib/apt/lists/*
-
-WORKDIR /pkgs
-RUN git clone https://github.com/valtsblukis/nvblox.git && \
-    cd nvblox && cd nvblox && mkdir build && cd build && \
-    cmake .. -DPRE_CXX11_ABI_LINKABLE=ON && \
-    make -j32 && \
-    make install
-RUN git clone https://github.com/nvlabs/nvblox_torch.git && \
-    cd nvblox_torch && \
-    sh install.sh $(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)') && \
-    python3 -m pip install -e .
 
 #################################################
 # Cloner le dépôt OpenCV et les modules supplémentaires

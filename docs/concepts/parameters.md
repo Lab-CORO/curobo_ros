@@ -2,6 +2,8 @@
 
 This guide explains all important parameters in curobo_ros, how they affect performance, and how to tune them for your application.
 
+> **cuRobo v2 (v0.8.0+).** This guide predates the v2 migration. Service / parameter names are unchanged; only the underlying cuRobo type names differ. Where you see `MotionGen` in examples below, the code now uses `MotionPlanner`; `world_cfg` is now a `Scene`. See [docs/MIGRATION_V2.md](../MIGRATION_V2.md). The `collision_cache` service now accepts a single `obb` value (mesh/blox fields are ignored by v2's Scene).
+
 ---
 
 ## Overview

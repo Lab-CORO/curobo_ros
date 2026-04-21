@@ -2,6 +2,14 @@
 
 > **For Developers**: This document provides technical guidance for implementing the MPC planner in curobo_ros. It complements the [Unified Planner Architecture](unified_planner.md) specification and [MPC Planner Tutorial](../tutorials/5_mpc_planner.md) user documentation.
 
+> **cuRobo v2 notes (v0.8.0+):**
+> - `MpcSolver` → `ModelPredictiveControl` (`from curobo.mpc import ModelPredictiveControl, ModelPredictiveControlCfg`)
+> - `RobotConfig` objects are no longer passed manually — factories accept a YAML path / dict via `robot=`
+> - `world_model` → `scene_model` (a `curobo.scene.Scene`); dynamic cameras go through `node.mapper.integrate(...)` instead of `update_world`
+> - `mpc.update_goal(Pose)` → `mpc.update_goal_pose(GoalToolPose(tool_pose=ToolPose.from_list([x,y,z,qw,qx,qy,qz])))`
+> - `mpc.solve_step(current_state=..., goal_pose=...)` → `mpc.step(current_state, shift_steps)`; read metrics via `result.metrics.pose_error.item()`
+> - See [docs/MIGRATION_V2.md](../MIGRATION_V2.md) for the full mapping. Canonical wiring lives in `curobo_ros/planners/mpc_planner.py`.
+
 ---
 
 ## Overview
@@ -63,26 +71,29 @@ The MPC planner integrates with:
 cuRobo provides MPC capabilities through its optimization framework. Key components:
 
 ```python
-from curobo.wrap.reacher.mpc import MpcSolver
-from curobo.types.math import Pose
-from curobo.types.robot import RobotConfig
-from curobo.types.state import JointState
+# v2 (cuRobo v0.8.0+)
+from curobo.mpc import ModelPredictiveControl, ModelPredictiveControlCfg
+from curobo.types import JointState
+from curobo.types.tool import ToolPose, GoalToolPose
 
-# MPC solver initialization
-mpc_solver = MpcSolver(
-    robot_config=robot_config,
-    world_model=world_model,
-    mpc_config=mpc_config
+# MPC solver initialization (v2). The Cfg factory loads the robot YAML
+# directly and binds the scene model; no separate RobotConfig object.
+cfg = ModelPredictiveControlCfg.create(
+    robot=robot_yaml_path,
+    scene_model=scene,
+    horizon=horizon,
+    use_cuda_graph=True,
 )
+mpc = ModelPredictiveControl(cfg)
 ```
 
 ### Key cuRobo APIs to Use
 
-1. **MpcSolver.solve_step()** - Single MPC iteration
-2. **MpcSolver.update_goal()** - Update target during execution
-3. **MpcSolver.update_world()** - Update obstacles in real-time
-4. **MpcSolver.get_trajectory()** - Get predicted trajectory
-5. **MpcSolver.reset()** - Reset for new planning task
+1. **`ModelPredictiveControl.step(current_state, shift_steps)`** - Single MPC iteration
+2. **`ModelPredictiveControl.update_goal_pose(GoalToolPose)`** - Update target during execution
+3. **Scene/Mapper integration** - Dynamic obstacles flow through `node.mapper.integrate(CameraObservation)` → `mapper.compute_esdf()`; the planner shares the same scene model
+4. **`result.action`** / **`mpc.get_trajectory()`** - Predicted trajectory accessors
+5. **`ModelPredictiveControl.reset()`** - Reset for new planning task
 
 ### Configuration Parameters
 
@@ -114,7 +125,8 @@ mpc_config = MpcConfig(
 # curobo_ros/planners/mpc_planner.py
 
 from .base_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
-from curobo.wrap.reacher.mpc import MpcSolver
+from curobo.mpc import ModelPredictiveControl  # v2
+from curobo.types.tool import ToolPose, GoalToolPose
 import rclpy
 from rclpy.node import Node
 import threading

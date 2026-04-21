@@ -12,8 +12,7 @@ from typing import Optional, List, Any
 from enum import Enum
 
 import torch
-from curobo.types.robot import JointState
-from curobo.types.math import Pose
+from curobo.types import JointState
 
 
 class ExecutionMode(Enum):

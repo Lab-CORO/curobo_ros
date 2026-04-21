@@ -18,7 +18,7 @@ Depth Camera (RealSense, Azure Kinect, etc.)
        │  /depth_to_rgb/image_raw  (raw — includes robot body)
        ▼
 robot_segmentation node             (recommended — see Section 6)
-  ├── joint states → collision spheres (CudaRobotModel)
+  ├── joint states → collision spheres (Kinematics, cuRobo v2)
   └── removes robot pixels → /masked_depth_image
        │
        ▼
@@ -152,14 +152,13 @@ Once the camera is initialized, it subscribes to the depth topic. For each incom
 
 1. The depth image is converted to a float tensor (mm → m if `16UC1`)
 2. The camera pose is applied (static from config, or queried from TF)
-3. The frame is added to the cuRobo BLOX world model:
-   - `world_model.add_camera_frame(observation, "world")`
-   - `world_model.process_camera_frames("world")`
-   - `world_model.update_blox_hashes()`
+3. The frame is forwarded to the cuRobo **v2** `Mapper` (TSDF block-sparse + ESDF):
+   - `mapper.integrate(CameraObservation(depth_image, intrinsics, pose))`
+   - The planner reads ESDF / signed distance through the shared `Scene` at plan time.
 
-This happens automatically on every depth frame. There is no manual trigger service needed.
+This happens automatically on every depth frame. There is no manual trigger service needed — the old v1 `add_camera_frame` / `process_camera_frames` / `update_blox_hashes` calls are gone.
 
-When `generate_trajectory` is called, the world model already reflects the latest camera observations.
+When `generate_trajectory` is called, the scene model already reflects the latest camera observations.
 
 ---
 
@@ -241,7 +240,7 @@ Without filtering, the camera sees the robot's own body as obstacles in the dept
 At 100 Hz, the node:
 
 1. Reads the current joint positions from the robot
-2. Computes the robot's collision spheres for that configuration (GPU via CudaRobotModel)
+2. Computes the robot's collision spheres for that configuration (GPU via `Kinematics`, cuRobo v2)
 3. Converts the raw depth image into a 3D point cloud (using camera intrinsics)
 4. Removes every point that falls within `distance_threshold` meters of any collision sphere
 5. Converts the filtered point cloud back to a depth image

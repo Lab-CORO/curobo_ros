@@ -2,7 +2,9 @@
 
 📖 **Full documentation: [lab-coro.github.io/curobo_ros](https://lab-coro.github.io/curobo_ros/index.html)**
 
-GPU-accelerated motion planning for **ROS 2** — powered by [cuRobo](https://curobo.org).
+GPU-accelerated motion planning for **ROS 2** — powered by [cuRobo](https://curobo.org) **v0.8.0 (v2)**.
+
+> **Upgrading from v1?** See [docs/MIGRATION_V2.md](docs/MIGRATION_V2.md) for the complete v1 → v2 API mapping (`MotionGen` → `MotionPlanner`, `WorldConfig` → `Scene`, `TensorDeviceType` → `DeviceCfg`, Mapper replacing nvblox, etc.).
 
 `curobo_ros` wraps NVIDIA's CUDA-accelerated cuRobo library with ROS 2 nodes, services, actions, and messages, enabling:
 

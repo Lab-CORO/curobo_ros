@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FK services for the unified planner node.
+FK services for the unified planner node (v2).
 
 Provides a lazy-initialized FK model that depends only on the robot's
 kinematic model — no world/obstacle dependency.
@@ -8,12 +8,17 @@ kinematic model — no world/obstacle dependency.
 Services exposed (prefixed with the node name):
   /<node>/warmup_fk  (WarmupFK) - init FK model with given batch size (default 1)
   /<node>/fk         (Fk)       - joint states → poses
+
+v2 notes:
+- CudaRobotModel → Kinematics (curobo.kinematics).
+- RobotConfig no longer exists; KinematicsCfg.create accepts the YAML path
+  (or dict) via `robot=`.
 """
 
 import torch
 from geometry_msgs.msg import Pose
 
-from curobo.cuda_robot_model.cuda_robot_model import CudaRobotModel
+from curobo.kinematics import Kinematics, KinematicsCfg
 
 from curobo_msgs.srv import Fk, WarmupFK
 
@@ -23,18 +28,33 @@ class FKServices:
     Manages the FK model and its ROS services on an existing node.
 
     Depends only on:
-    - robot_cfg        (robot kinematics — no world/obstacle needed)
-    - node.tensor_args (CUDA device)
+    - robot_config_file (YAML path — no world/obstacle needed)
+    - node's CUDA device/dtype (via tensor_args or config_wrapper)
 
     The model is created only when warmup_fk is called.
     No update_world() needed: FK is purely geometric.
     """
 
-    def __init__(self, node, robot_cfg):
+    def __init__(self, node, robot_config_file: str):
+        """
+        Args:
+            node: ROS2 node.
+            robot_config_file: Path to the robot YAML config (v2 accepts this
+                directly via KinematicsCfg.create(robot=...)).
+        """
         self._node = node
-        self._robot_cfg = robot_cfg
+        self._robot_config_file = robot_config_file
 
-        self._fk_model: CudaRobotModel | None = None
+        self._fk_model: Kinematics | None = None
+
+        # Resolve device/dtype from the node's tensor_args if present, else default.
+        tensor_args = getattr(node, 'tensor_args', None)
+        if tensor_args is not None and hasattr(tensor_args, 'device'):
+            self._device = torch.device(tensor_args.device)
+            self._dtype = getattr(tensor_args, 'dtype', torch.float32)
+        else:
+            self._device = torch.device('cuda')
+            self._dtype = torch.float32
 
         name = node.get_name()
         node.create_service(WarmupFK, f'{name}/warmup_fk', self._warmup_fk_callback)
@@ -72,7 +92,7 @@ class FKServices:
             return response
 
         qs = [list(js.position) for js in request.joint_states]
-        q = torch.tensor(qs, **(self._node.tensor_args.as_torch_dict()))
+        q = torch.tensor(qs, dtype=self._dtype, device=self._device)
         result = self._fk_model.get_state(q)
 
         for pos, ori in zip(
@@ -98,11 +118,12 @@ class FKServices:
     def _init(self, batch_size: int):
         """Create the FK model and run a warmup batch of the given size."""
         self._node.get_logger().info(f"Initializing FK model (batch_size={batch_size})...")
-        self._fk_model = CudaRobotModel(self._robot_cfg.kinematics)
+        self._fk_model = Kinematics(KinematicsCfg.create(robot=self._robot_config_file))
 
         q = torch.rand(
             (batch_size, self._fk_model.get_dof()),
-            **(self._node.tensor_args.as_torch_dict()),
+            dtype=self._dtype,
+            device=self._device,
         )
         self._fk_model.get_state(q)
 

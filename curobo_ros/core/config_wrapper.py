@@ -45,18 +45,18 @@ class ConfigWrapper(ABC):
 
         # Phase 2: RobotModelManager - Manage robot model and kinematics
         self.robot_model_manager = RobotModelManager(
-            self.config_manager.robot_cfg,
+            self.config_manager.get_robot_config_file(),
             robot,
             self.config_manager.base_link,
             node=node,
         )
 
         # Phase 4: ObstacleManager - Manage obstacles (before RosServiceManager)
-        # Pass initial world_cfg from ConfigManager to ObstacleManager
+        # Pass initial Scene from ConfigManager to ObstacleManager
         self.obstacle_manager = ObstacleManager(
             node,
             self.config_manager,
-            initial_world_cfg=self.config_manager.get_world_config()
+            initial_scene=self.config_manager.get_scene(),
         )
 
         # Phase 5: CameraSystemManager - Manage cameras
@@ -92,35 +92,19 @@ class ConfigWrapper(ABC):
     # attributes as if they were direct attributes of ConfigWrapper
 
     @property
-    def world_cfg(self):
+    def scene(self):
         """
-        Get world configuration from ObstacleManager (single source of truth).
+        Get Scene from ObstacleManager (single source of truth).
 
-        This property provides backward-compatible access to the authoritative
-        world_cfg maintained by ObstacleManager.
+        v2: Scene replaces v1's WorldConfig. Read-only access; mutations must
+        go through ObstacleManager (add_object / remove_object / ...).
         """
-        return self.obstacle_manager.get_world_cfg()
-
-    @world_cfg.setter
-    def world_cfg(self, value):
-        """
-        Set world configuration in ObstacleManager.
-
-        DEPRECATED: Direct assignment is discouraged. Use ObstacleManager methods
-        (add_object, remove_object, etc.) to modify world_cfg.
-
-        This setter is kept for backward compatibility only.
-        """
-        self.obstacle_manager.world_cfg = value
-        self.node.get_logger().warning(
-            "Direct world_cfg assignment is deprecated. "
-            "Use obstacle_manager methods instead."
-        )
+        return self.obstacle_manager.get_scene()
 
     @property
-    def robot_cfg(self):
-        """Get robot configuration from ConfigManager"""
-        return self.config_manager.robot_cfg
+    def robot_config_file(self):
+        """Path to the robot YAML config — pass directly to v2 Cfg factories."""
+        return self.config_manager.get_robot_config_file()
 
     @property
     def kin_model(self):
@@ -133,39 +117,16 @@ class ConfigWrapper(ABC):
         return self.config_manager.base_link
 
     @property
-    def cuboid_list(self):
-        """Get cuboid obstacle list from ObstacleManager's WorldConfig"""
-        return self.obstacle_manager.world_cfg.cuboid
-
-    @property
-    def mesh_list(self):
-        """Get mesh obstacle list from ObstacleManager's WorldConfig"""
-        return self.obstacle_manager.world_cfg.mesh
-
-    @property
     def obstacle_names(self):
-        """Get obstacle names from ObstacleManager"""
         return self.obstacle_manager.obstacle_names
 
-
-    @property
-    def collision_checker_type(self):
-        """Get collision checker type from ObstacleManager"""
-        return self.obstacle_manager.collision_checker_type
-
-    @collision_checker_type.setter
-    def collision_checker_type(self, value):
-        """Set collision checker type in ObstacleManager"""
-        self.obstacle_manager.collision_checker_type = value
-
+    # v2: single collision_cache integer (no per-type obb/mesh/blox split).
     @property
     def collision_cache(self):
-        """Get collision cache from ObstacleManager"""
         return self.obstacle_manager.collision_cache
 
     @collision_cache.setter
     def collision_cache(self, value):
-        """Set collision cache in ObstacleManager"""
         self.obstacle_manager.collision_cache = value
 
     @property

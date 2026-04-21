@@ -10,9 +10,11 @@ import rclpy
 from rclpy.node import Node
 import torch
 
-from curobo.types.base import TensorDeviceType
+# v2: curobo.types is now flat. DeviceCfg replaces TensorDeviceType.
+# ToolPose replaces Pose as the canonical goal representation fed to the planner.
+from curobo.types import DeviceCfg, JointState
 from curobo.types.math import Pose
-from curobo.types.robot import JointState
+from curobo.types.tool import ToolPose
 
 from curobo_ros.planners import PlannerFactory, PlannerManager, ClassicPlanner, MPCPlanner
 from curobo_ros.robot.robot_context import RobotContext
@@ -26,7 +28,7 @@ class PlannerExampleNode(Node):
         super().__init__('planner_example')
 
         # Setup
-        self.tensor_args = TensorDeviceType()
+        self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
         self.robot_context = RobotContext(self, 0.03)
 
         # Examples
@@ -46,7 +48,7 @@ class PlannerExampleNode(Node):
         planner = ClassicPlanner(self, config_wrapper)
 
         # Setup (after warmup)
-        # planner.set_motion_gen(self.motion_gen)
+        # planner.set_motion_planner(self.motion_planner)  # v2 API (legacy alias set_motion_gen still works)
 
         # Plan and execute
         start_state = self._get_current_state()
@@ -173,11 +175,11 @@ class PlannerExampleNode(Node):
             torch.Tensor([joint_positions]).to(device=self.tensor_args.device)
         )
 
-    def _create_goal_pose(self, position: list) -> Pose:
-        """Create a goal pose from position."""
+    def _create_goal_pose(self, position: list) -> ToolPose:
+        """Create a goal ToolPose from position (v2: ToolPose wraps Pose for goals)."""
         # Position + quaternion (w, x, y, z)
         pose_list = position + [1.0, 0.0, 0.0, 0.0]
-        return Pose.from_list(pose_list)
+        return ToolPose.from_list(pose_list)
 
     def _is_environment_static(self) -> bool:
         """Check if environment has dynamic obstacles."""

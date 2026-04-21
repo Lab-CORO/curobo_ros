@@ -195,7 +195,7 @@ You can enable or disable collision spheres for specific robot links at runtime.
 This is useful to allow the gripper to make contact with an object during grasping,
 or to ignore self-collision for a specific link during a constrained motion.
 
-All solvers (MotionGen, MPC) share the same kinematics configuration, so a single
+All solvers (MotionPlanner, MPC) share the same kinematics configuration, so a single
 call immediately affects every active planner.
 
 ### Disable a link

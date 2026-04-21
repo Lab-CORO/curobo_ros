@@ -427,7 +427,7 @@ ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_si
 ```
 
 **Notes:**
-- The IK solver shares the obstacle world with MotionGen — obstacle changes are propagated automatically
+- The IK solver shares the scene model with the MotionPlanner (v2) — obstacle changes are propagated automatically
 - If `ik_batch` is called with a different number of poses than the warmup `batch_size`, the solver reinitializes automatically (slower first call)
 - For batch workloads, warmup with the exact batch size you intend to use
 

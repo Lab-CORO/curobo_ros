@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IK services for the unified planner node.
+IK services for the unified planner node (v2).
 
 Provides a lazy-initialized IK solver that shares the obstacle manager
 and robot config of the trajectory planner.
@@ -9,6 +9,11 @@ Services exposed (prefixed with the node name):
   /<node>/warmup_ik  (WarmupIK) - init IK solver with given batch size (default 1)
   /<node>/ik         (Ik)       - single pose → joint state
   /<node>/ik_batch   (IkBatch)  - N poses → joint states
+
+v2 notes:
+- IKSolver / IKSolverConfig → InverseKinematics / InverseKinematicsCfg.
+- CollisionCheckerType is gone; collision is part of InverseKinematicsCfg.create.
+- load_from_robot_config(...) replaced by Cfg.create(robot=<yaml_path>, scene_model=<Scene>, ...).
 """
 
 import torch
@@ -16,8 +21,7 @@ import std_msgs.msg
 from sensor_msgs.msg import JointState
 
 from curobo.types.math import Pose as CuroboPose
-from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
-from curobo.geom.sdf.world import CollisionCheckerType
+from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 
 from curobo_msgs.srv import Ik, IkBatch, WarmupIK
 
@@ -27,20 +31,24 @@ class IKServices:
     Manages the IK solver and its ROS services on an existing node.
 
     Depends on:
-    - config_wrapper_motion.robot_cfg       (robot kinematics)
-    - config_wrapper_motion.obstacle_manager (collision world, shared with MotionGen)
-    - node.tensor_args                       (CUDA device)
+    - config_wrapper.robot_config_file   (YAML path — v2 factories accept it directly)
+    - config_wrapper.obstacle_manager    (Scene, shared with MotionPlanner)
+    - config_wrapper.collision_cache     (single v2 cache integer)
 
     The solver is created only when warmup_ik is called.
     Obstacle updates are propagated via update_world().
     """
 
-    def __init__(self, node, config_wrapper_motion):
+    def __init__(self, node, config_wrapper):
         self._node = node
-        self._config = config_wrapper_motion
+        self._config = config_wrapper
 
-        self._ik_solver: IKSolver | None = None
+        self._ik_solver: InverseKinematics | None = None
         self._ik_batch_size: int = 0  # 0 = not yet warmed up
+
+        # Device / dtype resolved from config_wrapper (set by RobotModelManager).
+        self._device = getattr(config_wrapper, '_device', torch.device('cuda'))
+        self._dtype = getattr(config_wrapper, '_ops_dtype', torch.float32)
 
         name = node.get_name()
         node.create_service(WarmupIK, f'{name}/warmup_ik', self._warmup_ik_callback)
@@ -120,9 +128,8 @@ class IKServices:
         """Propagate obstacle changes to the IK solver. No-op if not initialized."""
         if self._ik_solver is None:
             return
-        world_cfg = self._config.obstacle_manager.get_world_cfg()
-        self._ik_solver.world_coll_checker.clear_cache()
-        self._ik_solver.update_world(world_cfg)
+        scene = self._config.obstacle_manager.get_scene()
+        self._ik_solver.update_world(scene)
         self._node.get_logger().info("IKServices: world updated")
 
     # ------------------------------------------------------------------
@@ -131,25 +138,22 @@ class IKServices:
 
     def _init(self, batch_size: int):
         """Create (or recreate) the IK solver for the given batch size."""
-        world_cfg = self._config.obstacle_manager.get_world_cfg()
-        robot_cfg = self._config.robot_cfg
+        scene = self._config.obstacle_manager.get_scene()
+        robot_yml = self._config.robot_config_file
 
         self._node.get_logger().info(f"Initializing IK solver (batch_size={batch_size})...")
 
-        ik_config = IKSolverConfig.load_from_robot_config(
-            robot_cfg,
-            world_cfg,
-            rotation_threshold=0.05,
-            position_threshold=0.005,
+        cfg = InverseKinematicsCfg.create(
+            robot=robot_yml,
+            scene_model=scene,
             num_seeds=20,
+            position_tolerance=0.005,
+            orientation_tolerance=0.05,
             self_collision_check=True,
-            self_collision_opt=True,
-            collision_checker_type=CollisionCheckerType.BLOX,
-            collision_cache={"obb": 100},
-            tensor_args=self._node.tensor_args,
+            collision_cache=self._config.collision_cache,
             use_cuda_graph=False,
         )
-        self._ik_solver = IKSolver(ik_config)
+        self._ik_solver = InverseKinematics(cfg)
         self._ik_batch_size = batch_size
 
         # Warmup: solve a batch of random configs to prime CUDA kernels
@@ -184,7 +188,10 @@ class IKServices:
         orientations = [[p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
                         for p in poses]
 
-        goal = CuroboPose(torch.tensor(positions), torch.tensor(orientations))
+        goal = CuroboPose(
+            torch.tensor(positions, dtype=self._dtype, device=self._device),
+            torch.tensor(orientations, dtype=self._dtype, device=self._device),
+        )
 
         try:
             result = self._ik_solver.solve_batch(goal)
