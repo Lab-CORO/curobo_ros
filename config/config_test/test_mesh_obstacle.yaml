@@ -22,6 +22,8 @@ tests:
       obb: 136
       mesh: 1
       blox: -1
+    # v2: the response echoes the per-type cache values we just set
+    # (cuboid=obb, mesh=mesh, voxel=blox).
     expect:
       success: True
       obb_cache: 136
@@ -48,7 +50,7 @@ tests:
       color: {r: 1.0, g: 0.8, b: 0.0, a: 1.0}
     expect:
       success: True
-      message: "Object 'rubber_duck' added successfully (136 cuboids, 1 mesh in world)"
+      message: "Object 'rubber_duck' added (0 cuboids, 1 meshes)"
 
   - name: "04 trajectory blocked by duck"
     service: "/unified_planner/generate_trajectory"

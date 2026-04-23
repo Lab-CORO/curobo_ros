@@ -105,7 +105,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertEqual(
             response.message,
-            "Object 'cube' added successfully (1 cuboids, 0 mesh in world)",
+            "Object 'cube' added (1 cuboids, 0 meshes)",
             f"Field 'message' doesn't match expected value"
         )
 
@@ -146,7 +146,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertEqual(
             response.message,
-            "Object 'cube2' added successfully (2 cuboids, 0 mesh in world)",
+            "Object 'cube2' added (2 cuboids, 0 meshes)",
             f"Field 'message' doesn't match expected value"
         )
 
@@ -275,7 +275,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertEqual(
             response.message,
-            "Object 'cube' removed successfully (cuboid)",
+            "Object 'cube' removed from cuboids",
             f"Field 'message' doesn't match expected value"
         )
 
@@ -316,7 +316,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertEqual(
             response.message,
-            'All objects removed successfully (1 cuboids, 0 meshes)',
+            'All 1 obstacles removed',
             f"Field 'message' doesn't match expected value"
         )
 

@@ -4,7 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from curobo.types import DeviceCfg
 from curobo.scene import Scene
-from curobo.util_file import load_yaml
+from curobo.config_io import load_yaml
 
 
 class ConfigManager:

@@ -12,9 +12,7 @@ import torch
 
 # v2: curobo.types is now flat. DeviceCfg replaces TensorDeviceType.
 # ToolPose replaces Pose as the canonical goal representation fed to the planner.
-from curobo.types import DeviceCfg, JointState
-from curobo.types.math import Pose
-from curobo.types.tool import ToolPose
+from curobo.types import DeviceCfg, JointState, Pose, ToolPose
 
 from curobo_ros.planners import PlannerFactory, PlannerManager, ClassicPlanner, MPCPlanner
 from curobo_ros.robot.robot_context import RobotContext

@@ -38,9 +38,9 @@ class DepthMapRobotSegmentation(Node):
             package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
         robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
 
-        # v2: Kinematics replaces CudaRobotModel; KinematicsCfg.create loads the
+        # v2: Kinematics replaces CudaRobotModel; from_robot_yaml_file loads the
         # robot YAML directly — no manual load_yaml/RobotConfig.from_dict dance.
-        kin_model = Kinematics(KinematicsCfg.create(robot=robot_config_file))
+        kin_model = Kinematics(KinematicsCfg.from_robot_yaml_file(robot_config_file))
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -315,8 +315,10 @@ class DepthMapRobotSegmentation(Node):
             torch.Tensor of filtered points (M, 3) where M <= N
         """
         q = q.unsqueeze(0) if len(q.shape) == 1 else q
-        kinematics_state = self._kin_model.get_state(q)
-        robot_spheres = kinematics_state.link_spheres_tensor.view(-1, 4)
+        js = JointState(position=q, joint_names=self._kin_model.joint_names)
+        kinematics_state = self._kin_model.compute_kinematics(js)
+        # v2: `robot_spheres` replaces `link_spheres_tensor`, shape [B, H, N, 4]
+        robot_spheres = kinematics_state.robot_spheres.reshape(-1, 4)
 
         points = point_cloud.unsqueeze(1)  # (N, 1, 3)
         spheres_centers = robot_spheres[:, :3].unsqueeze(0)  # (1, S, 3)

@@ -24,8 +24,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import PointCloud2
 
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
+from curobo.types import CameraObservation, Pose
 
 from curobo_ros.cameras.camera_strategy import CameraStrategy
 
@@ -138,7 +137,7 @@ class PointCloudCameraStrategy(CameraStrategy):
             q = rot.as_quat()  # [x, y, z, w]
             pose_list = position + [q[3], q[0], q[1], q[2]]  # cuRobo order [x,y,z,qw,qx,qy,qz]
             self.node.get_logger().info("Point cloud: using extrinsics from TF")
-            return Pose.from_list(pose_list, tensor_args=self.tensor_args)
+            return Pose.from_list(pose_list, device_cfg=self.tensor_args)
         except Exception as ex:
             self.node.get_logger().warn(
                 f"TF lookup for {self._frame_id} failed: {ex}. Using identity."

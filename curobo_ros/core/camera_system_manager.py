@@ -1,4 +1,4 @@
-from curobo.util_file import load_yaml
+from curobo.config_io import load_yaml
 from curobo_ros.cameras.camera_context import CameraContext
 
 

@@ -31,13 +31,20 @@ class RobotModelManager:
         self.base_link = base_link
         self.node = node
 
-        self.kin_model = Kinematics(KinematicsCfg.create(robot=robot_config_file))
+        self.kin_model = Kinematics(KinematicsCfg.from_robot_yaml_file(robot_config_file))
 
         self._ops_dtype = torch.float32
         self._device = torch.device('cuda')
 
     def get_kinematics_state(self, joint_positions):
-        return self.kin_model.get_state(joint_positions)
+        # v2: kin_model.get_state removed — compute_kinematics takes a JointState.
+        js = JointState(
+            position=joint_positions if isinstance(joint_positions, torch.Tensor) else torch.tensor(
+                joint_positions, dtype=self._ops_dtype, device=self._device
+            ),
+            joint_names=self.kin_model.joint_names,
+        )
+        return self.kin_model.compute_kinematics(js)
 
     def get_collision_spheres(self) -> List[List[float]]:
         q_js = JointState(
@@ -46,11 +53,12 @@ class RobotModelManager:
                 dtype=self._ops_dtype,
                 device=self._device,
             ),
-            joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'],
+            joint_names=self.kin_model.joint_names,
         )
 
-        kinematics_state = self.kin_model.get_state(q_js.position)
-        robot_spheres = kinematics_state.link_spheres_tensor.view(-1, 4)
+        kinematics_state = self.kin_model.compute_kinematics(q_js)
+        # robot_spheres shape: [batch, horizon, num_spheres, 4]
+        robot_spheres = kinematics_state.robot_spheres.reshape(-1, 4)
         return robot_spheres.cpu().numpy().tolist()
 
     def set_link_collision(

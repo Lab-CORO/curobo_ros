@@ -19,6 +19,7 @@ import torch
 from geometry_msgs.msg import Pose
 
 from curobo.kinematics import Kinematics, KinematicsCfg
+from curobo.types import JointState as CuRoboJS
 
 from curobo_msgs.srv import Fk, WarmupFK
 
@@ -93,20 +94,23 @@ class FKServices:
 
         qs = [list(js.position) for js in request.joint_states]
         q = torch.tensor(qs, dtype=self._dtype, device=self._device)
-        result = self._fk_model.get_state(q)
+        js = CuRoboJS.from_position(q, joint_names=self._fk_model.joint_names)
+        kin_state = self._fk_model.compute_kinematics(js)
 
-        for pos, ori in zip(
-            result.ee_position.cpu().numpy(),
-            result.ee_quaternion.cpu().numpy(),
-        ):
+        # ToolPose.position/quaternion: [B, H=1, L, 3/4]; take first tool frame.
+        # v2 quaternion is wxyz; ROS geometry_msgs.Pose.orientation is xyzw.
+        positions = kin_state.tool_poses.position[:, 0, 0, :].cpu().numpy()
+        quaternions = kin_state.tool_poses.quaternion[:, 0, 0, :].cpu().numpy()
+
+        for pos, ori in zip(positions, quaternions):
             pose = Pose()
             pose.position.x = float(pos[0])
             pose.position.y = float(pos[1])
             pose.position.z = float(pos[2])
-            pose.orientation.x = float(ori[0])
-            pose.orientation.y = float(ori[1])
-            pose.orientation.z = float(ori[2])
-            pose.orientation.w = float(ori[3])
+            pose.orientation.w = float(ori[0])
+            pose.orientation.x = float(ori[1])
+            pose.orientation.y = float(ori[2])
+            pose.orientation.z = float(ori[3])
             response.poses.append(pose)
 
         return response
@@ -118,13 +122,14 @@ class FKServices:
     def _init(self, batch_size: int):
         """Create the FK model and run a warmup batch of the given size."""
         self._node.get_logger().info(f"Initializing FK model (batch_size={batch_size})...")
-        self._fk_model = Kinematics(KinematicsCfg.create(robot=self._robot_config_file))
+        self._fk_model = Kinematics(KinematicsCfg.from_robot_yaml_file(self._robot_config_file))
 
         q = torch.rand(
             (batch_size, self._fk_model.get_dof()),
             dtype=self._dtype,
             device=self._device,
         )
-        self._fk_model.get_state(q)
+        js = CuRoboJS.from_position(q, joint_names=self._fk_model.joint_names)
+        self._fk_model.compute_kinematics(js)
 
         self._node.get_logger().info("FK model ready")

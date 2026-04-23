@@ -6,11 +6,9 @@ import numpy as np
 import rclpy
 from scipy.spatial.transform import Rotation
 
-# v2: curobo.types is a flat module; CameraObservation stays in types.camera.
+# v2: curobo.types is a flat module; everything is re-exported from it.
 # TensorDeviceType → DeviceCfg.
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
-from curobo.types import DeviceCfg
+from curobo.types import CameraObservation, Pose, DeviceCfg
 
 from tf2_ros import Buffer, TransformListener, TransformException
 import ros2_numpy
@@ -137,7 +135,7 @@ class CameraStrategy(ABC):
                 # cuRobo expects [x, y, z, qw, qx, qy, qz]
                 pose_list = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
 
-                camera_pose = Pose.from_list(pose_list, tensor_args=self.tensor_args)
+                camera_pose = Pose.from_list(pose_list, device_cfg=self.tensor_args)
 
                 self.node.get_logger().info(
                     f"Loaded extrinsics from 4x4 matrix: pos=[{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}]")
@@ -155,7 +153,7 @@ class CameraStrategy(ABC):
                     extrinsics = extrinsics[:3] + quat
 
                 # Create Pose using cuRobo format
-                camera_pose = Pose.from_list(extrinsics, tensor_args=self.tensor_args)
+                camera_pose = Pose.from_list(extrinsics, device_cfg=self.tensor_args)
 
                 self.node.get_logger().info(
                     f"Loaded extrinsics from config: pos=[{extrinsics[0]:.3f}, {extrinsics[1]:.3f}, {extrinsics[2]:.3f}], "

@@ -15,7 +15,7 @@ import torch
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
-from curobo.types.math import Pose
+from curobo.types import Pose, GoalToolPose, JointState as CuRoboJS
 
 from .config_wrapper_motion import ConfigWrapperIK
 from curobo_ros.robot.robot_context import RobotContext
@@ -92,23 +92,26 @@ class IK(Node):
             self.size_init = 0
             return False, []
 
+        # v2 Pose quaternion is wxyz; ROS geometry_msgs is xyzw.
         positions = [[p.position.x, p.position.y, p.position.z] for p in poses]
         orientations = [
-            [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
+            [p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z]
             for p in poses
         ]
 
-        goal = Pose(
-            torch.tensor(positions, dtype=self._dtype, device=self._device),
-            torch.tensor(orientations, dtype=self._dtype, device=self._device),
+        pose2d = Pose(
+            position=torch.tensor(positions, dtype=self._dtype, device=self._device),
+            quaternion=torch.tensor(orientations, dtype=self._dtype, device=self._device),
         )
+        tool_frame = self.ik_solver.kinematics.tool_frames[0]
+        goal = GoalToolPose.from_poses({tool_frame: pose2d})
 
         try:
-            result = self.ik_solver.solve_batch(goal)
+            result = self.ik_solver.solve_pose(goal_tool_poses=goal)
         except Exception:
             try:
                 self.ik_init()
-                result = self.ik_solver.solve_batch(goal)
+                result = self.ik_solver.solve_pose(goal_tool_poses=goal)
             except Exception:
                 self.size_init = 0
                 return False, []
@@ -118,9 +121,12 @@ class IK(Node):
     def ik_init(self):
         """Prime CUDA kernels with a random batch at the current size."""
         q_sample = self.ik_solver.sample_configs(self.size_init)
-        kin_state = self.ik_solver.fk(q_sample)
-        goal = Pose(kin_state.ee_position, kin_state.ee_quaternion)
-        self.ik_solver.solve_batch(goal)
+        js = CuRoboJS.from_position(
+            q_sample, joint_names=self.ik_solver.kinematics.joint_names
+        )
+        kin_state = self.ik_solver.compute_kinematics(js)
+        goal = kin_state.tool_poses.as_goal()
+        self.ik_solver.solve_pose(goal_tool_poses=goal)
         torch.cuda.synchronize()
         self.get_logger().info("Init done")
 

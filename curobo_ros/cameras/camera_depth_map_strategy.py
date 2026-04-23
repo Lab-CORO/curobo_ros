@@ -1,6 +1,5 @@
 from curobo_ros.cameras.camera_strategy import CameraStrategy
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
+from curobo.types import CameraObservation, Pose
 
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image, CameraInfo
@@ -141,7 +140,7 @@ class DepthMapCameraStrategy(CameraStrategy):
                     # cuRobo expects [x, y, z, qw, qx, qy, qz]
                     camera_pose = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
 
-                    self.camera_pose = Pose.from_list(camera_pose, tensor_args=self.tensor_args)
+                    self.camera_pose = Pose.from_list(camera_pose, device_cfg=self.tensor_args)
 
                 except TransformException as ex:
                     self.node.get_logger().warn(

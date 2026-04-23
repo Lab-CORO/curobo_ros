@@ -2,7 +2,7 @@
 
 from typing import List, Dict
 import torch
-from curobo.types.camera import CameraObservation
+from curobo.types import CameraObservation
 from curobo_ros.cameras.camera_strategy import CameraStrategy
 from curobo_ros.cameras.pointcloud_camera_strategy import PointCloudCameraStrategy
 from curobo_ros.cameras.camera_depth_map_strategy import DepthMapCameraStrategy

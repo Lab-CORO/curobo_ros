@@ -18,7 +18,7 @@ from typing import Optional
 
 import torch
 
-from curobo.types import JointState, ToolPose, GoalToolPose
+from curobo.types import JointState, Pose, GoalToolPose
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 from curobo_msgs.action import SendTrajectory
@@ -77,7 +77,7 @@ class MPCPlanner(TrajectoryPlanner):
                 message="MPC solver not initialized. Call set_mpc_solver() first.",
             )
 
-        tool_pose = ToolPose.from_list([
+        pose = Pose.from_list([
             goal_request.target_pose.position.x,
             goal_request.target_pose.position.y,
             goal_request.target_pose.position.z,
@@ -86,7 +86,8 @@ class MPCPlanner(TrajectoryPlanner):
             goal_request.target_pose.orientation.y,
             goal_request.target_pose.orientation.z,
         ])
-        goal = GoalToolPose(tool_pose=tool_pose)
+        tool_frame = self.mpc.tool_frames[0]
+        goal = GoalToolPose.from_poses({tool_frame: pose})
 
         self.start_state = start_state
         self.goal_pose = goal
@@ -170,7 +171,9 @@ class MPCPlanner(TrajectoryPlanner):
                 if self.latest_goal_from_topic is not None:
                     raw = self.latest_goal_from_topic
                     self.latest_goal_from_topic = None
-                    new_goal = GoalToolPose(tool_pose=ToolPose.from_list(raw))
+                    new_goal = GoalToolPose.from_poses(
+                        {self.mpc.tool_frames[0]: Pose.from_list(raw)}
+                    )
                     self.update_goal_pose(new_goal)
 
                 actual_joint_pose = robot_context.get_joint_pose()

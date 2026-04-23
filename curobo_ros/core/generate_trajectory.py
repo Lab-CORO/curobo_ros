@@ -21,7 +21,7 @@ from rclpy.node import Node
 from curobo_msgs.srv import TrajectoryGeneration
 from curobo_msgs.action import SendTrajectory
 
-from curobo.types import JointState, ToolPose, GoalToolPose
+from curobo.types import JointState, Pose, GoalToolPose
 
 from .config_wrapper_motion import ConfigWrapperMotion
 from curobo_ros.robot.robot_context import RobotContext
@@ -80,8 +80,8 @@ class CuRoboTrajectoryMaker(Node):
                          dtype=self._dtype, device=self._device)
         )
 
-        # v2 ToolPose: [x, y, z, qw, qx, qy, qz]
-        tool_pose = ToolPose.from_list([
+        # v2 Pose.from_list expects [x, y, z, qw, qx, qy, qz] (wxyz).
+        pose = Pose.from_list([
             request.target_pose.position.x,
             request.target_pose.position.y,
             request.target_pose.position.z,
@@ -90,28 +90,32 @@ class CuRoboTrajectoryMaker(Node):
             request.target_pose.orientation.y,
             request.target_pose.orientation.z,
         ])
-        goal = GoalToolPose(tool_pose=tool_pose)
+        tool_frame = self.motion_planner.tool_frames[0]
+        goal = GoalToolPose.from_poses({tool_frame: pose})
 
         max_attempts = self.get_parameter('max_attempts').get_parameter_value().integer_value
-        timeout = self.get_parameter('timeout').get_parameter_value().double_value
-        time_dilation_factor = self.get_parameter(
-            'time_dilation_factor'
-        ).get_parameter_value().double_value
 
         try:
             result = self.motion_planner.plan_pose(
-                start_state,
                 goal,
+                start_state,
                 max_attempts=max_attempts,
-                timeout=timeout,
-                time_dilation_factor=time_dilation_factor,
             )
+            if result is None or not bool(
+                result.success.item() if hasattr(result.success, 'item') else result.success
+            ):
+                response.success = False
+                response.message = "Trajectory planning failed (no solution)"
+                return response
             traj = result.get_interpolated_plan()
+            pos, vel, acc = traj.position, traj.velocity, traj.acceleration
+            if pos.ndim == 3:
+                pos, vel, acc = pos[0], vel[0], acc[0]
             self.robot_context.set_command(
                 traj.joint_names,
-                traj.velocity.tolist(),
-                traj.acceleration.tolist(),
-                traj.position.tolist(),
+                vel.tolist(),
+                acc.tolist(),
+                pos.tolist(),
             )
             response.success = True
             response.message = "Trajectory generated"

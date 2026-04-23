@@ -13,7 +13,7 @@ v2 notes:
 
 from typing import Optional
 
-from curobo.types import JointState, ToolPose, GoalToolPose
+from curobo.types import JointState, Pose, GoalToolPose
 
 from .single_planner import SinglePlanner
 
@@ -53,9 +53,9 @@ class ClassicPlanner(SinglePlanner):
         Returns:
             MotionPlannerResult-like object.
         """
-        # Extract goal pose from request (ClassicPlanner uses target_pose).
-        # v2 ToolPose expects [x, y, z, qw, qx, qy, qz].
-        tool_pose = ToolPose.from_list([
+        # Extract goal pose from request. v2 Pose.from_list expects
+        # [x, y, z, qw, qx, qy, qz] (quaternion wxyz).
+        pose = Pose.from_list([
             goal_request.target_pose.position.x,
             goal_request.target_pose.position.y,
             goal_request.target_pose.position.z,
@@ -64,11 +64,10 @@ class ClassicPlanner(SinglePlanner):
             goal_request.target_pose.orientation.y,
             goal_request.target_pose.orientation.z,
         ])
-        goal = GoalToolPose(tool_pose=tool_pose)
+        tool_frame = self.motion_planner.tool_frames[0]
+        goal = GoalToolPose.from_poses({tool_frame: pose})
 
         max_attempts = config.get('max_attempts', 1)
-        timeout = config.get('timeout', 5.0)
-        time_dilation_factor = config.get('time_dilation_factor', 0.5)
 
         # v2: PoseCostMetric is removed. Warn if the client still populates
         # trajectory_constraints so the behavior change is visible.
@@ -80,17 +79,23 @@ class ClassicPlanner(SinglePlanner):
                 "PoseCostMetric is not available in cuRobo v2 — ignoring."
             )
 
+        # v2 plan_pose no longer accepts `timeout` or `time_dilation_factor`;
+        # those tunables now live on the trajopt YAML configs.
+        if 'timeout' in config or 'time_dilation_factor' in config:
+            self.node.get_logger().warn(
+                "ClassicPlanner: `timeout` and `time_dilation_factor` are no "
+                "longer honored in cuRobo v2 — configure them via the "
+                "trajopt YAML instead."
+            )
+
         self.node.get_logger().info(
-            f"Planning with max_attempts={max_attempts}, "
-            f"timeout={timeout}s, time_dilation={time_dilation_factor}"
+            f"Planning with max_attempts={max_attempts}"
         )
 
         return self.motion_planner.plan_pose(
-            start_state,
             goal,
+            start_state,
             max_attempts=max_attempts,
-            timeout=timeout,
-            time_dilation_factor=time_dilation_factor,
         )
 
     # _process_trajectory(): default (no-op) from SinglePlanner is fine.

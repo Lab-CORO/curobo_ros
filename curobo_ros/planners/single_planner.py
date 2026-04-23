@@ -193,10 +193,20 @@ class SinglePlanner(TrajectoryPlanner):
             result = self._plan_trajectory(start_state, goal_request, config)
 
             # Check if planning succeeded
-            if not result.success.item():
+            # v2: plan_pose() returns Optional[TrajOptSolverResult] — None on failure
+            if result is None:
                 return PlannerResult(
                     success=False,
-                    message=f"Planning failed: {result.status}",
+                    message="Planning failed: no solution found (plan_pose returned None)",
+                )
+
+            success_val = result.success
+            if hasattr(success_val, 'item'):
+                success_val = success_val.item()
+            if not success_val:
+                return PlannerResult(
+                    success=False,
+                    message=f"Planning failed: {getattr(result, 'status', 'unknown')}",
                     metadata={'result': result}
                 )
 
@@ -210,19 +220,50 @@ class SinglePlanner(TrajectoryPlanner):
                 config
             )
 
+            # v2: position shape can be [B, T, D] — count waypoints on horizon dim.
+            _pos = self.planned_trajectory.position
+            num_wp = _pos.shape[-2] if _pos.ndim >= 2 else len(_pos)
             self.node.get_logger().info(
                 f"{self.get_planner_name()}: Successfully planned trajectory "
-                f"with {len(self.planned_trajectory.position)} waypoints"
+                f"with {num_wp} waypoints"
             )
 
             # Send trajectory to robot context for visualization
             if robot_context is not None:
                 traj = self.planned_trajectory
+                # v2: position/velocity/acceleration may have shape [B, T, D];
+                # robot_context expects [T, D] (one row of floats per waypoint).
+                # Flatten all leading dims down to 2 so `.tolist()` yields a
+                # list[list[float]] regardless of batch rank.
+                def _to_2d_list(t):
+                    if t is None:
+                        return None
+                    while t.ndim > 2:
+                        t = t[0]
+                    return t.detach().cpu().tolist()
+
+                self.node.get_logger().debug(
+                    f"Trajectory shapes — pos: {tuple(traj.position.shape)}, "
+                    f"vel: {tuple(traj.velocity.shape) if traj.velocity is not None else None}, "
+                    f"acc: {tuple(traj.acceleration.shape) if traj.acceleration is not None else None}"
+                )
+                pos_list = _to_2d_list(traj.position)
+                vel_list = _to_2d_list(traj.velocity)
+                acc_list = _to_2d_list(traj.acceleration)
+
+                # Ensure velocity/acceleration arrays align with positions even
+                # if the planner omitted them (rare but possible for a stubbed
+                # trajectory).
+                if vel_list is None:
+                    vel_list = [[0.0] * len(pos_list[0]) for _ in pos_list]
+                if acc_list is None:
+                    acc_list = [[0.0] * len(pos_list[0]) for _ in pos_list]
+
                 robot_context.set_command(
                     traj.joint_names,
-                    traj.velocity.tolist(),
-                    traj.acceleration.tolist(),
-                    traj.position.tolist()
+                    vel_list,
+                    acc_list,
+                    pos_list,
                 )
                 self.node.get_logger().info(
                     "Trajectory sent to robot context for visualization"
@@ -233,8 +274,8 @@ class SinglePlanner(TrajectoryPlanner):
                 message="Trajectory planned successfully",
                 trajectory=self.planned_trajectory,
                 metadata={
-                    'num_waypoints': len(self.planned_trajectory.position),
-                    'planning_time': result.solve_time,
+                    'num_waypoints': num_wp,
+                    'planning_time': getattr(result, 'solve_time', 0.0),
                     'planner_type': self.get_planner_name(),
                 }
             )

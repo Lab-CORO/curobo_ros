@@ -33,12 +33,8 @@ from moveit_msgs.msg import DisplayTrajectory, RobotState, RobotTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from std_msgs.msg import Float64MultiArray, Header
 
-from curobo.scene import Scene
-from curobo.scene.types import Cuboid
-from curobo.types import DeviceCfg, JointState
-from curobo.types.camera import CameraObservation
-from curobo.types.math import Pose
-from curobo.types.tool import ToolPose, GoalToolPose
+from curobo.scene import Scene, Cuboid
+from curobo.types import CameraObservation, DeviceCfg, GoalToolPose, JointState, Pose, ToolPose
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 
 from curobo_msgs.srv import Fk

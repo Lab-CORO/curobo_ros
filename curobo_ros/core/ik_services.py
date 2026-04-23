@@ -20,7 +20,7 @@ import torch
 import std_msgs.msg
 from sensor_msgs.msg import JointState
 
-from curobo.types.math import Pose as CuroboPose
+from curobo.types import Pose as CuroboPose, GoalToolPose, JointState as CuRoboJS
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 
 from curobo_msgs.srv import Ik, IkBatch, WarmupIK
@@ -156,11 +156,14 @@ class IKServices:
         self._ik_solver = InverseKinematics(cfg)
         self._ik_batch_size = batch_size
 
-        # Warmup: solve a batch of random configs to prime CUDA kernels
+        # Warmup: solve a batch of random configs to prime CUDA kernels.
         q_sample = self._ik_solver.sample_configs(batch_size)
-        kin_state = self._ik_solver.fk(q_sample)
-        goal = CuroboPose(kin_state.ee_position, kin_state.ee_quaternion)
-        self._ik_solver.solve_batch(goal)
+        js = CuRoboJS.from_position(
+            q_sample, joint_names=self._ik_solver.kinematics.joint_names
+        )
+        kin_state = self._ik_solver.compute_kinematics(js)
+        goal = kin_state.tool_poses.as_goal()
+        self._ik_solver.solve_pose(goal_tool_poses=goal)
         torch.cuda.synchronize()
 
         self._node.get_logger().info("IK solver ready")
@@ -184,21 +187,24 @@ class IKServices:
                 self._ik_batch_size = 0
                 return False, None
 
-        positions    = [[p.position.x, p.position.y, p.position.z] for p in poses]
-        orientations = [[p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
+        # v2 Pose quaternion is wxyz; ROS geometry_msgs is xyzw.
+        positions = [[p.position.x, p.position.y, p.position.z] for p in poses]
+        orientations = [[p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z]
                         for p in poses]
 
-        goal = CuroboPose(
-            torch.tensor(positions, dtype=self._dtype, device=self._device),
-            torch.tensor(orientations, dtype=self._dtype, device=self._device),
+        pose2d = CuroboPose(
+            position=torch.tensor(positions, dtype=self._dtype, device=self._device),
+            quaternion=torch.tensor(orientations, dtype=self._dtype, device=self._device),
         )
+        tool_frame = self._ik_solver.kinematics.tool_frames[0]
+        goal = GoalToolPose.from_poses({tool_frame: pose2d})
 
         try:
-            result = self._ik_solver.solve_batch(goal)
+            result = self._ik_solver.solve_pose(goal_tool_poses=goal)
         except Exception:
             try:
                 self._init(n)
-                result = self._ik_solver.solve_batch(goal)
+                result = self._ik_solver.solve_pose(goal_tool_poses=goal)
             except Exception as e:
                 self._node.get_logger().error(f"IK solve failed: {e}")
                 self._ik_batch_size = 0

@@ -19,7 +19,7 @@ from curobo_msgs.srv import Fk
 from geometry_msgs.msg import Pose
 
 from curobo.kinematics import Kinematics, KinematicsCfg
-from curobo.types import DeviceCfg
+from curobo.types import DeviceCfg, JointState as CuRoboJS
 
 
 class FK(Node):
@@ -37,7 +37,7 @@ class FK(Node):
             get_package_share_directory('curobo_ros'),
             'curobo_doosan', 'src', 'm1013', 'm1013.yml',
         )
-        self.kin_model = Kinematics(KinematicsCfg.create(robot=robot_yml))
+        self.kin_model = Kinematics(KinematicsCfg.from_robot_yaml_file(robot_yml))
 
         self.fk_init()
         self.get_logger().info("FK service up !")
@@ -52,20 +52,22 @@ class FK(Node):
 
         qs = [list(joint.position) for joint in request.joint_states]
         q = torch.tensor(qs, dtype=self._dtype, device=self._device)
-        result = self.kin_model.get_state(q)
+        js = CuRoboJS.from_position(q, joint_names=self.kin_model.joint_names)
+        kin_state = self.kin_model.compute_kinematics(js)
 
-        for position, orientation in zip(
-            result.ee_position.cpu().numpy(),
-            result.ee_quaternion.cpu().numpy(),
-        ):
+        # tool_poses: ToolPose [B, H=1, L, 3/4]; v2 quaternion is wxyz.
+        positions = kin_state.tool_poses.position[:, 0, 0, :].cpu().numpy()
+        quaternions = kin_state.tool_poses.quaternion[:, 0, 0, :].cpu().numpy()
+
+        for position, orientation in zip(positions, quaternions):
             pose = Pose()
             pose.position.x = float(position[0])
             pose.position.y = float(position[1])
             pose.position.z = float(position[2])
-            pose.orientation.x = float(orientation[0])
-            pose.orientation.y = float(orientation[1])
-            pose.orientation.z = float(orientation[2])
-            pose.orientation.w = float(orientation[3])
+            pose.orientation.w = float(orientation[0])
+            pose.orientation.x = float(orientation[1])
+            pose.orientation.y = float(orientation[2])
+            pose.orientation.z = float(orientation[3])
             response.poses.append(pose)
         return response
 
@@ -73,7 +75,8 @@ class FK(Node):
         """Warmup the kinematics model (first call is slow)."""
         dof = self.kin_model.get_dof()
         q = torch.rand((10, dof), dtype=self._dtype, device=self._device)
-        self.kin_model.get_state(q)
+        js = CuRoboJS.from_position(q, joint_names=self.kin_model.joint_names)
+        self.kin_model.compute_kinematics(js)
 
 
 def main(args=None):

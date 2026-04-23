@@ -19,6 +19,19 @@ from std_srvs.srv import Trigger
 from std_msgs.msg import Float32
 from curobo_msgs.srv import GetCollisionDistance, Ik, IkBatch
 
+# v2 runtime flags — must be set before any cuRobo objects are instantiated.
+# cuda_graph_reset lets solvers rebuild captured graphs when buffer shapes
+# change between plan calls (e.g. different interpolated trajectory lengths).
+# Without this, a second plan with a different horizon raises
+# "CUDA graph reset is not available." Requires CUDA 12.0+.
+# Note: curobo.runtime re-exports (and shadows) curobo._src.runtime values at
+# import time — torch_util.is_cuda_graph_reset_available() reads from
+# curobo.runtime, so we must flip the flag on the public module too.
+import curobo._src.runtime as _curobo_runtime
+_curobo_runtime.cuda_graph_reset = True
+import curobo.runtime as _curobo_runtime_public
+_curobo_runtime_public.cuda_graph_reset = True
+
 from curobo.types import JointState, DeviceCfg
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
@@ -129,11 +142,10 @@ class ConfigWrapperMotion(ConfigWrapper):
             use_cuda_graph=self.use_cuda_graph,
             self_collision_check=self.self_collision_check,
             collision_cache=self.collision_cache,
-            collision_activation_distance=collision_activation_distance,
+            optimizer_collision_activation_distance=collision_activation_distance,
             max_batch_size=self.max_batch_size,
             multi_env=self.multi_env,
             max_goalset=self.max_goalset,
-            interpolation_dt=self.interpolation_dt,
         )
 
         node.motion_planner = MotionPlanner(cfg)
@@ -164,9 +176,9 @@ class ConfigWrapperMotion(ConfigWrapper):
     def update_world_config(self, node):
         """Push the current Scene into all active solvers."""
         scene = self.obstacle_manager.get_scene()
-        if hasattr(node, 'motion_planner'):
+        if getattr(node, 'motion_planner', None) is not None:
             node.motion_planner.update_world(scene)
-        if hasattr(node, 'mpc'):
+        if getattr(node, 'mpc', None) is not None:
             node.mpc.update_world(scene)
 
         self.node.get_logger().info(
@@ -243,10 +255,11 @@ def _compute_sphere_distance(wrapper, node, response):
             dtype=wrapper._ops_dtype,
             device=wrapper._device,
         ),
-        joint_names=wrapper.robot.get_joint_name(),
+        joint_names=wrapper.kin_model.joint_names,
     )
-    kinematics_state = wrapper.kin_model.get_state(q_js.position)
-    robot_spheres = kinematics_state.link_spheres_tensor.view(1, 1, -1, 4)
+    kinematics_state = wrapper.kin_model.compute_kinematics(q_js)
+    # v2: `robot_spheres` replaces `link_spheres_tensor`, shape already [B, H, N, 4]
+    robot_spheres = kinematics_state.robot_spheres
 
     solver = getattr(node, 'motion_planner', None) or getattr(node, 'mpc', None) or getattr(node, 'ik_solver', None)
     if solver is None:

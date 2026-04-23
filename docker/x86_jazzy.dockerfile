@@ -112,7 +112,7 @@ ARG CUROBO_REF=v0.8.0
 RUN mkdir /pkgs/curobo_src && cd /pkgs/curobo_src && \
     git clone -b ${CUROBO_REF} https://github.com/NVlabs/curobo.git .
 WORKDIR /pkgs/curobo_src
-RUN MAX_JOBS=${MAKEFLAGS##*-j} pip3 install .[dev,usd] --no-build-isolation
+RUN MAX_JOBS=${MAKEFLAGS##*-j} pip3 install -e .[cu12,dev,usd] --no-build-isolation
 
 # Headers internes CuRobo requis lors du JIT (check_cuda.h, cuda_precisions.h, etc.)
 RUN cp /pkgs/curobo_src/src/curobo/curobolib/cpp/*.h /usr/local/cuda/include/

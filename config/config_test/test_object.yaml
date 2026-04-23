@@ -22,21 +22,21 @@ tests:
             color: {r: 0.0, a: 0.0}
           }
     expect: {success: True,
-             message: "Object 'cube' added successfully (1 cuboids, 0 mesh in world)"}
+             message: "Object 'cube' added (1 cuboids, 0 meshes)"}
 
   - name: "02 Add second object"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
-    data: {type: 0, 
-            name: "cube2", 
-            mesh_file_path: "", 
-            pose: {position: {x: 0.5, y: 0.5, z: 0.5}, 
+    data: {type: 0,
+            name: "cube2",
+            mesh_file_path: "",
+            pose: {position: {x: 0.5, y: 0.5, z: 0.5},
                   orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}},
             dimensions: {x: 0.5, y: 0.5, z: 0.5},
             color: {r: 0.0, a: 0.0}
           }
     expect: {success: True,
-             message: "Object 'cube2' added successfully (2 cuboids, 0 mesh in world)"}
+             message: "Object 'cube2' added (2 cuboids, 0 meshes)"}
 
   - name: "03 Get obstacles"
     service: "/unified_planner/get_obstacles"
@@ -53,16 +53,16 @@ tests:
   - name: "05 Remove object"
     service: "/unified_planner/remove_object"
     type: curobo_msgs/srv/RemoveObject
-    data: {name: "cube"} 
+    data: {name: "cube"}
     expect: {success: True,
-             message: "Object 'cube' removed successfully (cuboid)"}
+             message: "Object 'cube' removed from cuboids"}
 
 
   - name: "06 Remove all object"
     service: "/unified_planner/remove_all_objects"
     type: std_srvs/srv/Trigger
-    data: {} 
+    data: {}
     expect: {success: True,
-            message: "All objects removed successfully (1 cuboids, 0 meshes)"}
+            message: "All 1 obstacles removed"}
 
 

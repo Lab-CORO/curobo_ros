@@ -34,8 +34,11 @@ class ObstacleManager:
         # Tracks registered obstacle names for uniqueness validation.
         self.obstacle_names = []
 
-        # Single v2 collision cache parameter (was obb/mesh/blox triple in v1).
-        self.collision_cache = 100
+        # v2 collision cache: dict with keys cuboid (int), mesh (int), voxel
+        # (None or dict {"layers": int, "dims": [x,y,z], "voxel_size": float}).
+        # v1 passed the triple obb/mesh/blox; the service still accepts it and
+        # maps obb→cuboid, mesh→mesh, blox→voxel.layers.
+        self.collision_cache = {"cuboid": 100, "mesh": 100, "voxel": None}
 
         if initial_scene is not None:
             node.get_logger().info("ObstacleManager initialized with scene from ConfigManager")
@@ -239,19 +242,33 @@ class ObstacleManager:
         triple. We accept the maximum of the requested values for back-compat
         with clients still populating all three fields.
         """
-        requested = [v for v in (request.obb, request.mesh, request.blox) if v >= 0]
-        if requested:
-            self.collision_cache = int(max(requested))
-            node.get_logger().info(f'collision_cache set to {self.collision_cache}')
-            node.get_logger().warn(
-                'Collision cache changed — call /update_motion_gen_config to re-warmup.'
-            )
+        # v1 SetCollisionCache carries an obb/mesh/blox triple; v2 expects a
+        # dict {"cuboid": N, "mesh": N, "voxel": N}. We map obb→cuboid,
+        # mesh→mesh, blox→voxel. Negative values are ignored (keep current).
+        if request.obb >= 0:
+            self.collision_cache["cuboid"] = int(request.obb)
+        if request.mesh >= 0:
+            self.collision_cache["mesh"] = int(request.mesh)
+        if request.blox >= 0:
+            self.collision_cache["voxel"] = {
+                "layers": int(request.blox),
+                "dims": [1.0, 1.0, 1.0],
+                "voxel_size": 0.02,
+            }
+        elif request.blox == -1:
+            self.collision_cache["voxel"] = None
+
+        node.get_logger().info(f'collision_cache set to {self.collision_cache}')
+        node.get_logger().warn(
+            'Collision cache changed — call /update_motion_gen_config to re-warmup.'
+        )
 
         response.success = True
         response.message = 'Collision cache updated'
-        response.obb_cache = self.collision_cache
-        response.mesh_cache = self.collision_cache
-        response.blox_cache = self.collision_cache
+        response.obb_cache = self.collision_cache["cuboid"]
+        response.mesh_cache = self.collision_cache["mesh"]
+        voxel = self.collision_cache["voxel"]
+        response.blox_cache = voxel["layers"] if isinstance(voxel, dict) else -1
         return response
 
     # ---- Getters ----

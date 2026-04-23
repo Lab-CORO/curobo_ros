@@ -80,7 +80,7 @@ RUN mkdir /pkgs && cd /pkgs && \
     git clone -b ${CUROBO_REF} https://github.com/NVlabs/curobo.git
 
 WORKDIR /pkgs/curobo
-RUN pip3 install .[dev,usd] --no-build-isolation
+RUN pip3 install -e .[cu12,dev,usd] --no-build-isolation
 
 ENV PYOPENGL_PLATFORM=egl
 

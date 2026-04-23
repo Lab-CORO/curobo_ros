@@ -251,19 +251,40 @@ class UnifiedPlannerNode(Node):
             if result.success and result.trajectory is not None:
                 traj = result.trajectory
 
-                if hasattr(planner, 'motion_planner') and planner.motion_planner is not None:
-                    response.dt = float(planner.motion_planner.interpolation_dt)
-                else:
-                    response.dt = 0.03
+                # v2: MotionPlanner no longer exposes `interpolation_dt` directly —
+                # it lives on the trajopt solver config. Fall back to the node's
+                # configured default if we can't reach it.
+                response.dt = 0.03
+                mp = getattr(planner, 'motion_planner', None)
+                trajopt = getattr(mp, 'trajopt_solver', None) if mp is not None else None
+                trajopt_cfg = getattr(trajopt, 'config', None)
+                dt_val = getattr(trajopt_cfg, 'interpolation_dt', None)
+                if dt_val is not None:
+                    response.dt = float(dt_val)
+
+                # v2: traj.position may be [B, T, D]; the trajectory message
+                # wants one JointState per waypoint (T messages, D floats each).
+                pos_tensor = traj.position
+                vel_tensor = traj.velocity
+                while pos_tensor.ndim > 2:
+                    pos_tensor = pos_tensor[0]
+                    if vel_tensor is not None:
+                        vel_tensor = vel_tensor[0]
 
                 trajectory_msgs = []
-                n_waypoints = len(traj.position)
+                n_waypoints = pos_tensor.shape[0]
+                pos_list = pos_tensor.detach().cpu().tolist()
+                vel_list = (
+                    vel_tensor.detach().cpu().tolist()
+                    if vel_tensor is not None else None
+                )
                 for i in range(n_waypoints):
                     waypoint = JointStateMsg()
                     if hasattr(traj, 'joint_names') and traj.joint_names is not None:
                         waypoint.name = list(traj.joint_names)
-                    waypoint.position = traj.position[i].cpu().tolist()
-                    waypoint.velocity = traj.velocity[i].cpu().tolist()
+                    waypoint.position = pos_list[i]
+                    if vel_list is not None:
+                        waypoint.velocity = vel_list[i]
                     trajectory_msgs.append(waypoint)
                 response.trajectory = trajectory_msgs
 

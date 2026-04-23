@@ -13,7 +13,7 @@ v2 notes:
 
 from typing import List, Optional
 
-from curobo.types import JointState, ToolPose, GoalToolPose
+from curobo.types import JointState, Pose, GoalToolPose
 
 from .single_planner import SinglePlanner
 
@@ -35,10 +35,12 @@ class MultiPointPlanner(SinglePlanner):
         goal_request,
         config: dict,
     ):
-        # Extract waypoints from request (MultiPointPlanner uses target_poses)
+        # Extract waypoints from request (MultiPointPlanner uses target_poses).
+        # v2 Pose.from_list expects [x, y, z, qw, qx, qy, qz] (wxyz).
+        tool_frame = self.motion_planner.tool_frames[0]
         waypoints: List[GoalToolPose] = []
         for pose_msg in goal_request.target_poses:
-            tp = ToolPose.from_list([
+            p = Pose.from_list([
                 pose_msg.position.x,
                 pose_msg.position.y,
                 pose_msg.position.z,
@@ -47,12 +49,16 @@ class MultiPointPlanner(SinglePlanner):
                 pose_msg.orientation.y,
                 pose_msg.orientation.z,
             ])
-            waypoints.append(GoalToolPose(tool_pose=tp))
+            waypoints.append(GoalToolPose.from_poses({tool_frame: p}))
 
         max_attempts = config.get('max_attempts', 1)
-        timeout = config.get('timeout', 10.0)
-        time_dilation_factor = config.get('time_dilation_factor', 0.5)
         connect_waypoints = config.get('connect_waypoints', False)
+
+        if 'timeout' in config or 'time_dilation_factor' in config:
+            self.node.get_logger().warn(
+                "MultiPointPlanner: `timeout` and `time_dilation_factor` are "
+                "no longer honored in cuRobo v2 — configure them via trajopt."
+            )
 
         if (hasattr(goal_request, 'trajectories_contraints')
                 and goal_request.trajectories_contraints
@@ -73,11 +79,9 @@ class MultiPointPlanner(SinglePlanner):
                 current_state.acceleration[:] = 0.0
 
             result = self.motion_planner.plan_pose(
-                current_state.clone(),
                 goal,
+                current_state.clone(),
                 max_attempts=max_attempts,
-                timeout=timeout / max(1, len(waypoints)),
-                time_dilation_factor=time_dilation_factor,
             )
 
             if not result.success.item():
@@ -96,7 +100,17 @@ class MultiPointPlanner(SinglePlanner):
             else:
                 combined_trajectory = combined_trajectory.stack(segment.clone())
 
-            current_state = segment[-1].unsqueeze(0).clone()
+            # Build the next start state from the final waypoint of the segment.
+            # segment.position is [B, T, D]; plan_pose requires a 2D [B, D]
+            # current_state, so slice out the last timestep and reuse the
+            # start_state's joint_names for the new JointState.
+            last_pos = segment.position[..., -1, :]
+            while last_pos.ndim > 2:
+                last_pos = last_pos[0]
+            current_state = JointState.from_position(
+                last_pos.clone(),
+                joint_names=start_state.joint_names,
+            )
             last_result = result
 
         self._combined_trajectory = combined_trajectory

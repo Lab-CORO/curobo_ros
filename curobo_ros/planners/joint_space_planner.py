@@ -3,8 +3,10 @@
 Joint space trajectory planner (v2).
 
 v2 notes:
-- MotionGen.plan_single_js() → MotionPlanner.plan_joint_state() (joint goal).
-- MotionGenPlanConfig is gone; per-call params are kwargs on plan_joint_state().
+- MotionGen.plan_single_js() → MotionPlanner.plan_cspace() (joint goal).
+- MotionGenPlanConfig is gone; per-call params are kwargs on plan_cspace().
+- v2 plan_cspace() no longer accepts timeout/time_dilation_factor/
+  enable_graph/enable_opt — those tunables live on the trajopt YAML.
 """
 
 from typing import Optional
@@ -61,10 +63,7 @@ class JointSpacePlanner(SinglePlanner):
         )
 
         max_attempts = config.get('max_attempts', 1)
-        timeout = config.get('timeout', 5.0)
-        time_dilation_factor = config.get('time_dilation_factor', 0.5)
-        enable_graph = config.get('enable_graph', True)
-        enable_opt = config.get('enable_opt', True)
+        enable_graph_attempt = config.get('enable_graph_attempt', 1)
 
         start_pos = start_state.position[0].cpu().tolist()
         goal_pos = list(goal_joint_positions)
@@ -72,17 +71,13 @@ class JointSpacePlanner(SinglePlanner):
         self.node.get_logger().info(f"  Start: {[f'{x:.3f}' for x in start_pos]}")
         self.node.get_logger().info(f"  Goal:  {[f'{x:.3f}' for x in goal_pos]}")
         self.node.get_logger().info(
-            f"  Config: max_attempts={max_attempts}, timeout={timeout}s, "
-            f"time_dilation={time_dilation_factor}, "
-            f"enable_graph={enable_graph}, enable_opt={enable_opt}"
+            f"  Config: max_attempts={max_attempts}, "
+            f"enable_graph_attempt={enable_graph_attempt}"
         )
 
-        return self.motion_planner.plan_joint_state(
-            start_state,
+        return self.motion_planner.plan_cspace(
             goal_state,
+            start_state,
             max_attempts=max_attempts,
-            timeout=timeout,
-            time_dilation_factor=time_dilation_factor,
-            enable_graph=enable_graph,
-            enable_opt=enable_opt,
+            enable_graph_attempt=enable_graph_attempt,
         )
