@@ -145,6 +145,7 @@ def launch_setup(context, *args, **kwargs):
             package='joint_state_publisher',
             executable='joint_state_publisher',
             namespace='preview',
+            condition=IfCondition(LaunchConfiguration('gui')),
             parameters=[{
                 'source_list': ['/trajectory/joint_states'],
                 'base_link': base_link
@@ -155,6 +156,7 @@ def launch_setup(context, *args, **kwargs):
             package='robot_state_publisher',
             executable='robot_state_publisher',
             namespace='preview',
+            condition=IfCondition(LaunchConfiguration('gui')),
             parameters=[{
                 'robot_description': urdf_content,
                 'frame_prefix': 'preview/',
@@ -166,6 +168,7 @@ def launch_setup(context, *args, **kwargs):
             package='tf2_ros',
             executable='static_transform_publisher',
             namespace='preview',
+            condition=IfCondition(LaunchConfiguration('gui')),
             arguments=['0', '0', '0', '0', '0', '0', 'world', 'preview/world']
         ),
 
