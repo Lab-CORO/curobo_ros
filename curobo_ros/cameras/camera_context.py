@@ -4,7 +4,6 @@ from typing import List, Dict
 import torch
 from curobo.types import CameraObservation
 from curobo_ros.cameras.camera_strategy import CameraStrategy
-from curobo_ros.cameras.pointcloud_camera_strategy import PointCloudCameraStrategy
 from curobo_ros.cameras.camera_depth_map_strategy import DepthMapCameraStrategy
 
 
@@ -34,7 +33,7 @@ class CameraContext:
 
         Args:
             camera_name: Unique identifier for this camera
-            camera_type: Type of camera ('point_cloud' or 'depth_camera')
+            camera_type: Type of camera ('depth_camera')
             topic: ROS topic for the camera data
             camera_info: Camera intrinsics (for depth cameras)
             frame_id: Frame ID for the camera
@@ -42,28 +41,12 @@ class CameraContext:
             extrinsics: Optional camera extrinsics from config (list)
             **kwargs: Additional parameters for specific camera strategies
         """
-        # Create the appropriate camera strategy based on type
-        if camera_type == 'point_cloud':
-            # For point cloud cameras
-            pixel_size = kwargs.get('pixel_size', 0.01)
-            bounds = kwargs.get('bounds', None)
-            camera_strategy = PointCloudCameraStrategy(
-                node=self.node,
-                name=camera_name,
-                topic=topic,
-                camera_info=camera_info,
-                frame_id=frame_id,
-                pixel_size=pixel_size,
-                bounds=bounds,
-                intrinsics=intrinsics,
-                extrinsics=extrinsics
-            )
-
-        elif camera_type == 'depth_camera':
+        # v2 perception ingests depth+rgb images through the Mapper TSDF; raw
+        # point clouds are not supported, so only depth cameras are available.
+        if camera_type == 'depth_camera':
             # For depth cameras (RealSense, etc.)
             # Use camera_info parameter from config or fallback to topic-based guess
             camera_info_topic = camera_info if camera_info else topic.replace('/image', '/camera_info')
-            camera_pose = kwargs.get('camera_pose', None)
             camera_strategy = DepthMapCameraStrategy(
                 node=self.node,
                 camera_name=camera_name,
@@ -75,7 +58,10 @@ class CameraContext:
             )
 
         else:
-            self.node.get_logger().error(f"Unknown camera type: {camera_type}")
+            self.node.get_logger().error(
+                f"Unknown/unsupported camera type: {camera_type} "
+                f"(v2 supports 'depth_camera' only)"
+            )
             return
 
         self.cameras[camera_name] = camera_strategy

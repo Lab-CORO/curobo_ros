@@ -47,8 +47,10 @@ tests:
   - name: "04 Get voxel grid"
     service: "/unified_planner/get_voxel_grid"
     type: curobo_msgs/srv/GetVoxelGrid
+    # v2: bounds derive from mapper_extent_xyz (2.0 m, centered) at voxel_size
+    # 0.05 m -> ceil(2.0/0.05) = 40 per axis, 40^3 = 64000 cells.
     data: {}
-    expect: {voxel_grid: {size_x: 61, size_y: 61, size_z: 61, data: {$len: 226981}}}
+    expect: {voxel_grid: {size_x: 40, size_y: 40, size_z: 40, data: {$len: 64000}}}
 
   - name: "05 Remove object"
     service: "/unified_planner/remove_object"
