@@ -1,4 +1,11 @@
-# Test planner management services
+# Test planner management + unified generate/execute action
+#
+# Covers:
+# - planner switching (multipoint / classic / MPC)
+# - open-loop "preview" cache: generate_trajectory caches a plan, the execute
+#   action reuses it (matching target), and clear_trajectory drops it
+# - reactive (MPC): the execute action servos CONTINUOUSLY (does not self-
+#   terminate); it streams feedback and ends only on cancel (cancel_after)
 
 package: curobo_ros
 environment:
@@ -37,8 +44,88 @@ tests:
     expect:
       success: True
 
-  - name: "04 Set planner classic"
+  - name: "04 Set robot strategy emulator"
+    service: "/unified_planner/set_robot_strategy"
+    type: curobo_msgs/srv/SetRobotStrategy
+    # Emulator follows joint commands so open-loop execution completes and the
+    # MPC servo loop actually drives the arm.
+    data: {robot_strategy: 1}
+    expect: {success: True}
+
+  - name: "05 Set planner classic"
     service: "/unified_planner/set_planner"
     type: curobo_msgs/srv/SetPlanner
     data: {planner_type: 0}
+    expect: {success: True}
+
+  # ---- Open-loop preview cache: generate (cache) -> execute (reuse) -> clear ----
+
+  - name: "06 Generate trajectory classic preview"
+    service: "/unified_planner/generate_trajectory"
+    type: curobo_msgs/srv/TrajectoryGeneration
+    # Computes + caches the trajectory (start defaults to the robot's pose).
+    data:
+      target_pose:
+        position: {x: 0.5, y: 0.0, z: 0.5}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    expect: {success: True}
+
+  - name: "07 Execute classic cached"
+    action: "/unified_planner/execute_trajectory"
+    type: curobo_msgs/action/SendTrajectory
+    # Same target as the preview -> the node REUSES the cached plan (no recompute)
+    # and the open-loop action terminates on its own.
+    data:
+      target_pose:
+        position: {x: 0.5, y: 0.0, z: 0.5}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    timeout: 90.0
+    expect: {success: True}
+
+  - name: "08 Clear trajectory"
+    service: "/unified_planner/clear_trajectory"
+    type: std_srvs/srv/Trigger
+    data: {}
+    expect: {success: True}
+
+  # ---- Reactive (MPC): continuous servoing, ends only on cancel ----
+
+  - name: "09 Set planner MPC"
+    service: "/unified_planner/set_planner"
+    type: curobo_msgs/srv/SetPlanner
+    data: {planner_type: 1}
+    expect: {success: True,
+             current_planner: "Model Predictive Control (MPC)"}
+
+  - name: "10 Execute MPC reactive"
+    action: "/unified_planner/execute_trajectory"
+    type: curobo_msgs/action/SendTrajectory
+    # Target = the pose that used to fail the MPC's 1-seed IK (reachable per the
+    # node's robust IK). With run_ik=False (pure pose tracking) the arm must
+    # servo toward it. The action servos CONTINUOUSLY: we let it run, then cancel;
+    # the generator asserts feedback was streamed (the servo loop ran).
+    data:
+      target_pose:
+        position: {x: 0.627, y: -0.005, z: 0.751}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    cancel_after: 6.0
+    timeout: 90.0
+    expect: {success: False}   # canceled (reactive never self-completes)
+
+  - name: "11 Set planner classic"
+    service: "/unified_planner/set_planner"
+    type: curobo_msgs/srv/SetPlanner
+    data: {planner_type: 0}
+    expect: {success: True}
+
+  - name: "12 Generate trajectory with constraint"
+    service: "/unified_planner/generate_trajectory"
+    type: curobo_msgs/srv/TrajectoryGeneration
+    # Lock rotation about Z along the path (ToolPoseCriteria) — exercises the
+    # constraint code path; must still plan successfully and reset afterwards.
+    data:
+      target_pose:
+        position: {x: 0.5, y: 0.0, z: 0.5}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+      trajectory_constraints: [0, 0, 1, 0, 0, 0]
     expect: {success: True}

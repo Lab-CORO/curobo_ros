@@ -604,66 +604,32 @@ ros2 action send_goal /unified_planner/send_trajectory curobo_msgs/action/SendTr
 
 ---
 
-### 2. `mpc_move` - MPC Closed-Loop Control (NEW Nov 9, 2025)
+### Reactive (MPC) control — same interface
 
-**Action Type**: `curobo_msgs/action/MpcMove`
+Reactive control does **not** use a dedicated action. Switch the active planner
+to `mpc` (`set_planner`), then drive it with the **unified** interface:
 
-**Purpose**: Closed-loop MPC control with continuous replanning to reach target pose.
-
-**Goal Fields:**
-- `target_pose` (Pose): Desired end-effector pose
-
-**Feedback Fields:**
-- `joint_command` (JointState): Current joint command being executed
-- `step_progression` (float32): Progress toward goal [0.0 - 1.0]
-
-**Result Fields:**
-- `success` (bool): True if target reached
-- `message` (string): Status message
-
-**Behavior:**
-- Continuously replans at configurable frequency (default: 100 Hz)
-- Automatically avoids dynamic obstacles
-- Converges when within threshold (default: 0.01m)
-- Can be canceled mid-execution
-
-**ROS2 CLI Examples:**
+- `generate_trajectory` (service) — sets the reactive goal (returns no trajectory).
+- `send_trajectory` / `execute_trajectory` (action above) — runs the closed-loop
+  MPC control loop with feedback (`step_progression`) and cancellation.
+- `mpc_goal` (topic, `geometry_msgs/Pose`) — live retargeting during execution;
+  the ROS mapping of cuRobo's continuous `update_goal_tool_poses`.
 
 ```bash
-# Send MPC move goal with feedback
-ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}" \
-  --feedback
+# 1. Switch to the MPC reactive controller
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 
-# Cancel active MPC move
-ros2 action cancel_goal /unified_planner/mpc_move <goal_id>
+# 2. Set the goal, then run the loop (continuously replans, avoids obstacles)
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}" --feedback
 
-# Check MPC action status
-ros2 action list
-ros2 action info /unified_planner/mpc_move
+# 3. (Optional) retarget live while the loop runs
+ros2 topic pub --once /unified_planner/mpc_goal geometry_msgs/Pose \
+  "{position: {x: 0.6, y: 0.0, z: 0.4}, orientation: {w: 1.0}}"
 ```
 
-**Feedback Output:**
-```
-Feedback:
-  step_progression: 0.15
-Feedback:
-  step_progression: 0.32
-Feedback:
-  step_progression: 0.58
-...
-Result:
-  success: true
-  message: 'Target reached successfully'
-```
-
-**Use Cases:**
-- Reactive control in dynamic environments
-- Tracking moving targets
-- Real-time obstacle avoidance
-- Tasks requiring continuous replanning
-
-**See Also**: [Tutorial 5: MPC Planner](../tutorials/05-mpc-planner.md#using-mpcmove-action)
+**See Also**: [Tutorial 5: MPC Planner](../tutorials/05-mpc-planner.md)
 
 ---
 
@@ -783,10 +749,10 @@ ros2 action send_goal /unified_planner/send_trajectory curobo_msgs/action/SendTr
 # 1. Switch to MPC planner
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 
-# 2. Use MPC action for reactive control
-ros2 action send_goal /unified_planner/mpc_move curobo_msgs/action/MpcMove \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}" \
-  --feedback
+# 2. Set the goal and run the reactive loop
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}" --feedback
 ```
 
 ### Pattern 3: Collision Scene Setup
@@ -841,7 +807,7 @@ ros2 param get /unified_planner voxel_size
 
 ### November 9, 2025
 - Added `set_planner` service for runtime planner switching
-- Added `mpc_move` action for closed-loop MPC control
+- Added closed-loop MPC reactive control (via `execute_trajectory` + `mpc_goal`)
 
 ---
 

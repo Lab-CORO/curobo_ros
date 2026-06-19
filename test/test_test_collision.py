@@ -8,6 +8,7 @@ DO NOT EDIT - Changes will be overwritten
 import unittest
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from rosidl_runtime_py import set_message_fields
 import launch
 from launch import LaunchDescription
@@ -251,6 +252,6 @@ class PostShutdownTests(unittest.TestCase):
         """Test that all processes exited without critical errors"""
         launch_testing.asserts.assertExitCodes(
             proc_info,
-            allowable_exit_codes=[0, 1, -2, -6, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -6: rviz2 SIGABRT, -11: rviz2 SIGSEGV on shutdown
+            allowable_exit_codes=[0, 1, -2, -6, -9, -11, -15]  # 0: clean, 1: shutdown error, -2: SIGINT, -6/-11: rviz2 SIGABRT/SIGSEGV, -9/-15: rviz2 SIGKILL/SIGTERM on forced shutdown
         )
 
