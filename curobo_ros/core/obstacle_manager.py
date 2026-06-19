@@ -8,6 +8,7 @@ from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, SetCollisionC
 from geometry_msgs.msg import Vector3
 
 from curobo.scene import Scene, Cuboid, Capsule, Cylinder, Sphere, Mesh
+from curobo.perception import Mapper, MapperCfg
 
 
 class ObstacleManager:
@@ -34,11 +35,37 @@ class ObstacleManager:
         # Tracks registered obstacle names for uniqueness validation.
         self.obstacle_names = []
 
+        # Perception (created lazily in setup_perception()).
+        self.mapper = None
+        self._esdf_voxel_name = None
+
+        # Observer callbacks (registered by ConfigWrapper). They decouple scene
+        # mutations from solver propagation so that ANY caller — ROS service or
+        # direct Python — reliably reaches the solvers.
+        self._on_world_changed = None
+        self._on_cache_changed = None
+
+        # Perception/voxel parameters — single source of truth shared between
+        # the Mapper (MapperCfg) and the solver voxel collision cache.
+        self._load_perception_params()
+
         # v2 collision cache: dict with keys cuboid (int), mesh (int), voxel
         # (None or dict {"layers": int, "dims": [x,y,z], "voxel_size": float}).
         # v1 passed the triple obb/mesh/blox; the service still accepts it and
         # maps obb→cuboid, mesh→mesh, blox→voxel.layers.
-        self.collision_cache = {"cuboid": 100, "mesh": 100, "voxel": None}
+        #
+        # The voxel sub-dict pre-allocates voxel collision storage in the
+        # solvers (VoxelData.create_cache) and MUST match the Mapper's ESDF
+        # grid: dims = extent in meters, voxel_size = ESDF voxel size.
+        self.collision_cache = {
+            "cuboid": 100,
+            "mesh": 100,
+            "voxel": {
+                "layers": 1,
+                "dims": list(self._mapper_extent_xyz),
+                "voxel_size": self._esdf_voxel_size,
+            },
+        }
 
         if initial_scene is not None:
             node.get_logger().info("ObstacleManager initialized with scene from ConfigManager")
@@ -56,6 +83,134 @@ class ObstacleManager:
     def _append(self, bucket: str, obstacle):
         getattr(self.scene, bucket).append(obstacle)
         self.obstacle_names.append(obstacle.name)
+
+    # ---- Perception parameters (single source of truth) ----
+
+    def _declare_param(self, name, default):
+        """Read a ROS param, declaring it with `default` if not yet present."""
+        if not self.node.has_parameter(name):
+            self.node.declare_parameter(name, default)
+        return self.node.get_parameter(name).value
+
+    def _load_perception_params(self):
+        """Load voxel/perception params (declared with defaults if missing).
+
+        The ESDF voxel size reuses the existing `voxel_size` param so a single
+        knob drives MapperCfg.esdf_voxel_size, the voxel collision cache, and
+        the get_voxel_grid resolution.
+        """
+        self._use_mapper = self._declare_param('use_mapper', True)
+        self._mapper_extent_xyz = self._declare_param('mapper_extent_xyz', [2.0, 2.0, 2.0])
+        self._mapper_grid_center = self._declare_param('mapper_grid_center', [0.0, 0.0, 0.0])
+        self._mapper_voxel_size = self._declare_param('mapper_voxel_size', 0.02)
+        self._mapper_image_height = self._declare_param('mapper_image_height', 480)
+        self._mapper_image_width = self._declare_param('mapper_image_width', 640)
+        self._mapper_depth_min = self._declare_param('mapper_depth_min', 0.1)
+        self._mapper_depth_max = self._declare_param('mapper_depth_max', 5.0)
+        # ESDF voxel size shares the pre-existing `voxel_size` param.
+        self._esdf_voxel_size = self._declare_param('voxel_size', 0.05)
+
+    # ---- Observer wiring (propagation to solvers) ----
+
+    def set_world_update_callback(self, callback):
+        """Register a callback invoked after every scene mutation."""
+        self._on_world_changed = callback
+
+    def set_collision_cache_callback(self, callback):
+        """Register a callback invoked when the collision cache changes.
+
+        A cache change requires a full solver rebuild (cache size is fixed at
+        solver creation), not just a world update.
+        """
+        self._on_cache_changed = callback
+
+    def _notify_world_changed(self):
+        if self._on_world_changed is not None:
+            self._on_world_changed()
+
+    def _notify_cache_changed(self):
+        if self._on_cache_changed is not None:
+            self._on_cache_changed()
+
+    # ---- Perception (Mapper / ESDF) ----
+
+    def setup_perception(self, num_cameras: int = 1):
+        """Create the v2 Mapper and expose it as `node.mapper`.
+
+        Idempotent: if a Mapper already exists on the node (e.g. created by
+        another ConfigWrapper sharing this node), adopt it instead of building
+        a second one. No-op when `use_mapper` is False.
+
+        Args:
+            num_cameras: number of cameras feeding the shared Mapper (sizes the
+                projective scratch buffer).
+        """
+        if not self._use_mapper:
+            self.mapper = None
+            self.node.mapper = None
+            self.node.get_logger().info("Perception disabled (use_mapper=False)")
+            return
+
+        if int(num_cameras) < 1:
+            # No camera feeds the Mapper → skip the GPU allocation entirely.
+            self.mapper = None
+            self.node.mapper = None
+            self.node.get_logger().info("Perception inactive (no cameras configured)")
+            return
+
+        existing = getattr(self.node, 'mapper', None)
+        if existing is not None:
+            self.mapper = existing
+            return
+
+        # num_cameras is the per-integrate batch size. Each camera strategy
+        # integrates ONE frame per ROS callback, so the Mapper is built for a
+        # single-camera frame; multiple cameras simply call integrate() in turn
+        # and the shared TSDF fuses them. (All cameras must share image_height/
+        # image_width since the projective buffer is sized once here.)
+        self.mapper = Mapper(MapperCfg(
+            extent_meters_xyz=tuple(self._mapper_extent_xyz),
+            # Pin the ESDF extent to the TSDF extent so the produced ESDF grid
+            # dims match the pre-allocated voxel collision_cache exactly.
+            extent_esdf_meters_xyz=tuple(self._mapper_extent_xyz),
+            voxel_size=self._mapper_voxel_size,
+            esdf_voxel_size=self._esdf_voxel_size,
+            grid_center=torch.tensor(self._mapper_grid_center, dtype=torch.float32),
+            image_height=int(self._mapper_image_height),
+            image_width=int(self._mapper_image_width),
+            depth_minimum_distance=self._mapper_depth_min,
+            depth_maximum_distance=self._mapper_depth_max,
+            num_cameras=1,
+        ))
+        self.node.mapper = self.mapper
+        self.node.get_logger().info(
+            f"Mapper configured: extent={self._mapper_extent_xyz}m, "
+            f"tsdf={self._mapper_voxel_size}m, esdf={self._esdf_voxel_size}m, "
+            f"image={self._mapper_image_width}x{self._mapper_image_height} "
+            f"({int(num_cameras)} camera(s) feeding the shared TSDF)"
+        )
+
+    def refresh_esdf(self) -> bool:
+        """Recompute the ESDF from the Mapper and stage it into the Scene.
+
+        Returns True if an ESDF voxel grid was produced (the caller should then
+        push the scene to the solvers via update_world). No-op without a Mapper.
+        """
+        if self.mapper is None:
+            return False
+        try:
+            vg = self.mapper.compute_esdf()
+        except Exception as e:
+            self.node.get_logger().warn(
+                f"compute_esdf failed: {e}", throttle_duration_sec=5.0
+            )
+            return False
+        if vg is None:
+            return False
+        # Single perception voxel grid in the Scene (replaces any previous one).
+        self.scene.voxel = [vg]
+        self._esdf_voxel_name = vg.name
+        return True
 
     # ---- Services ----
 
@@ -142,6 +297,7 @@ class ObstacleManager:
             f"Object '{request.name}' added "
             f"({len(self.scene.cuboid)} cuboids, {len(self.scene.mesh)} meshes)"
         )
+        self._notify_world_changed()
         return response
 
     def remove_object(self, node, request: RemoveObject, response):
@@ -159,6 +315,7 @@ class ObstacleManager:
                     response.success = True
                     response.message = f"Object '{request.name}' removed from {bucket}s"
                     node.get_logger().info(response.message)
+                    self._notify_world_changed()
                     return response
 
         # Name was tracked but not found in any bucket — defensive cleanup.
@@ -176,6 +333,7 @@ class ObstacleManager:
         response.success = True
         response.message = f'All {total} obstacles removed'
         node.get_logger().info(response.message)
+        self._notify_world_changed()
         return response
 
     def get_obstacles(self, node, request: Trigger, response):
@@ -192,8 +350,12 @@ class ObstacleManager:
         """
         voxel_size = node.get_parameter('voxel_size').get_parameter_value().double_value
 
-        grid_min = np.array([-1.52, -1.52, -1.52], dtype=np.float32)
-        grid_max = np.array([1.52, 1.52, 1.52], dtype=np.float32)
+        # Bounds derive from the Mapper grid (single source of truth), not a
+        # hardcoded extent: grid_center ± extent/2.
+        center = np.array(self._mapper_grid_center, dtype=np.float32)
+        half = np.array(self._mapper_extent_xyz, dtype=np.float32) / 2.0
+        grid_min = center - half
+        grid_max = center + half
         size = np.ceil((grid_max - grid_min) / voxel_size).astype(np.int32)
 
         voxel_grid = np.zeros((size[0], size[1], size[2]), dtype=np.uint32)
@@ -252,16 +414,16 @@ class ObstacleManager:
         if request.blox >= 0:
             self.collision_cache["voxel"] = {
                 "layers": int(request.blox),
-                "dims": [1.0, 1.0, 1.0],
-                "voxel_size": 0.02,
+                "dims": list(self._mapper_extent_xyz),
+                "voxel_size": self._esdf_voxel_size,
             }
         elif request.blox == -1:
             self.collision_cache["voxel"] = None
 
         node.get_logger().info(f'collision_cache set to {self.collision_cache}')
-        node.get_logger().warn(
-            'Collision cache changed — call /update_motion_gen_config to re-warmup.'
-        )
+        # The cache size is fixed at solver creation, so a world update is not
+        # enough — rebuild the solvers now (observer registered by ConfigWrapper).
+        self._notify_cache_changed()
 
         response.success = True
         response.message = 'Collision cache updated'
@@ -276,23 +438,3 @@ class ObstacleManager:
     def get_scene(self) -> Scene:
         """Return the authoritative Scene (single source of truth)."""
         return self.scene
-
-    # Legacy alias — some callers still use get_world_cfg().
-    def get_world_cfg(self) -> Scene:
-        return self.scene
-
-    def get_all_obstacles(self):
-        return (
-            self.scene.cuboid
-            + self.scene.capsule
-            + self.scene.cylinder
-            + self.scene.sphere
-            + self.scene.mesh
-        )
-
-    def get_object(self, object_name: str) -> dict:
-        for bucket in ('cuboid', 'capsule', 'cylinder', 'sphere', 'mesh'):
-            for obj in getattr(self.scene, bucket):
-                if obj.name == object_name:
-                    return {'type': bucket, 'pose': obj.pose, 'object': obj}
-        raise ValueError(f"Object '{object_name}' not found in obstacle manager")

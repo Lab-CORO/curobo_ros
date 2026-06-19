@@ -55,11 +55,6 @@ class CameraSystemManager:
                     camera_intrinsics = camera.get("intrinsics", None)
                     camera_extrinsics = camera.get("extrinsics", None)
 
-                    # Get pixel_size parameter if available (for point cloud cameras)
-                    pixel_size = 0.01  # Default
-                    if self.node.has_parameter('pixel_size'):
-                        pixel_size = self.node.get_parameter('pixel_size').get_parameter_value().double_value
-
                     # Add camera with appropriate type
                     self.camera_context.add_camera(
                         camera_name=camera_name,
@@ -67,7 +62,6 @@ class CameraSystemManager:
                         topic=camera_topic,
                         camera_info=camera_info,
                         frame_id=camera_frame_id,
-                        pixel_size=pixel_size,
                         intrinsics=camera_intrinsics,
                         extrinsics=camera_extrinsics
                     )

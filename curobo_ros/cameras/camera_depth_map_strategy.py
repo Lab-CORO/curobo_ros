@@ -150,11 +150,25 @@ class DepthMapCameraStrategy(CameraStrategy):
                         position=self.tensor_args.to_device([0, 0, 0]),
                         quaternion=self.tensor_args.to_device([1, 0, 0, 0])
                     )
-            # Create a camera observation (similar to realsense_collision.py line 231-233)
+            # v2 Mapper requires a leading camera dimension on every field and a
+            # paired rgb image. We have no colour for collision mapping, so a
+            # zero rgb buffer is passed. depth -> (1, H, W), rgb -> (1, H, W, 3),
+            # intrinsics -> (1, 3, 3). The camera pose keeps its (1, 3)/(1, 4)
+            # batch shape (the integrator views it as (num_cameras, ...)).
+            depth_b = depth_tensor.unsqueeze(0) if depth_tensor.ndim == 2 else depth_tensor
+            intrinsics_b = (
+                self.intrinsics.unsqueeze(0) if self.intrinsics.ndim == 2 else self.intrinsics
+            )
+            rgb_b = torch.zeros(
+                (depth_b.shape[0], depth_b.shape[1], depth_b.shape[2], 3),
+                dtype=torch.uint8,
+                device=self.tensor_args.device,
+            )
             data_camera = CameraObservation(
-                depth_image=depth_tensor,
-                intrinsics=self.intrinsics,
-                pose=self.camera_pose
+                depth_image=depth_b,
+                rgb_image=rgb_b,
+                intrinsics=intrinsics_b,
+                pose=self.camera_pose,
             )
 
             # v2: depth frames are integrated by the node's `Mapper`.

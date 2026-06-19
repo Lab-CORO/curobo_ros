@@ -8,6 +8,7 @@ DO NOT EDIT - Changes will be overwritten
 import unittest
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from rosidl_runtime_py import set_message_fields
 import launch
 from launch import LaunchDescription
@@ -216,26 +217,26 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertEqual(
             response.voxel_grid.size_x,
-            61,
+            40,
             f"Field 'size_x' doesn't match expected value"
         )
 
         self.assertEqual(
             response.voxel_grid.size_y,
-            61,
+            40,
             f"Field 'size_y' doesn't match expected value"
         )
 
         self.assertEqual(
             response.voxel_grid.size_z,
-            61,
+            40,
             f"Field 'size_z' doesn't match expected value"
         )
 
         self.assertEqual(
             len(list(response.voxel_grid.data)),
-            226981,
-            f"Field 'data' length doesn't match expected 226981"
+            64000,
+            f"Field 'data' length doesn't match expected 64000"
         )
 
     def test_05_remove_object(self):
@@ -328,6 +329,6 @@ class PostShutdownTests(unittest.TestCase):
         """Test that all processes exited without critical errors"""
         launch_testing.asserts.assertExitCodes(
             proc_info,
-            allowable_exit_codes=[0, 1, -2, -6, -11]  # 0: clean, 1: shutdown error, -2: SIGINT, -6: rviz2 SIGABRT, -11: rviz2 SIGSEGV on shutdown
+            allowable_exit_codes=[0, 1, -2, -6, -9, -11, -15]  # 0: clean, 1: shutdown error, -2: SIGINT, -6/-11: rviz2 SIGABRT/SIGSEGV, -9/-15: rviz2 SIGKILL/SIGTERM on forced shutdown
         )
 

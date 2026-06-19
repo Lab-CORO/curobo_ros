@@ -45,8 +45,10 @@ class ConfigManager:
 
     def _load_ros_parameters(self):
         """Declare and load ROS parameters"""
-        self.node.declare_parameter('base_link', 'base_0')
-        self.node.declare_parameter('world_file', '')
+        if not self.node.has_parameter('base_link'):
+            self.node.declare_parameter('base_link', 'base_0')
+        if not self.node.has_parameter('world_file'):
+            self.node.declare_parameter('world_file', '')
 
         self.base_link = self.node.get_parameter('base_link').get_parameter_value().string_value
         self.world_file = self.node.get_parameter('world_file').get_parameter_value().string_value
@@ -75,7 +77,8 @@ class ConfigManager:
             'm1013',
             'm1013.yml',
         )
-        self.node.declare_parameter('robot_config_file', default_robot_config)
+        if not self.node.has_parameter('robot_config_file'):
+            self.node.declare_parameter('robot_config_file', default_robot_config)
 
         robot_config_file = self.node.get_parameter('robot_config_file').get_parameter_value().string_value
         if not robot_config_file:
@@ -99,10 +102,6 @@ class ConfigManager:
         IMPORTANT: For the authoritative Scene with runtime obstacles, use
         obstacle_manager.get_scene() instead.
         """
-        return self.scene
-
-    # Legacy alias for code that still calls get_world_config()
-    def get_world_config(self) -> Scene:
         return self.scene
 
     def get_robot_config_file(self) -> str:
