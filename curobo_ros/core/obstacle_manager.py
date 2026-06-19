@@ -349,6 +349,8 @@ class ObstacleManager:
         once v2 setup is complete. If absent, an empty grid is returned.
         """
         voxel_size = node.get_parameter('voxel_size').get_parameter_value().double_value
+        if voxel_size <= 0.0:
+            voxel_size = self._esdf_voxel_size
 
         # Bounds derive from the Mapper grid (single source of truth), not a
         # hardcoded extent: grid_center ± extent/2.
@@ -381,6 +383,19 @@ class ObstacleManager:
             except Exception as e:
                 node.get_logger().warn(f'Mapper ESDF query failed: {e}')
 
+        # Analytic primitives (cuboid/sphere/capsule/cylinder/mesh) are NOT part
+        # of the Mapper ESDF — that grid is perception-only (camera TSDF). Rasterize
+        # them into the same grid so the voxel view reflects the WHOLE scene (these
+        # are the obstacles added via AddObject), using each obstacle's own cuRobo
+        # trimesh geometry.
+        try:
+            n_prim = self._rasterize_primitives(node, voxel_grid, grid_min, voxel_size, size)
+            if n_prim:
+                node.get_logger().info(
+                    f'Filled voxel grid from analytic primitives ({n_prim} occupied cells)')
+        except Exception as e:
+            node.get_logger().warn(f'Primitive voxelization failed: {e}')
+
         response.voxel_grid.resolutions = rnp.msgify(
             Vector3, np.array([voxel_size, voxel_size, voxel_size])
         )
@@ -392,6 +407,48 @@ class ObstacleManager:
         response.voxel_grid.origin.z = float(grid_min[2])
         response.voxel_grid.data = voxel_grid.flatten().tolist()
         return response
+
+    def _rasterize_primitives(self, node, voxel_grid, grid_min, voxel_size, size) -> int:
+        """Rasterize the Scene's analytic primitives into ``voxel_grid`` (in place).
+
+        For each obstacle bucket, the obstacle's own cuRobo trimesh (transformed to
+        the world frame) is tested for containment of the voxel centers, restricted
+        to the obstacle's AABB so the cost scales with object size, not grid size.
+        Returns the number of cells marked occupied.
+        """
+        grid_min = np.asarray(grid_min, dtype=np.float64)
+        size = np.asarray(size, dtype=np.int64)
+        total = 0
+        for bucket in ('cuboid', 'sphere', 'capsule', 'cylinder', 'mesh'):
+            for obs in (getattr(self.scene, bucket, None) or []):
+                try:
+                    mesh = obs.get_trimesh_mesh(transform_with_pose=True)
+                    total += self._rasterize_mesh(mesh, voxel_grid, grid_min, voxel_size, size)
+                except Exception as e:
+                    node.get_logger().warn(
+                        f"voxelize: skipped '{getattr(obs, 'name', '?')}' ({e})")
+        return total
+
+    @staticmethod
+    def _rasterize_mesh(mesh, voxel_grid, grid_min, voxel_size, size) -> int:
+        """Mark voxels whose centers fall inside ``mesh`` (AABB-restricted)."""
+        lo = np.asarray(mesh.bounds[0], dtype=np.float64)
+        hi = np.asarray(mesh.bounds[1], dtype=np.float64)
+        i0 = np.maximum(np.floor((lo - grid_min) / voxel_size).astype(np.int64), 0)
+        i1 = np.minimum(np.ceil((hi - grid_min) / voxel_size).astype(np.int64), size)
+        if np.any(i1 <= i0):
+            return 0  # AABB fully outside the grid bounds
+        ax = np.arange(i0[0], i1[0])
+        ay = np.arange(i0[1], i1[1])
+        az = np.arange(i0[2], i1[2])
+        gx, gy, gz = np.meshgrid(ax, ay, az, indexing='ij')
+        idx = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+        centers = grid_min + (idx + 0.5) * voxel_size
+        inside = mesh.contains(centers)
+        sel = idx[inside]
+        if len(sel):
+            voxel_grid[sel[:, 0], sel[:, 1], sel[:, 2]] = 1
+        return int(inside.sum())
 
     def set_collision_cache(
         self,
