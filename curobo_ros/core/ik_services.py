@@ -132,6 +132,18 @@ class IKServices:
         self._ik_solver.update_world(scene)
         self._node.get_logger().info("IKServices: world updated")
 
+    def rebuild(self):
+        """Recreate the IK solver after a collision-cache change.
+
+        The collision cache is fixed at solver creation, so a cache change
+        requires a rebuild (reusing the last batch size). No-op if the solver
+        was never initialized.
+        """
+        if self._ik_solver is None:
+            return
+        self._init(max(1, self._ik_batch_size))
+        self._node.get_logger().info("IKServices: solver rebuilt after cache change")
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

@@ -8,21 +8,23 @@ and configuration, avoiding redundant warmup operations.
 
 Architecture:
     TrajectoryPlanner (abstract interface)
-        ├── SinglePlanner (MotionGen-based planners) [THIS CLASS]
+        ├── SinglePlanner (open-loop, MotionPlanner-based) [THIS CLASS]
         │   ├── ClassicPlanner (single-shot planning)
         │   ├── MultiPointPlanner (waypoint planning)
-        │   ├── JointSpacePlanner (joint space planning)
-        │   └── GraspPlanner (grasp planning)
-        └── MPCPlanner (MPC-based, uses MpcSolver instead)
+        │   └── JointSpacePlanner (joint space planning)
+        └── ReactiveController (closed-loop control loop)
+            └── MPCController (cuRobo ModelPredictiveControl)
 """
 
 from abc import abstractmethod
 from typing import Optional, Any
 import time
 
-import torch
 from curobo.types import JointState
 from curobo.motion_planner import MotionPlanner
+# v2: PoseCostMetric is gone; Cartesian axis constraints use ToolPoseCriteria.
+# Not re-exported publicly yet, so import from _src (same pattern as Mapper).
+from curobo._src.cost.tool_pose_criteria import ToolPoseCriteria
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 from curobo_msgs.action import SendTrajectory
@@ -133,6 +135,49 @@ class SinglePlanner(TrajectoryPlanner):
     def motion_gen(self) -> Optional[MotionPlanner]:
         """Legacy alias for motion_planner."""
         return self._shared_motion_planner
+
+    # ------------------------------------------------------------------
+    # Cartesian trajectory constraints (v2: ToolPoseCriteria)
+    # ------------------------------------------------------------------
+
+    def _apply_pose_constraints(self, goal_request) -> bool:
+        """Hold Cartesian axes along the whole path, if requested.
+
+        Reads ``goal_request.trajectory_constraints`` (int8[6], order
+        ``[theta_x, theta_y, theta_z, x, y, z]``; 1 = lock that axis along the
+        path) and sets ``ToolPoseCriteria.non_terminal_pose_axes_weight_factor``
+        (order ``[x, y, z, roll, pitch, yaw]``) on the shared MotionPlanner.
+        This is the v2 replacement for the removed PoseCostMetric (same call
+        ``plan_grasp`` uses for linear approach/lift).
+
+        Returns True if constraints were applied (caller must reset afterwards).
+        """
+        constraints = list(getattr(goal_request, 'trajectory_constraints', []) or [])
+        if not any(c == 1 for c in constraints):
+            return False
+        if len(constraints) != 6:
+            self.node.get_logger().warn(
+                f"{self.get_planner_name()}: trajectory_constraints must have 6 entries "
+                f"[theta_x, theta_y, theta_z, x, y, z], got {len(constraints)} — ignoring."
+            )
+            return False
+
+        tx, ty, tz, x, y, z = (1.0 if c == 1 else 0.0 for c in constraints)
+        axes = [x, y, z, tx, ty, tz]  # ToolPoseCriteria order: x,y,z,roll,pitch,yaw
+        tool_frame = self.motion_planner.tool_frames[0]
+        self.motion_planner.update_tool_pose_criteria(
+            {tool_frame: ToolPoseCriteria(non_terminal_pose_axes_weight_factor=axes)}
+        )
+        self.node.get_logger().info(
+            f"{self.get_planner_name()}: holding axes along path "
+            f"(x,y,z,roll,pitch,yaw)={axes}"
+        )
+        return True
+
+    def _reset_pose_criteria(self) -> None:
+        """Restore default (unconstrained) criteria — the MotionPlanner is shared."""
+        tool_frame = self.motion_planner.tool_frames[0]
+        self.motion_planner.update_tool_pose_criteria({tool_frame: ToolPoseCriteria()})
 
     def cancel(self):
         """
@@ -405,6 +450,8 @@ class SinglePlanner(TrajectoryPlanner):
 
                     if goal_handle is not None:
                         feedback_msg = SendTrajectory.Feedback()
+                        feedback_msg.state = "EXECUTING"
+                        feedback_msg.on_target = False
                         feedback_msg.step_progression = robot_context.get_progression()
                         goal_handle.publish_feedback(feedback_msg)
 

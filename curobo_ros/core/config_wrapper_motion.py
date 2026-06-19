@@ -16,7 +16,6 @@ import torch
 import rclpy
 
 from std_srvs.srv import Trigger
-from std_msgs.msg import Float32
 from curobo_msgs.srv import GetCollisionDistance, Ik, IkBatch
 
 # v2 runtime flags — must be set before any cuRobo objects are instantiated.
@@ -32,62 +31,11 @@ _curobo_runtime.cuda_graph_reset = True
 import curobo.runtime as _curobo_runtime_public
 _curobo_runtime_public.cuda_graph_reset = True
 
-from curobo.types import JointState, DeviceCfg
+from curobo.types import JointState
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
-from curobo.model_predictive_control import (
-    ModelPredictiveControl,
-    ModelPredictiveControlCfg,
-)
-from curobo.scene import Cuboid
-
-from curobo_ros.cameras import CameraContext, PointCloudCameraStrategy
 
 from .config_wrapper import ConfigWrapper
-
-
-class ConfigWrapperMPC(ConfigWrapper):
-    """MPC config wrapper (v2 `ModelPredictiveControl`)."""
-
-    def __init__(self, node, robot):
-        super().__init__(node, robot)
-
-        # v2: a minimal ground plane is still useful to bootstrap collision.
-        ground_plane = Cuboid(
-            name="ground",
-            pose=[0, 0, -0.1, 1, 0, 0, 0],
-            dims=[3.0, 3.0, 0.01],
-            color=[0.5, 0.5, 0.5, 1.0],
-        )
-        self.scene.cuboid.append(ground_plane)
-        self.obstacle_manager.obstacle_names.append(ground_plane.name)
-
-        node.declare_parameter('mpc_step_dt', 0.03)
-        node.declare_parameter('mpc_horizon_steps', 30)
-
-        mpc_step_dt = node.get_parameter('mpc_step_dt').get_parameter_value().double_value
-        mpc_horizon_steps = node.get_parameter('mpc_horizon_steps').get_parameter_value().integer_value
-
-        self.mpc_config = ModelPredictiveControlCfg.create(
-            robot=self.robot_config_file,
-            scene_model=self.scene,
-            step_dt=mpc_step_dt,
-            horizon=mpc_horizon_steps,
-            use_cuda_graph=True,
-            self_collision_check=True,
-            store_debug=True,
-        )
-        node.mpc = ModelPredictiveControl(self.mpc_config)
-
-        node.get_logger().info(
-            f"MPC configured: step_dt={mpc_step_dt}s, horizon={mpc_horizon_steps} steps"
-        )
-
-    def update_world_config(self, node):
-        node.mpc.update_world(self.obstacle_manager.get_scene())
-
-    def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
-        return _compute_sphere_distance(self, node, response)
 
 
 class ConfigWrapperMotion(ConfigWrapper):
@@ -107,11 +55,6 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.max_batch_size = 1
         self.multi_env = False
         self.max_goalset = 1
-
-        # Camera config
-        node.declare_parameter('use_pointcloud_camera', True)
-        node.declare_parameter('pointcloud_topic', '/masked_pointcloud')
-        node.declare_parameter('pixel_size', 0.01)
 
         self.motion_gen_srv = node.create_service(
             Trigger,
@@ -152,6 +95,18 @@ class ConfigWrapperMotion(ConfigWrapper):
         # Legacy alias — some downstream code still references `node.motion_gen`.
         node.motion_gen = node.motion_planner
 
+        # Output sampling step of the interpolated plan. It's a trajopt config
+        # field (not a MotionPlannerCfg.create arg), so set it post-build, before
+        # warmup so the interpolation buffer picks it up. Guarded: the standalone
+        # node doesn't declare this param.
+        if node.has_parameter('interpolation_dt'):
+            interp_dt = node.get_parameter('interpolation_dt').get_parameter_value().double_value
+            try:
+                node.motion_planner.trajopt_solver.config.interpolation_dt = interp_dt
+                node.get_logger().info(f"interpolation_dt set to {interp_dt}s")
+            except AttributeError:
+                node.get_logger().warn("Could not set interpolation_dt on trajopt_solver")
+
         node.get_logger().info("warming up..")
 
         self.node_is_available = False
@@ -179,7 +134,8 @@ class ConfigWrapperMotion(ConfigWrapper):
         if getattr(node, 'motion_planner', None) is not None:
             node.motion_planner.update_world(scene)
         if getattr(node, 'mpc', None) is not None:
-            node.mpc.update_world(scene)
+            # MPCSolver has no top-level update_world(); go through its checker.
+            node.mpc.scene_collision_checker.load_collision_model(scene)
 
         self.node.get_logger().info(
             f"Updated world: {len(scene.cuboid)} cuboids, {len(scene.mesh)} meshes"

@@ -134,24 +134,17 @@ class RosServiceManager:
         )
 
     def _callback_add_object(self, node, request: AddObject, response):
-        """Delegate add_object service to ObstacleManager and update world config"""
-        response = self.obstacle_manager.add_object(node, request, response)
+        """Delegate add_object to ObstacleManager.
 
-        # Update world configuration to propagate obstacle to cuRobo world_model
-        if response.success and self.config_wrapper is not None:
-            self.config_wrapper.update_world_config(node)
-
-        return response
+        Propagation to the solvers happens through ObstacleManager's
+        world-update observer (registered by ConfigWrapper), so it works for
+        ROS service AND direct Python callers alike.
+        """
+        return self.obstacle_manager.add_object(node, request, response)
 
     def _callback_remove_object(self, node, request: RemoveObject, response):
-        """Delegate remove_object service to ObstacleManager and update world config"""
-        response = self.obstacle_manager.remove_object(node, request, response)
-
-        # Update world configuration to propagate changes to cuRobo world_model
-        if response.success and self.config_wrapper is not None:
-            self.config_wrapper.update_world_config(node)
-
-        return response
+        """Delegate remove_object to ObstacleManager (observer propagates)."""
+        return self.obstacle_manager.remove_object(node, request, response)
 
     def _callback_get_obstacles(self, node, request: Trigger, response):
         """Delegate get_obstacles service to ObstacleManager"""
@@ -163,14 +156,8 @@ class RosServiceManager:
         return response
 
     def _callback_remove_all_objects(self, node, request: Trigger, response):
-        """Delegate remove_all_objects service to ObstacleManager and update world config"""
-        response = self.obstacle_manager.remove_all_objects(node, request, response)
-
-        # Update world configuration to propagate changes to cuRobo world_model
-        if response.success and self.config_wrapper is not None:
-            self.config_wrapper.update_world_config(node)
-
-        return response
+        """Delegate remove_all_objects to ObstacleManager (observer propagates)."""
+        return self.obstacle_manager.remove_all_objects(node, request, response)
 
     def _callback_get_voxel_grid(self, node, request: GetVoxelGrid, response):
         """Delegate get_voxel_grid service to ObstacleManager"""

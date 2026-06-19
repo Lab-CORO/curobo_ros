@@ -1,6 +1,5 @@
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from sensor_msgs.msg import JointState
-from builtin_interfaces.msg import Duration
 import threading
 import time
 
@@ -48,6 +47,31 @@ class EmulatorStrategy(JointCommandStrategy):
         '''
         if len(self.position_command) == 0:
             self.node.get_logger().warn("No trajectory to execute")
+            self.trajectory_progression = 1.0
+            return
+
+        # Fast servo path: a single setpoint (reactive / MPC streaming) is applied
+        # IMMEDIATELY — no playback thread, no per-point sleep(dt). Without this,
+        # each streamed command costs ~dt + thread spawn/join, capping reactive
+        # control at a few Hz. With it, the control loop runs at its native rate.
+        if len(self.position_command) == 1:
+            self.stop_execution.set()  # stop any lingering playback thread
+            positions = self.position_command[0]
+            velocities = (
+                self.vel_command[0] if self.vel_command
+                else [0.0] * len(positions)
+            )
+            self.current_joint_positions = positions
+
+            joint_state_msg = JointState()
+            joint_state_msg.header.stamp = self.node.get_clock().now().to_msg()
+            joint_state_msg.name = self.joint_names
+            joint_state_msg.position = positions
+            joint_state_msg.velocity = velocities
+            joint_state_msg.effort = []
+            self.pub_joint_states.publish(joint_state_msg)
+
+            self.robot_state = RobotState.RUNNING
             self.trajectory_progression = 1.0
             return
 

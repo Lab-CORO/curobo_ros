@@ -7,12 +7,13 @@ and allows dynamic switching between them.
 
 v2 notes:
 - MotionGen → MotionPlanner (wired via ConfigWrapperMotion as `node.motion_planner`).
-- MpcSolver → ModelPredictiveControl (wired via ConfigWrapperMPC as `node.mpc`).
+- MpcSolver → ModelPredictiveControl (built by MPCController from the shared
+  context, published as `node.mpc`).
 - TensorDeviceType → DeviceCfg. We read device/dtype from the wrapper.
-- WorldConfig → Scene (obstacle_manager.get_scene()). The `shared_world_cfg`
-  is now a Scene reference.
-- No more `world_coll_checker` sharing: v2's Scene is the single source of
-  truth, propagated via update_world(scene).
+- WorldConfig → Scene (obstacle_manager.get_scene()), the single source of
+  truth, propagated to solvers via update_world(scene).
+- Perception: camera data → Mapper (ObstacleManager) → ESDF VoxelGrid in the
+  Scene, refreshed on-demand before each plan via refresh_perception_world().
 - ground plane lives on the Scene via ObstacleManager, not `world_cfg.add_obstacle`.
 """
 
@@ -22,26 +23,26 @@ import traceback
 import rclpy
 import torch
 from rclpy.action import ActionServer
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from sensor_msgs.msg import JointState as JointStateMsg
+from std_srvs.srv import Trigger
 from curobo_msgs.srv import TrajectoryGeneration, SetPlanner, GetPlanners
 from curobo_msgs.action import SendTrajectory
 
-from curobo.types import DeviceCfg, JointState, ToolPose, GoalToolPose
+from curobo.types import DeviceCfg, JointState
 from curobo.scene import Cuboid
 
 from curobo_ros.robot.robot_context import RobotContext
-from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion, ConfigWrapperMPC
+from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion
 from curobo_ros.core.ik_services import IKServices
 from curobo_ros.core.fk_services import FKServices
 from curobo_ros.planners import (
     PlannerFactory,
     PlannerManager,
-    ClassicPlanner,
-    MPCPlanner,
+    ReactiveController,
     SinglePlanner,
 )
 
@@ -60,27 +61,40 @@ class UnifiedPlannerNode(Node):
 
         self.declare_parameter('planner_type', 'classic')
         self.declare_parameter('max_attempts', 1)
-        self.declare_parameter('timeout', 5.0)
+        # Feedback publish cadence (s) during open-loop execution. NOTE: this is
+        # NOT a speed control in v2 — set robot speed natively in the robot YAML
+        # cspace (velocity_scale / max_acceleration / max_jerk), then call
+        # update_motion_gen_config to rebuild.
         self.declare_parameter('time_dilation_factor', 0.5)
         self.declare_parameter('voxel_size', 0.05)
         self.declare_parameter('collision_activation_distance', 0.025)
+        # Output sampling step (s) of the interpolated trajectory (trajopt).
+        self.declare_parameter('interpolation_dt', 0.025)
         self.declare_parameter('convergence_threshold', 0.01)
         self.declare_parameter('max_mpc_iterations', 1000)
+        # Reactive (MPC) solver build params — read by MPCController.build_solver().
+        self.declare_parameter('mpc_step_dt', 0.03)
+        self.declare_parameter('mpc_horizon_steps', 30)
+        # Lifetime (s) of a pre-planned (preview) trajectory cached by
+        # generate_trajectory and reused by the execute action.
+        self.declare_parameter('trajectory_cache_ttl', 30.0)
 
-        # Lazy init: only motion wrapper up front; MPC wrapper is built on demand.
+        # Single shared context for every solver (robot + obstacles + scene +
+        # collision cache). The MPC solver is built lazily from this same context.
         self.config_wrapper_motion = ConfigWrapperMotion(self, self.robot_context)
-        self.config_wrapper_mpc = None
 
         # Shared Scene for all planners — references ObstacleManager's Scene.
         # All planners see the same obstacles after update_world(scene).
         self.shared_scene = self.config_wrapper_motion.obstacle_manager.get_scene()
-        # Legacy alias for any call sites still using the old name.
-        self.shared_world_cfg = self.shared_scene
 
         # Solvers (created on demand).
         self.motion_planner = None  # v2 alias
         self.motion_gen = None      # legacy alias, kept for older code paths
         self.mpc = None
+
+        # Cached open-loop plan from a generate_trajectory (preview) call, reused
+        # by the execute action when its target matches. See _pending_plan_*.
+        self._pending_plan = None  # {'planner': key, 'signature': sig, 'stamp': monotonic}
 
         # Shared IK — same Scene as MotionPlanner.
         self.ik_services = IKServices(self, self.config_wrapper_motion)
@@ -114,7 +128,15 @@ class UnifiedPlannerNode(Node):
             self.get_planners_callback,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
+        self.clear_trajectory_srv = self.create_service(
+            Trigger,
+            f'{self.get_name()}/clear_trajectory',
+            self.clear_trajectory_callback,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
 
+        # Reentrant group so cancel_callback can run while a long-running
+        # reactive execute_callback is still servoing (MultiThreadedExecutor).
         self._action_server = ActionServer(
             self,
             SendTrajectory,
@@ -122,7 +144,7 @@ class UnifiedPlannerNode(Node):
             execute_callback=self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
-            callback_group=MutuallyExclusiveCallbackGroup(),
+            callback_group=ReentrantCallbackGroup(),
         )
 
         from geometry_msgs.msg import Pose as PoseMsg
@@ -169,30 +191,32 @@ class UnifiedPlannerNode(Node):
             self.get_logger().info("  -> MotionPlanner already initialized (cache)")
 
     def _warmup_mpc(self):
-        """Warm up the v2 ModelPredictiveControl solver on demand."""
-        if self.mpc is None:
-            self.get_logger().info("  -> Initializing MPC solver...")
+        """Warm up the v2 ModelPredictiveControl solver on demand.
 
-            # Ensure a ground plane exists on the shared Scene.
-            obs_mgr = self.config_wrapper_motion.obstacle_manager
-            ground_exists = any(c.name == "ground" for c in self.shared_scene.cuboid)
-            if not ground_exists:
-                ground_plane = Cuboid(
-                    name="ground",
-                    pose=[0, 0, -0.1, 1, 0, 0, 0],
-                    dims=[3.0, 3.0, 0.01],
-                    color=[0.5, 0.5, 0.5, 1.0],
-                )
-                obs_mgr._append('cuboid', ground_plane)
-                self.get_logger().info("  -> Added ground plane to shared Scene")
-
-            # Build (or reuse) the MPC wrapper — this creates `self.mpc`.
-            if self.config_wrapper_mpc is None:
-                self.config_wrapper_mpc = ConfigWrapperMPC(self, self.robot_context)
-            # After ConfigWrapperMPC.__init__, self.mpc is set.
-            self.get_logger().info("  -> MPC solver ready")
-        else:
+        Ensures a ground plane on the shared Scene, then delegates the solver
+        build to the MPC reactive controller (which publishes `self.mpc`). The
+        solver is built from the SAME shared context as every other solver.
+        """
+        if self.mpc is not None:
             self.get_logger().info("  -> MPC solver already initialized (cache)")
+            return
+
+        self.get_logger().info("  -> Initializing MPC solver...")
+
+        # Ensure a ground plane exists on the shared Scene (once).
+        obs_mgr = self.config_wrapper_motion.obstacle_manager
+        if not any(c.name == "ground" for c in obs_mgr.get_scene().cuboid):
+            obs_mgr._append('cuboid', Cuboid(
+                name="ground",
+                pose=[0, 0, -0.1, 1, 0, 0, 0],
+                dims=[3.0, 3.0, 0.01],
+                color=[0.5, 0.5, 0.5, 1.0],
+            ))
+            self.get_logger().info("  -> Added ground plane to shared Scene")
+
+        # The MPC controller builds the cuRobo solver and sets `self.mpc`.
+        self.planner_manager.get_planner('mpc').ensure_solver()
+        self.get_logger().info("  -> MPC solver ready")
 
     def update_all_solvers_world(self, scene=None):
         """Propagate scene updates to all initialized solvers."""
@@ -202,9 +226,47 @@ class UnifiedPlannerNode(Node):
             self.motion_planner.update_world(scene)
 
         if self.mpc is not None:
-            self.mpc.update_world(scene)
+            # MPCSolver has no top-level update_world(); push the scene through
+            # its collision checker the same way MotionPlanner.update_world does.
+            self.mpc.scene_collision_checker.load_collision_model(scene)
 
         self.ik_services.update_world()
+
+    def refresh_perception_world(self):
+        """Recompute the perception ESDF and push it to all solvers.
+
+        Called on-demand before each plan (and per step during MPC) so the
+        collision world reflects the latest camera data — no background timer,
+        so no race with CUDA graph capture.
+        """
+        obs = self.config_wrapper_motion.obstacle_manager
+        if obs.refresh_esdf():
+            self.update_all_solvers_world(obs.get_scene())
+
+    def rebuild_solvers_for_cache_change(self):
+        """Rebuild all active solvers after a collision-cache change.
+
+        The collision cache is allocated at solver creation, so a change
+        requires recreating the solvers (a world update is not sufficient).
+        Registered as ObstacleManager's cache-change observer.
+        """
+        self.get_logger().info("Collision cache changed — rebuilding solvers...")
+
+        # Motion planner (present after the initial warmup).
+        if self.motion_planner is not None:
+            self.config_wrapper_motion.set_motion_gen_config(self, None, None)
+            SinglePlanner.set_motion_planner(self.motion_planner)
+
+        # IK (only if it was initialized). IKServices reads the canonical
+        # (motion) cache directly, so no sync is needed.
+        self.ik_services.rebuild()
+
+        # MPC (only if it was initialized). It is built from the SAME shared
+        # cache, so just rebuild its solver — no manual cache copy needed.
+        if self.mpc is not None:
+            self.planner_manager.get_planner('mpc').rebuild_solver()
+
+        self.get_logger().info("Solvers rebuilt after cache change")
 
     # ------------------------------------------------------------------
     # Plan / execute callbacks
@@ -218,35 +280,28 @@ class UnifiedPlannerNode(Node):
                 response.message = "No planner selected"
                 return response
 
-            if hasattr(request, 'start_pose') and request.start_pose.position:
-                start_joint_pose = list(request.start_pose.position)
-                self.get_logger().info(
-                    f"Using start position from request: "
-                    f"{[f'{x:.3f}' for x in start_joint_pose]}"
-                )
-            else:
-                start_joint_pose = self.robot_context.get_joint_pose()
-                self.get_logger().info(
-                    f"Using robot current position: "
-                    f"{[f'{x:.3f}' for x in start_joint_pose]}"
-                )
-
-            start_state = JointState.from_position(
-                torch.tensor(
-                    [start_joint_pose],
-                    dtype=self.tensor_args.dtype,
-                    device=self.tensor_args.device,
-                )
-            )
+            _, start_state = self._resolve_start_state(request)
 
             config = self._get_planner_config(planner)
             self._setup_planner(planner)
+
+            # Refresh the perception-based collision world before planning so
+            # the plan accounts for the latest camera data.
+            self.refresh_perception_world()
 
             self.get_logger().info(f"Planning with {planner.get_planner_name()}")
             result = planner.plan(start_state, request, config, self.robot_context)
 
             response.success = result.success
             response.message = result.message
+
+            # Preview workflow: cache a successful open-loop trajectory so the
+            # execute action can reuse it (matching target) without recomputing.
+            # Reactive controllers have no trajectory to cache.
+            if result.success and planner.is_open_loop():
+                self._store_pending_plan(start_state, request)
+            elif not planner.is_open_loop():
+                self._pending_plan = None
 
             if result.success and result.trajectory is not None:
                 traj = result.trajectory
@@ -312,20 +367,64 @@ class UnifiedPlannerNode(Node):
             return response
 
     def execute_callback(self, goal_handle):
+        """Unified 'generate + execute' action for every controller.
+
+        Open-loop: reuse a matching cached (preview) trajectory or plan one, then
+        execute it to completion (terminates on its own).
+        Reactive: set the goal then servo continuously; terminates only on cancel
+        or error, signalling `on_target` through the action feedback.
+        """
+        result_msg = SendTrajectory.Result()
         try:
             planner = self.planner_manager.get_current_planner()
             if planner is None:
-                result_msg = SendTrajectory.Result()
                 result_msg.success = False
                 result_msg.message = "No planner selected"
                 goal_handle.abort()
                 return result_msg
 
+            goal = goal_handle.request
+            _, start_state = self._resolve_start_state(goal)
+            config = self._get_planner_config(planner)
+            self._setup_planner(planner)
+
+            if planner.is_open_loop():
+                reuse = (bool(getattr(goal, 'allow_cached', True))
+                         and self._pending_plan_matches(start_state, goal))
+                if reuse:
+                    self.get_logger().info("Reusing cached (pre-planned) trajectory")
+                else:
+                    self.refresh_perception_world()
+                    self.get_logger().info(f"Planning with {planner.get_planner_name()}")
+                    result = planner.plan(start_state, goal, config, self.robot_context)
+                    if not result.success:
+                        result_msg.success = False
+                        result_msg.message = f"Planning failed: {result.message}"
+                        goal_handle.abort()
+                        return result_msg
+                self._pending_plan = None  # consumed
+            else:
+                # Reactive: (re)set the goal on the solver before servoing.
+                self.refresh_perception_world()
+                self.get_logger().info(f"Planning with {planner.get_planner_name()}")
+                result = planner.plan(start_state, goal, config, self.robot_context)
+                if not result.success:
+                    result_msg.success = False
+                    result_msg.message = f"Planning failed: {result.message}"
+                    goal_handle.abort()
+                    return result_msg
+
             self.get_logger().info(f"Executing with {planner.get_planner_name()}")
             success = planner.execute(self.robot_context, goal_handle)
 
-            result_msg = SendTrajectory.Result()
-            result_msg.success = success
+            # Cancel takes precedence over the planner's return value.
+            if goal_handle.is_cancel_requested:
+                result_msg.success = False
+                result_msg.message = "Execution canceled"
+                goal_handle.canceled()
+                return result_msg
+
+            result_msg.success = bool(success)
             result_msg.message = "Execution completed" if success else "Execution failed"
             if success:
                 goal_handle.succeed()
@@ -336,10 +435,10 @@ class UnifiedPlannerNode(Node):
         except Exception as e:
             self.get_logger().error(f"Execution error: {e}")
             self.get_logger().error(traceback.format_exc())
-            result_msg = SendTrajectory.Result()
             result_msg.success = False
             result_msg.message = f"Error: {e}"
-            goal_handle.abort()
+            if goal_handle.is_active:
+                goal_handle.abort()
             return result_msg
 
     def set_planner_callback(self, request: SetPlanner.Request, response: SetPlanner.Response):
@@ -378,21 +477,24 @@ class UnifiedPlannerNode(Node):
         return response
 
     def mpc_goal_callback(self, msg):
-        """Receive MPC goal updates from a topic; stored as raw data."""
+        """Receive live reactive-goal updates from a topic; stored as raw data.
+
+        This is the ROS mapping of cuRobo's continuous `update_goal_tool_poses`:
+        the active reactive controller retargets on its next loop iteration.
+        """
         planner = self.planner_manager.get_current_planner()
-        from curobo_ros.planners.mpc_planner import MPCPlanner
-        if isinstance(planner, MPCPlanner):
-            planner.latest_goal_from_topic = [
+        if isinstance(planner, ReactiveController):
+            planner.latest_goal = [
                 msg.position.x, msg.position.y, msg.position.z,
                 msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z,
             ]
             self.get_logger().debug(
-                f"MPC goal updated from topic: "
+                f"Reactive goal updated from topic: "
                 f"[{msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}]"
             )
         else:
             self.get_logger().warn(
-                f"Received MPC goal but current planner is {planner.get_planner_name()}"
+                f"Received reactive goal but current planner is {planner.get_planner_name()}"
             )
 
     def get_planners_callback(self, request: GetPlanners.Request, response: GetPlanners.Response):
@@ -421,31 +523,142 @@ class UnifiedPlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _setup_planner(self, planner):
-        if isinstance(planner, ClassicPlanner):
+        # Open-loop planners share one MotionPlanner instance (class-level).
+        if isinstance(planner, SinglePlanner):
             if self.motion_planner is None:
-                self.get_logger().info("On-demand warmup: Classic planner")
+                self.get_logger().info("On-demand warmup: open-loop planner")
                 self._warmup_classic()
             planner.set_motion_gen(self.motion_planner)
 
-        elif isinstance(planner, MPCPlanner):
+        # Reactive controllers build their solver from the shared context.
+        elif isinstance(planner, ReactiveController):
             if self.mpc is None:
-                self.get_logger().info("On-demand warmup: MPC planner")
+                self.get_logger().info("On-demand warmup: reactive controller")
                 self._warmup_mpc()
-            planner.set_mpc_solver(self.mpc)
+            planner.ensure_solver()
 
     def _get_planner_config(self, planner) -> dict:
-        if isinstance(planner, ClassicPlanner):
+        if isinstance(planner, SinglePlanner):
+            # plan_pose only honors max_attempts in v2 (timeout / time_dilation
+            # are not solver args anymore — speed lives in the robot YAML cspace).
             return {
                 'max_attempts': self.get_parameter('max_attempts').value,
-                'timeout': self.get_parameter('timeout').value,
-                'time_dilation_factor': self.get_parameter('time_dilation_factor').value,
             }
-        if isinstance(planner, MPCPlanner):
+        if isinstance(planner, ReactiveController):
             return {
                 'convergence_threshold': self.get_parameter('convergence_threshold').value,
                 'max_iterations': self.get_parameter('max_mpc_iterations').value,
             }
         return {}
+
+    # ------------------------------------------------------------------
+    # Start state + pending-plan (preview cache) helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_start_state(self, src):
+        """Return (start_joint_list, start_state) from a request/goal start_pose.
+
+        Falls back to the robot's current joint pose when start_pose is empty.
+        Shared by the generate_trajectory service and the execute action.
+        """
+        start_pose = getattr(src, 'start_pose', None)
+        if start_pose is not None and len(start_pose.position) > 0:
+            start_joint_pose = list(start_pose.position)
+            self.get_logger().info(
+                f"Using start position from request: "
+                f"{[f'{x:.3f}' for x in start_joint_pose]}"
+            )
+        else:
+            start_joint_pose = self.robot_context.get_joint_pose()
+            self.get_logger().info(
+                f"Using robot current position: "
+                f"{[f'{x:.3f}' for x in start_joint_pose]}"
+            )
+        start_state = JointState.from_position(
+            torch.tensor(
+                [start_joint_pose],
+                dtype=self.tensor_args.dtype,
+                device=self.tensor_args.device,
+            )
+        )
+        return start_joint_pose, start_state
+
+    def _store_pending_plan(self, start_state, req):
+        """Cache the just-planned open-loop trajectory's identity for reuse."""
+        self._pending_plan = {
+            'planner': self.planner_manager.get_current_planner_type(),
+            'signature': self._target_signature(start_state, req),
+            'stamp': time.monotonic(),
+        }
+
+    def _pending_plan_matches(self, start_state, req) -> bool:
+        """True if the cached plan is fresh and targets the same goal/start."""
+        pp = self._pending_plan
+        if pp is None:
+            return False
+        ttl = self.get_parameter('trajectory_cache_ttl').get_parameter_value().double_value
+        if (time.monotonic() - pp['stamp']) > ttl:
+            return False
+        if pp['planner'] != self.planner_manager.get_current_planner_type():
+            return False
+        return self._signatures_match(pp['signature'], self._target_signature(start_state, req))
+
+    @staticmethod
+    def _pose_tuple(p):
+        return (
+            p.position.x, p.position.y, p.position.z,
+            p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z,
+        )
+
+    def _target_signature(self, start_state, req) -> dict:
+        start = [float(x) for x in start_state.position[0].cpu().tolist()]
+        tp = getattr(req, 'target_pose', None)
+        poses = getattr(req, 'target_poses', None)
+        return {
+            'start': start,
+            'target_pose': self._pose_tuple(tp) if tp is not None else None,
+            'target_poses': [self._pose_tuple(p) for p in poses] if poses else None,
+            'target_joints': [float(x) for x in (getattr(req, 'target_joint_positions', []) or [])],
+        }
+
+    @staticmethod
+    def _poses_match(a, b, pos_tol, ori_tol) -> bool:
+        if a is None and b is None:
+            return True
+        if a is None or b is None:
+            return False
+        if any(abs(a[i] - b[i]) > pos_tol for i in range(3)):
+            return False
+        dot = sum(a[3 + i] * b[3 + i] for i in range(4))
+        return (1.0 - abs(dot)) < ori_tol
+
+    def _signatures_match(self, a, b, pos_tol=1e-3, ori_tol=1e-2, joint_tol=1e-3) -> bool:
+        if len(a['start']) != len(b['start']) or any(
+                abs(x - y) > joint_tol for x, y in zip(a['start'], b['start'])):
+            return False
+        aj, bj = a['target_joints'], b['target_joints']
+        if len(aj) != len(bj) or any(abs(x - y) > joint_tol for x, y in zip(aj, bj)):
+            return False
+        if not self._poses_match(a['target_pose'], b['target_pose'], pos_tol, ori_tol):
+            return False
+        ap, bp = a['target_poses'], b['target_poses']
+        if (ap is None) != (bp is None):
+            return False
+        if ap is not None:
+            if len(ap) != len(bp):
+                return False
+            if any(not self._poses_match(x, y, pos_tol, ori_tol) for x, y in zip(ap, bp)):
+                return False
+        return True
+
+    def clear_trajectory_callback(self, request, response):
+        """Discard any cached (preview) trajectory on user request."""
+        had = self._pending_plan is not None
+        self._pending_plan = None
+        response.success = True
+        response.message = "Cached trajectory cleared" if had else "No cached trajectory"
+        self.get_logger().info(response.message)
+        return response
 
     def goal_callback(self, goal):
         self.get_logger().info("Received execution goal")

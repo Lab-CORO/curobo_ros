@@ -7,11 +7,9 @@ v2 notes:
 - MotionGenPlanConfig is gone: per-call params are kwargs on plan_pose().
 - Pose → ToolPose, wrapped in GoalToolPose.
 - PoseCostMetric was removed upstream in v2. Trajectory-axis constraints
-  are not yet re-wired; the old `trajectory_constraints` field is now a
-  no-op with a warning. Revisit once the v2 constraint API stabilises.
+  (`trajectory_constraints`) are re-wired via `ToolPoseCriteria` (held along
+  the whole path) — see SinglePlanner._apply_pose_constraints.
 """
-
-from typing import Optional
 
 from curobo.types import JointState, Pose, GoalToolPose
 
@@ -69,34 +67,20 @@ class ClassicPlanner(SinglePlanner):
 
         max_attempts = config.get('max_attempts', 1)
 
-        # v2: PoseCostMetric is removed. Warn if the client still populates
-        # trajectory_constraints so the behavior change is visible.
-        if (hasattr(goal_request, 'trajectory_constraints')
-                and goal_request.trajectory_constraints
-                and any(c == 1 for c in goal_request.trajectory_constraints)):
-            self.node.get_logger().warn(
-                "ClassicPlanner: trajectory_constraints requested but "
-                "PoseCostMetric is not available in cuRobo v2 — ignoring."
+        self.node.get_logger().info(f"Planning with max_attempts={max_attempts}")
+
+        # v2: Cartesian axis constraints via ToolPoseCriteria (held along the
+        # whole path). Reset afterwards since the MotionPlanner is shared.
+        applied = self._apply_pose_constraints(goal_request)
+        try:
+            return self.motion_planner.plan_pose(
+                goal,
+                start_state,
+                max_attempts=max_attempts,
             )
-
-        # v2 plan_pose no longer accepts `timeout` or `time_dilation_factor`;
-        # those tunables now live on the trajopt YAML configs.
-        if 'timeout' in config or 'time_dilation_factor' in config:
-            self.node.get_logger().warn(
-                "ClassicPlanner: `timeout` and `time_dilation_factor` are no "
-                "longer honored in cuRobo v2 — configure them via the "
-                "trajopt YAML instead."
-            )
-
-        self.node.get_logger().info(
-            f"Planning with max_attempts={max_attempts}"
-        )
-
-        return self.motion_planner.plan_pose(
-            goal,
-            start_state,
-            max_attempts=max_attempts,
-        )
+        finally:
+            if applied:
+                self._reset_pose_criteria()
 
     # _process_trajectory(): default (no-op) from SinglePlanner is fine.
     # execute() / cancel(): inherited from SinglePlanner.

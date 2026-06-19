@@ -81,7 +81,7 @@ class TrajectoryPlanner(ABC):
         Args:
             start_state: Initial robot joint state
             goal_request: Goal specification (planner-specific)
-                         - For ClassicPlanner/MPCPlanner: TrajectoryGeneration request (uses target_pose)
+                         - For ClassicPlanner/MPCController: TrajectoryGeneration request (uses target_pose)
                          - For MultiPointPlanner: TrajectoryGeneration request (uses target_poses)
                          Each planner extracts what it needs from the request
             config: Planner-specific configuration parameters

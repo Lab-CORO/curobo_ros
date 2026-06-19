@@ -22,7 +22,10 @@ class ConfigWrapper(ABC):
     This class serves as the base class for:
     - ConfigWrapperMotion
     - ConfigWrapperIK
-    - ConfigWrapperMPC
+
+    The reactive (MPC) solver is NOT a ConfigWrapper: it is built by
+    MPCController directly from the shared ConfigWrapperMotion context, so all
+    solvers share one robot/obstacles/scene/collision-cache.
 
     Child classes must implement:
     - update_world_config(node): Update world configuration based on obstacles
@@ -61,7 +64,8 @@ class ConfigWrapper(ABC):
 
         # Phase 5: CameraSystemManager - Manage cameras
         # Declare camera config parameter
-        node.declare_parameter('cameras_config_file', '')
+        if not node.has_parameter('cameras_config_file'):
+            node.declare_parameter('cameras_config_file', '')
         cameras_config_file = node.get_parameter('cameras_config_file').get_parameter_value().string_value
         self.camera_system_manager = CameraSystemManager(node, cameras_config_file)
 
@@ -75,9 +79,50 @@ class ConfigWrapper(ABC):
             robot   # Pass robot_context so RosServiceManager can expose get_robot_strategies
         )
 
+        # Phase 6: Perception (Mapper) + propagation observers.
+        # The Mapper turns camera data into an ESDF voxel grid used for
+        # collision. The observers ensure every scene/cache mutation reaches
+        # the solvers regardless of the caller (ROS service OR direct Python).
+        num_cameras = 0
+        camera_context = self.camera_system_manager.camera_context
+        if camera_context is not None:
+            num_cameras = len(camera_context.cameras)
+        self.obstacle_manager.setup_perception(num_cameras=num_cameras)
+
+        self._register_world_observers(node)
+
         # State information
         self.node_is_available = False
-        node.declare_parameter('node_is_available', False)
+        if not node.has_parameter('node_is_available'):
+            node.declare_parameter('node_is_available', False)
+
+    def _register_world_observers(self, node):
+        """Wire ObstacleManager mutations to solver propagation/rebuild.
+
+        Prefers the node-level orchestration methods (UnifiedPlannerNode, which
+        also refreshes IK), and falls back to this wrapper's own methods for the
+        standalone planner node.
+        """
+        # World-change observer: propagate the updated Scene to all solvers.
+        node_world_update = getattr(node, 'update_all_solvers_world', None)
+        if node_world_update is not None:
+            self.obstacle_manager.set_world_update_callback(node_world_update)
+        else:
+            self.obstacle_manager.set_world_update_callback(
+                lambda: self.update_world_config(node)
+            )
+
+        # Cache-change observer: solvers must be rebuilt (the collision cache
+        # size is fixed at solver creation, so a world update is not enough).
+        node_cache_rebuild = getattr(node, 'rebuild_solvers_for_cache_change', None)
+        if node_cache_rebuild is not None:
+            self.obstacle_manager.set_collision_cache_callback(node_cache_rebuild)
+        else:
+            wrapper_rebuild = getattr(self, 'set_motion_gen_config', None)
+            if wrapper_rebuild is not None:
+                self.obstacle_manager.set_collision_cache_callback(
+                    lambda: wrapper_rebuild(node, None, None)
+                )
 
     def init_services(self, node=None):
         """Initialize ROS services - delegates to RosServiceManager

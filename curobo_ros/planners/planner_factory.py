@@ -9,7 +9,7 @@ and manage their lifecycle.
 from typing import Dict, Optional
 from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
-from .mpc_planner import MPCPlanner
+from .mpc_planner import MPCController
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
 
@@ -19,13 +19,18 @@ class PlannerFactory:
 
     Supports dynamic planner selection and provides a registry of
     available planner types.
+
+    Adding a new control = add ONE catalog entry below. Open-loop planners
+    subclass ``SinglePlanner``; reactive (closed-loop) controllers subclass
+    ``ReactiveController``. Both then work with the same SetPlanner/GetPlanners
+    switch and the node's single shared context (robot, obstacles, scene).
     """
 
     # Single source of truth: (internal_key, class, enum_id, display_name)
     # enum_id matches SetPlanner.Request constants (0=CLASSIC, 1=MPC, …)
     _PLANNER_CATALOG = [
         ('classic',     ClassicPlanner,    0, 'Classic'),
-        ('mpc',         MPCPlanner,        1, 'MPC'),
+        ('mpc',         MPCController,      1, 'MPC'),
         ('multi_point', MultiPointPlanner, 4, 'Multi Point'),
         ('joint_space', JointSpacePlanner, 5, 'Joint Space'),
     ]
@@ -34,7 +39,7 @@ class PlannerFactory:
     _PLANNER_REGISTRY = {key: cls for key, cls, _, _ in _PLANNER_CATALOG}
     _PLANNER_REGISTRY.update({
         'motion_gen':               ClassicPlanner,  # Alias
-        'model_predictive_control': MPCPlanner,      # Alias
+        'model_predictive_control': MPCController,    # Alias
     })
 
     @classmethod
