@@ -10,6 +10,7 @@ from typing import Dict, Optional
 from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCController
+from .retarget_controller import RetargetController
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
 
@@ -33,6 +34,7 @@ class PlannerFactory:
         ('mpc',         MPCController,      1, 'MPC'),
         ('multi_point', MultiPointPlanner, 4, 'Multi Point'),
         ('joint_space', JointSpacePlanner, 5, 'Joint Space'),
+        ('retarget',    RetargetController, 6, 'Motion Retargeting'),
     ]
 
     # Registry derived from catalog + aliases — used by create_planner()
@@ -40,6 +42,8 @@ class PlannerFactory:
     _PLANNER_REGISTRY.update({
         'motion_gen':               ClassicPlanner,  # Alias
         'model_predictive_control': MPCController,    # Alias
+        'motion_retargeting':       RetargetController,  # Alias
+        'teleop':                   RetargetController,  # Alias
     })
 
     @classmethod

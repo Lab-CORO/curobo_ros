@@ -239,6 +239,12 @@ class GeneratedTestSuite(unittest.TestCase):
             f"Field 'data' length doesn't match expected 64000"
         )
 
+        self.assertGreaterEqual(
+            sum(list(response.voxel_grid.data)),
+            1000,
+            f"Field 'data' sum {sum(list(response.voxel_grid.data))} is below expected minimum 1000"
+        )
+
     def test_05_remove_object(self):
         """05 Remove object"""
 

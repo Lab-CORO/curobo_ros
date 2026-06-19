@@ -35,7 +35,7 @@ from abc import abstractmethod
 from typing import Any, Optional
 
 import torch
-from curobo.types import JointState
+from curobo.types import JointState, Pose, GoalToolPose
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 from curobo_msgs.action import SendTrajectory
@@ -67,6 +67,8 @@ class ReactiveController(TrajectoryPlanner):
 
         # Latest scalar position error, written by step(), read by is_converged().
         self._last_position_error = float('inf')
+        # Cartesian target (xyz tensor), set by _set_target, read by FK error.
+        self._target_position = None
         self._step_times = []
         # Last commanded action — fed back so the next current_state carries
         # velocity/acceleration continuity (without it the solver restarts from
@@ -133,6 +135,49 @@ class ReactiveController(TrajectoryPlanner):
     def apply_live_goal(self, raw_goal) -> bool:
         """Retarget the goal from a raw [x,y,z,qw,qx,qy,qz] list during execution."""
         raise NotImplementedError
+
+    def update_world(self, scene) -> None:
+        """Push the shared Scene into this controller's collision model.
+
+        Reactive solvers each hold their own collision checker, so the node
+        delegates world updates here (instead of reaching into solver internals).
+        Default is a no-op; concrete controllers override (e.g. MPC reloads its
+        scene_collision_checker, retarget updates its IK solvers).
+        """
+        return None
+
+    # ------------------------------------------------------------------
+    # Shared cuRobo helpers (target pose + FK error) usable by every
+    # reactive controller — solver exposes tool_frames and FK either directly
+    # (MPC) or via .kinematics (retargeter).
+    # ------------------------------------------------------------------
+
+    def _set_target(self, raw) -> GoalToolPose:
+        """Store the target xyz (for FK error) and build the tool-pose goal."""
+        self._target_position = torch.tensor(
+            raw[0:3], dtype=self._dtype, device=self._device
+        )
+        return GoalToolPose.from_poses(
+            {self.solver.tool_frames[0]: Pose.from_list(list(raw))}
+        )
+
+    def _compute_ee_position(self, current_state: JointState):
+        """Current end-effector position via the solver's forward kinematics."""
+        fk = getattr(self.solver, 'compute_kinematics', None)
+        if fk is None:
+            fk = self.solver.kinematics.compute_kinematics
+        kin = fk(current_state)
+        return kin.tool_poses.position.reshape(-1, 3)[0]  # [B,H,L,3] -> first link
+
+    def _fk_position_error(self, current_state: JointState) -> float:
+        """Real Cartesian distance (m) between the current EE and the target."""
+        if self._target_position is None:
+            return float('inf')
+        try:
+            ee = self._compute_ee_position(current_state)
+            return float(torch.linalg.norm(ee - self._target_position).item())
+        except Exception:
+            return float('inf')
 
     def is_on_target(self) -> bool:
         """Signal (NOT a stop condition): the arm is within tolerance of the goal.

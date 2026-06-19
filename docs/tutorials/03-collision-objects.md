@@ -189,6 +189,32 @@ message: "All objects removed successfully (0 cuboids, 0 meshes)"
 
 ---
 
+## Grasping and attaching an object
+
+The native grasp pipeline (`plan_grasp` action, see the MPC/grasp docs) can
+**attach** a picked scene object to the arm as collision spheres so it is carried
+through subsequent motions. This requires the robot model to declare a dedicated
+attach link:
+
+```yaml
+# robot YAML (see curobo_doosan/src/m1013/m1013.yml)
+extra_links:
+  attached_object:
+    fixed_transform: [0, 0, 0, 1, 0, 0, 0]   # [x y z qw qx qy qz] rel. to parent
+    joint_name: attach_joint
+    joint_type: FIXED
+    link_name: attached_object
+    parent_link_name: link6        # the tool frame
+extra_collision_spheres: {attached_object: 32}   # reserved sphere slots
+collision_link_names: [..., attached_object]
+grasp_contact_link_names: [attached_object]
+```
+
+Send `attach_object_name: "<scene obstacle name>"` in the `plan_grasp` goal to
+attach at grasp time, and call `/<node>/detach_object` (`std_srvs/Trigger`) to
+release. Without the `attached_object` link the attach step fails (no sphere
+slots to fill).
+
 ## Disabling Link Collision Spheres
 
 You can enable or disable collision spheres for specific robot links at runtime.
