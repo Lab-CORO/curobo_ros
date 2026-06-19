@@ -24,6 +24,7 @@ from launch_ros.substitutions import FindPackageShare
 from curobo_msgs.srv import AddObject
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import GetVoxelGrid
+from curobo_msgs.srv import AttachObject
 from curobo_msgs.srv import RemoveObject
 
 def generate_test_description():
@@ -76,7 +77,7 @@ class GeneratedTestSuite(unittest.TestCase):
         client = self.node.create_client(AddObject, '/unified_planner/add_object')
 
         # Wait for service to be available
-        timeout = 10.0
+        timeout = 30.0
         if not client.wait_for_service(timeout_sec=timeout):
             self.fail(f"Service '/unified_planner/add_object' not available after {timeout}s")
 
@@ -245,8 +246,90 @@ class GeneratedTestSuite(unittest.TestCase):
             f"Field 'data' sum {sum(list(response.voxel_grid.data))} is below expected minimum 1000"
         )
 
-    def test_05_remove_object(self):
-        """05 Remove object"""
+    def test_05_attach_object(self):
+        """05 Attach object"""
+
+        # Create service client
+        client = self.node.create_client(AttachObject, '/unified_planner/attach_object')
+
+        # Wait for service to be available
+        timeout = 30.0
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.fail(f"Service '/unified_planner/attach_object' not available after {timeout}s")
+
+        # Create request
+        request = AttachObject.Request()
+        set_message_fields(request, {'object_name': 'cube2'})
+
+        # Call service
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout)
+
+        # Check if call completed
+        if not future.done():
+            self.fail("Service call to '/unified_planner/attach_object' timed out")
+
+        # Get response
+        response = future.result()
+        if response is None:
+            self.fail("Service call to '/unified_planner/attach_object' failed")
+
+
+        self.assertEqual(
+            response.success,
+            True,
+            f"Field 'success' doesn't match expected value"
+        )
+
+        self.assertEqual(
+            response.message,
+            "Attached 'cube2'",
+            f"Field 'message' doesn't match expected value"
+        )
+
+    def test_06_detach_object(self):
+        """06 Detach object"""
+
+        # Create service client
+        client = self.node.create_client(Trigger, '/unified_planner/detach_object')
+
+        # Wait for service to be available
+        timeout = 10.0
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.fail(f"Service '/unified_planner/detach_object' not available after {timeout}s")
+
+        # Create request
+        request = Trigger.Request()
+        set_message_fields(request, {})
+
+        # Call service
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout)
+
+        # Check if call completed
+        if not future.done():
+            self.fail("Service call to '/unified_planner/detach_object' timed out")
+
+        # Get response
+        response = future.result()
+        if response is None:
+            self.fail("Service call to '/unified_planner/detach_object' failed")
+
+
+        self.assertEqual(
+            response.success,
+            True,
+            f"Field 'success' doesn't match expected value"
+        )
+
+        self.assertEqual(
+            response.message,
+            "Detached 'cube2'",
+            f"Field 'message' doesn't match expected value"
+        )
+
+    def test_07_remove_object(self):
+        """07 Remove object"""
 
         # Create service client
         client = self.node.create_client(RemoveObject, '/unified_planner/remove_object')
@@ -286,8 +369,8 @@ class GeneratedTestSuite(unittest.TestCase):
             f"Field 'message' doesn't match expected value"
         )
 
-    def test_06_remove_all_object(self):
-        """06 Remove all object"""
+    def test_08_remove_all_objects(self):
+        """08 Remove all objects"""
 
         # Create service client
         client = self.node.create_client(Trigger, '/unified_planner/remove_all_objects')

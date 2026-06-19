@@ -13,10 +13,13 @@ tests:
   - name: "01 Add object"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
-    data: {type: 0, 
-            name: "cube", 
-            mesh_file_path: "", 
-            pose: {position: {x: 0.0, y: 0.0, z: 0.0}, 
+    # timeout=30: the node starts its cuRobo warmup (~18s) synchronously in
+    # __init__; the first service call may block until warmup completes.
+    timeout: 30.0
+    data: {type: 0,
+            name: "cube",
+            mesh_file_path: "",
+            pose: {position: {x: 0.0, y: 0.0, z: 0.0},
                   orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}},
             dimensions: {x: 0.5, y: 0.5, z: 0.5},
             color: {r: 0.0, a: 0.0}
@@ -59,15 +62,32 @@ tests:
         size_z: 40
         data: {$len: 64000, $sum_min: 1000}
 
-  - name: "05 Remove object"
+  - name: "05 Attach object"
+    service: "/unified_planner/attach_object"
+    type: curobo_msgs/srv/AttachObject
+    # Attach cube2 at the arm's current joint configuration (home pose).
+    # The attachment manager fits collision spheres onto the obstacle geometry
+    # and disables the world obstacle to avoid double-counting.
+    # timeout=30: attach triggers motion planner warmup if not yet done (~18s).
+    data: {object_name: "cube2"}
+    timeout: 30.0
+    expect: {success: True, message: "Attached 'cube2'"}
+
+  - name: "06 Detach object"
+    service: "/unified_planner/detach_object"
+    type: std_srvs/srv/Trigger
+    # Releases the attached object, re-enables it in the world scene.
+    data: {}
+    expect: {success: True, message: "Detached 'cube2'"}
+
+  - name: "07 Remove object"
     service: "/unified_planner/remove_object"
     type: curobo_msgs/srv/RemoveObject
     data: {name: "cube"}
     expect: {success: True,
              message: "Object 'cube' removed from cuboids"}
 
-
-  - name: "06 Remove all object"
+  - name: "08 Remove all objects"
     service: "/unified_planner/remove_all_objects"
     type: std_srvs/srv/Trigger
     data: {}

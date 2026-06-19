@@ -29,7 +29,7 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import JointState as JointStateMsg
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import TrajectoryGeneration, SetPlanner, GetPlanners
+from curobo_msgs.srv import AttachObject, TrajectoryGeneration, SetPlanner, GetPlanners
 from curobo_msgs.action import GraspPlan, SendTrajectory
 
 from curobo.types import DeviceCfg, JointState
@@ -167,6 +167,14 @@ class UnifiedPlannerNode(Node):
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
             callback_group=ReentrantCallbackGroup(),
+        )
+        # Attach a scene obstacle to the arm's attached_object link independently
+        # of a grasp action (useful for pre-positioned objects, simulation, tests).
+        self.attach_object_srv = self.create_service(
+            AttachObject,
+            f'{self.get_name()}/attach_object',
+            self.attach_object_callback,
+            callback_group=MutuallyExclusiveCallbackGroup(),
         )
         # Release a previously attached (grasped) object.
         self.detach_object_srv = self.create_service(
@@ -808,6 +816,21 @@ class UnifiedPlannerNode(Node):
             if goal_handle.is_active:
                 goal_handle.abort()
             return result_msg
+
+    def attach_object_callback(self, request, response):
+        """Attach a scene obstacle to the arm at its current joint configuration."""
+        try:
+            if self.motion_planner is None:
+                self._warmup_classic()
+            _, current_state = self._resolve_start_state(None)
+            self.grasp_planner.attach(request.object_name, current_state)
+            response.success = True
+            response.message = f"Attached '{request.object_name}'"
+        except Exception as e:
+            response.success = False
+            response.message = f"Attach error: {e}"
+            self.get_logger().error(response.message)
+        return response
 
     def detach_object_callback(self, request, response):
         """Release a previously attached (grasped) object from the arm."""
