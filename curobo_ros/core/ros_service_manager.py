@@ -1,6 +1,7 @@
 from functools import partial
 from std_srvs.srv import Trigger, SetBool
 from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, GetCollisionDistance, SetCollisionCache, GetRobotStrategies, SetLinkCollision
+from curobo_msgs.msg import SparseVoxelGrid
 from visualization_msgs.msg import MarkerArray, Marker
 
 
@@ -46,6 +47,10 @@ class RosServiceManager:
         self.publish_collision_spheres_pub = None
         self.publish_collision_spheres_timer = None
         self.collision_spheres_enabled = False  # Disabled by default (safe during MPC graph capture)
+
+        # Sparse voxel grid topic publisher + timer (initialized in init_services)
+        self.sparse_voxel_pub = None
+        self.sparse_voxel_timer = None
 
     def init_services(self):
         """Create all ROS services, publishers, and timers"""
@@ -132,6 +137,25 @@ class RosServiceManager:
             0.5,
             partial(self.publish_collision_spheres, self.node)
         )
+
+        # Sparse voxel grid topic publisher (occupied linear indices only).
+        # Published periodically so the U-Net consumer gets a steady stream.
+        self.sparse_voxel_pub = self.node.create_publisher(
+            SparseVoxelGrid,
+            self.node.get_name() + '/voxel_grid_sparse',
+            10
+        )
+        sparse_rate = self.node.get_parameter(
+            'sparse_voxel_publish_rate').get_parameter_value().double_value
+        if sparse_rate > 0.0:
+            self.sparse_voxel_timer = self.node.create_timer(
+                1.0 / sparse_rate,
+                partial(self._publish_sparse_voxel_grid, self.node)
+            )
+
+    def _publish_sparse_voxel_grid(self, node):
+        """Timer callback: publish the current scene occupancy as SparseVoxelGrid."""
+        self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
 
     def _callback_add_object(self, node, request: AddObject, response):
         """Delegate add_object to ObstacleManager.

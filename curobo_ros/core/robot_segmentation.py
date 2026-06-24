@@ -17,6 +17,8 @@ import struct
 from curobo.kinematics import Kinematics, KinematicsCfg
 from curobo.types import DeviceCfg, JointState
 
+from scipy.spatial.transform import Rotation
+
 from curobo_ros.robot.robot_context import RobotContext
 
 
@@ -320,7 +322,19 @@ class DepthMapRobotSegmentation(Node):
         # v2: `robot_spheres` replaces `link_spheres_tensor`, shape [B, H, N, 4]
         robot_spheres = kinematics_state.robot_spheres.reshape(-1, 4)
 
-        points = point_cloud.unsqueeze(1)  # (N, 1, 3)
+        # Publish collision spheres for visualization (robot base frame)
+        self.publish_collision_spheres(robot_spheres)
+
+        # The point cloud is in the camera optical frame, but robot_spheres are
+        # in the robot base frame. Transform the points into the base frame for
+        # the distance test; keep the original camera-frame cloud so the depth
+        # is reconstructed in the camera frame downstream.
+        points_base = self._transform_points_to_base(point_cloud)
+        if points_base is None:
+            # No TF available -> skip masking instead of masking the wrong points.
+            return point_cloud
+
+        points = points_base.unsqueeze(1)  # (N, 1, 3)
         spheres_centers = robot_spheres[:, :3].unsqueeze(0)  # (1, S, 3)
         spheres_radii = robot_spheres[:, 3].unsqueeze(0)  # (1, S)
 
@@ -328,25 +342,55 @@ class DepthMapRobotSegmentation(Node):
         distances = torch.norm(points - spheres_centers, dim=2) - spheres_radii
         min_distances, _ = torch.min(distances, dim=1)
 
-        # Keep points that are farther than threshold
+        # Keep points that are farther than threshold (i.e. NOT the robot)
         mask = min_distances > self.distance_threshold
 
-        # Inverted mask: points that are part of the robot (masked out)
-        robot_mask = ~mask
-
-        # Publish collision spheres for visualization
-        self.publish_collision_spheres(robot_spheres)
-
-        # Publish robot point cloud for debug (actual masked points, not sphere centers)
+        # Publish robot point cloud for debug (the points masked OUT as robot),
+        # in the robot base frame to match the transformed coordinates.
         if self.robot_pointcloud_pub.get_subscription_count() > 0:
-            masked_points = point_cloud[mask]  # Points that belong to the robot
-            if masked_points.shape[0] > 0:  # Only publish if there are masked points
+            robot_points = points_base[~mask]  # Points that belong to the robot
+            if robot_points.shape[0] > 0:
                 timestamp = self.get_clock().now().to_msg()
                 robot_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value
-                pc_msg = self._create_pointcloud2_msg(masked_points, robot_frame, timestamp)
+                pc_msg = self._create_pointcloud2_msg(robot_points, robot_frame, timestamp)
                 self.robot_pointcloud_pub.publish(pc_msg)
 
         return point_cloud[mask]
+
+    def _transform_points_to_base(self, points: torch.Tensor):
+        """Transform camera-frame points (N, 3) into the robot base frame via TF.
+
+        Robot collision spheres are expressed in the kinematic base frame while
+        the depth point cloud is in the camera optical frame; without this
+        transform the masking compares mismatched coordinate systems. The TF
+        comes from the hand-eye calibration (base -> camera). Returns None if
+        the transform is unavailable.
+        """
+        if self.depth_frame_id is None:
+            return None
+        robot_base_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                robot_base_frame, self.depth_frame_id, rclpy.time.Time())
+        except Exception as e:  # TransformException and friends
+            self.get_logger().warn(
+                f'TF {self.depth_frame_id} -> {robot_base_frame} unavailable, '
+                f'robot not masked: {e}', throttle_duration_sec=2.0)
+            return None
+
+        tr = tf.transform.translation
+        rot = tf.transform.rotation
+        R = Rotation.from_quat([rot.x, rot.y, rot.z, rot.w]).as_matrix()
+        T = torch.eye(4, dtype=self._ops_dtype, device=self._device)
+        T[:3, :3] = torch.tensor(R, dtype=self._ops_dtype, device=self._device)
+        T[:3, 3] = torch.tensor([tr.x, tr.y, tr.z],
+                                dtype=self._ops_dtype, device=self._device)
+
+        homog = torch.cat(
+            [points, torch.ones((points.shape[0], 1),
+                                dtype=self._ops_dtype, device=self._device)],
+            dim=1)  # (N, 4)
+        return (homog @ T.T)[:, :3]
 
     def depth_tensor_to_image_msg(self, depth_tensor: torch.Tensor) -> Image:
         """

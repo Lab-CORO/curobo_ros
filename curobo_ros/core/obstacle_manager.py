@@ -5,6 +5,7 @@ import ros2_numpy as rnp
 
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import AddObject, RemoveObject, GetVoxelGrid, SetCollisionCache
+from curobo_msgs.msg import SparseVoxelGrid
 from geometry_msgs.msg import Vector3
 
 from curobo.scene import Scene, Cuboid, Capsule, Cylinder, Sphere, Mesh
@@ -356,18 +357,30 @@ class ObstacleManager:
         response.success = True
         return response
 
-    def get_voxel_grid(self, node, request: GetVoxelGrid, response):
-        """Return occupied voxels for the full scene (Mapper ESDF + analytic primitives).
-
-        Analytic primitives are rasterized via a pre-allocated GPU SceneCollision
-        query (batch of point-spheres with r=0) — ~29× faster than CPU trimesh
-        and uses the same collision checker as the planner (exact consistency).
-        Falls back to CPU trimesh if the GPU path is unavailable.
-        """
+    def _resolve_voxel_size(self, node) -> float:
+        """Resolve the active voxel resolution from the `voxel_size` param."""
         voxel_size = node.get_parameter('voxel_size').get_parameter_value().double_value
         if voxel_size <= 0.0:
             voxel_size = self._esdf_voxel_size
+        return voxel_size
 
+    def _compute_dense_voxel_grid(self, node, voxel_size):
+        """Build the dense occupancy grid for the full scene.
+
+        Combines the Mapper ESDF (camera perception) and analytic primitives
+        (AddObject obstacles, rasterized on GPU via SceneCollision). Shared by
+        the get_voxel_grid service and the sparse voxel topic publisher.
+
+        Logs at debug level so the periodic topic publisher does not flood the
+        console at its publish rate.
+
+        Returns:
+            (voxel_grid, grid_min, size):
+                voxel_grid : np.ndarray[uint32] of shape (size_x, size_y, size_z),
+                             1 = occupied, 0 = free.
+                grid_min   : np.ndarray[float32] bbox origin (metres, base frame).
+                size       : np.ndarray[int32] grid dimensions in voxels.
+        """
         center = np.array(self._mapper_grid_center, dtype=np.float32)
         half = np.array(self._mapper_extent_xyz, dtype=np.float32) / 2.0
         grid_min = center - half
@@ -376,24 +389,26 @@ class ObstacleManager:
 
         voxel_grid = np.zeros((size[0], size[1], size[2]), dtype=np.uint32)
 
-        # ---- Mapper ESDF (perception, camera-based) ----
+        # ---- Mapper perception (camera-based) ----
+        # extract_occupied_voxels() returns only the *observed* occupied voxel
+        # centres (from the TSDF), so it sidesteps the dense-ESDF ambiguity where
+        # unobserved cells are zero-initialised and get mislabelled. centers is
+        # an (N, 3) float32 tensor of world positions; bin them into our grid.
         mapper = getattr(node, 'mapper', None)
         if mapper is not None:
             try:
-                vg = mapper.compute_esdf()
-                data = vg.data.detach().cpu().numpy() if torch.is_tensor(vg.data) else np.asarray(vg.data)
-                origin = np.asarray(vg.origin, dtype=np.float32)
-                vsize = float(getattr(vg, 'voxel_size', voxel_size))
-                occ = np.argwhere(data <= 0.0)
-                for ix, iy, iz in occ:
-                    world_xyz = origin + np.array([ix, iy, iz]) * vsize
-                    idx = np.floor((world_xyz - grid_min) / voxel_size).astype(np.int32)
-                    if np.all((idx >= 0) & (idx < size)):
-                        voxel_grid[tuple(idx)] = 1
-                node.get_logger().info(
-                    f'Filled voxel grid from Mapper ESDF ({len(occ)} occupied cells)')
+                occ = mapper.extract_occupied_voxels(surface_only=False)
+                n_occ = len(occ)
+                if n_occ:
+                    world_xyz = occ.centers.detach().cpu().numpy()  # [N, 3] world
+                    idx = np.floor((world_xyz - grid_min) / voxel_size).astype(np.int64)
+                    valid = np.all((idx >= 0) & (idx < size), axis=1)
+                    idx = idx[valid]
+                    voxel_grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1
+                node.get_logger().debug(
+                    f'Filled voxel grid from Mapper perception ({n_occ} occupied cells)')
             except Exception as e:
-                node.get_logger().warn(f'Mapper ESDF query failed: {e}')
+                node.get_logger().warn(f'Mapper perception query failed: {e}')
 
         # ---- Analytic primitives (AddObject obstacles) — GPU path ----
         n_obs = sum(len(getattr(self.scene, b) or [])
@@ -401,17 +416,30 @@ class ObstacleManager:
         if n_obs > 0:
             try:
                 n_prim = self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
-                node.get_logger().info(
+                node.get_logger().debug(
                     f'Filled voxel grid from analytic primitives ({n_prim} occupied cells)')
             except Exception as e:
                 node.get_logger().warn(f'GPU primitive voxelization failed ({e}), falling back to CPU')
                 try:
                     n_prim = self._rasterize_primitives_cpu(node, voxel_grid, grid_min, voxel_size, size)
                     if n_prim:
-                        node.get_logger().info(
+                        node.get_logger().debug(
                             f'Filled voxel grid from analytic primitives (CPU, {n_prim} cells)')
                 except Exception as e2:
                     node.get_logger().warn(f'CPU primitive voxelization also failed: {e2}')
+
+        return voxel_grid, grid_min, size
+
+    def get_voxel_grid(self, node, request: GetVoxelGrid, response):
+        """Return occupied voxels for the full scene (Mapper ESDF + analytic primitives).
+
+        Analytic primitives are rasterized via a pre-allocated GPU SceneCollision
+        query (batch of point-spheres with r=0) — ~29× faster than CPU trimesh
+        and uses the same collision checker as the planner (exact consistency).
+        Falls back to CPU trimesh if the GPU path is unavailable.
+        """
+        voxel_size = self._resolve_voxel_size(node)
+        voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
 
         response.voxel_grid.resolutions = rnp.msgify(
             Vector3, np.array([voxel_size, voxel_size, voxel_size])
@@ -424,6 +452,33 @@ class ObstacleManager:
         response.voxel_grid.origin.z = float(grid_min[2])
         response.voxel_grid.data = voxel_grid.flatten().tolist()
         return response
+
+    def publish_sparse_voxel_grid(self, node, publisher):
+        """Publish the current scene occupancy as a sparse SparseVoxelGrid message.
+
+        Only the C-order linear indices of occupied voxels are sent
+        (linear = x * size_y * size_z + y * size_z + z), which is typically
+        1–2 orders of magnitude smaller on the wire than the dense grid.
+        Driven by the periodic timer in RosServiceManager.
+        """
+        voxel_size = self._resolve_voxel_size(node)
+        voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
+
+        # C-order flatten matches the message convention exactly.
+        occupied = np.flatnonzero(voxel_grid).astype(np.int32)
+
+        msg = SparseVoxelGrid()
+        msg.header.stamp = node.get_clock().now().to_msg()
+        msg.header.frame_id = self.config_manager.get_base_link()
+        msg.origin.x = float(grid_min[0])
+        msg.origin.y = float(grid_min[1])
+        msg.origin.z = float(grid_min[2])
+        msg.resolution = float(voxel_size)
+        msg.size_x = int(size[0])
+        msg.size_y = int(size[1])
+        msg.size_z = int(size[2])
+        msg.occupied_indices = occupied.tolist()
+        publisher.publish(msg)
 
     def _rasterize_primitives_gpu(self, node, voxel_grid, grid_min, voxel_size, size) -> int:
         """Rasterize analytic primitives using a pre-allocated GPU SceneCollision query.

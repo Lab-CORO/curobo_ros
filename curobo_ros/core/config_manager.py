@@ -58,7 +58,7 @@ class ConfigManager:
     def _load_scene(self):
         """Load Scene from world_file parameter or use an empty default."""
         if self.world_file:
-            self.scene = Scene.from_dict(load_yaml(self.world_file))
+            self.scene = Scene.create(load_yaml(self.world_file))
             self.node.get_logger().info(f'Loaded scene from: {self.world_file}')
         else:
             self.scene = Scene()

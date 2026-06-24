@@ -68,6 +68,8 @@ class UnifiedPlannerNode(Node):
         # update_motion_gen_config to rebuild.
         self.declare_parameter('time_dilation_factor', 0.5)
         self.declare_parameter('voxel_size', 0.05)
+        # Publish rate (Hz) of the sparse voxel grid topic. <= 0 disables it.
+        self.declare_parameter('sparse_voxel_publish_rate', 7.0)
         self.declare_parameter('collision_activation_distance', 0.025)
         # Output sampling step (s) of the interpolated trajectory (trajopt).
         self.declare_parameter('interpolation_dt', 0.025)

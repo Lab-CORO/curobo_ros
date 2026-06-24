@@ -136,7 +136,25 @@ def launch_setup(context, *args, **kwargs):
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
                 'cameras_config_file': LaunchConfiguration('cameras_config_file'),
                 'base_link': base_link,
-                'world_file': LaunchConfiguration('world_file')
+                'world_file': LaunchConfiguration('world_file'),
+                # ESDF/voxel resolution (shared by Mapper ESDF, collision cache
+                # and the published voxel grid). Forwarded from leeloo.
+                'voxel_size': LaunchConfiguration('voxel_size'),
+                # Output voxel grid geometry for the U-Net consumer:
+                # 128^3 @ 0.02 m centred on the robot base (extent = 128 * 0.02).
+                'mapper_extent_xyz': [2.56, 2.56, 2.56],
+                'mapper_grid_center': [0.0, 0.0, 0.0],
+                # Mapper depth-projection resolution. The Mapper allocates its
+                # GPU projection kernel ONCE for this exact (H, W), so every
+                # depth frame fed to mapper.integrate() must be resized to this
+                # resolution (and its intrinsics scaled accordingly) before
+                # integration — see camera_depth_map_strategy.callback_depth_map.
+                # Defaults to the Azure Kinect depth_to_rgb size (1280x720).
+                # Controllable as ROS params: mapper_image_width / mapper_image_height.
+                'mapper_image_width': 1280,
+                'mapper_image_height': 720,
+                # Sparse voxel topic publish rate (Hz); <= 0 disables it.
+                'sparse_voxel_publish_rate': 7.0,
             }]
         ),
 
