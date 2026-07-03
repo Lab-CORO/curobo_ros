@@ -95,16 +95,16 @@ class DoosanControl(JointCommandStrategy):
     def callback_joint_pose(self, joint_pose_msg):
         self.joint_pose = [joint_pose_msg.position[0], 
         joint_pose_msg.position[1], 
-        joint_pose_msg.position[4],
         joint_pose_msg.position[2],
-        joint_pose_msg.position[3], 
-        joint_pose_msg.position[5]] # Stupidities from doosan cf joint_states msg
+        joint_pose_msg.position[3],
+        joint_pose_msg.position[4], 
+        joint_pose_msg.position[5]]
 
         self.joint_name = [joint_pose_msg.name[0], 
         joint_pose_msg.name[1], 
-        joint_pose_msg.name[4],
         joint_pose_msg.name[2],
-        joint_pose_msg.name[3], 
+        joint_pose_msg.name[3],
+        joint_pose_msg.name[4], 
         joint_pose_msg.name[5]]
     
 

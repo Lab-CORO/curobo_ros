@@ -122,6 +122,13 @@ class ObstacleManager:
         self._mapper_depth_max = self._declare_param('mapper_depth_max', 5.0)
         # ESDF voxel size shares the pre-existing `voxel_size` param.
         self._esdf_voxel_size = self._declare_param('voxel_size', 0.05)
+        # Whether to rasterize analytic primitives into the voxel grid via the
+        # GPU SceneCollision path. Disabled by default because the first call
+        # triggers NVRTC kernel compilation (~90 s warmup). Enable it once the
+        # system is fully up with:
+        #   ros2 param set /<node> enable_primitives_rasterization true
+        # Read dynamically so it can be toggled at runtime without restarting.
+        self._declare_param('enable_primitives_rasterization', False)
 
     # ---- Observer wiring (propagation to solvers) ----
 
@@ -192,10 +199,15 @@ class ObstacleManager:
             voxel_size=self._mapper_voxel_size,
             esdf_voxel_size=self._esdf_voxel_size,
             grid_center=torch.tensor(self._mapper_grid_center, dtype=torch.float32),
-            image_height=int(self._mapper_image_height),
-            image_width=int(self._mapper_image_width),
+            # CuRobo v0.8 MapperCfg infers image dims from the depth frame at
+            # integration time — it no longer takes image_height/image_width.
             depth_minimum_distance=self._mapper_depth_min,
             depth_maximum_distance=self._mapper_depth_max,
+            # decay_factor défaut=1.0 = AUCUNE décroissance → l'occupancy accumule
+            # sans fin et le nombre de voxels occupés croît de façon monotone même
+            # sur une scène statique (bruit de bord franchissant peu à peu le seuil).
+            # <1.0 fait décroître les vieilles observations → carte stationnaire.
+            decay_factor=0.95,
             num_cameras=1,
         ))
         self.node.mapper = self.mapper
@@ -392,15 +404,19 @@ class ObstacleManager:
         # ---- Mapper perception (camera-based) ----
         # extract_occupied_voxels() returns only the *observed* occupied voxel
         # centres (from the TSDF), so it sidesteps the dense-ESDF ambiguity where
-        # unobserved cells are zero-initialised and get mislabelled. centers is
-        # an (N, 3) float32 tensor of world positions; bin them into our grid.
+        # unobserved cells are zero-initialised and get mislabelled.
+        #
+        # CuRobo v2 (v0.8) : la méthode vit sur l'intégrateur ESDF
+        # (mapper.integrator -> BlockSparseESDFIntegrator), PAS sur le Mapper, et
+        # renvoie un tuple (centers, colors) — et non un objet avec .centers.
+        #   centers : (N, 3) float32, positions monde des voxels avec SDF <= 0.
         mapper = getattr(node, 'mapper', None)
         if mapper is not None:
             try:
-                occ = mapper.extract_occupied_voxels(surface_only=False)
-                n_occ = len(occ)
+                centers, _colors = mapper.integrator.extract_occupied_voxels(surface_only=False)
+                n_occ = 0 if centers is None else int(centers.shape[0])
                 if n_occ:
-                    world_xyz = occ.centers.detach().cpu().numpy()  # [N, 3] world
+                    world_xyz = centers.detach().cpu().numpy()  # [N, 3] world
                     idx = np.floor((world_xyz - grid_min) / voxel_size).astype(np.int64)
                     valid = np.all((idx >= 0) & (idx < size), axis=1)
                     idx = idx[valid]
@@ -411,9 +427,14 @@ class ObstacleManager:
                 node.get_logger().warn(f'Mapper perception query failed: {e}')
 
         # ---- Analytic primitives (AddObject obstacles) — GPU path ----
+        # Gated by `enable_primitives_rasterization` because the first call
+        # allocates SceneCollision and triggers NVRTC kernel compilation (~90 s).
+        # Read the param fresh each call so it can be toggled at runtime:
+        #   ros2 param set /<node> enable_primitives_rasterization true
+        enable_rasterization = node.get_parameter('enable_primitives_rasterization').value
         n_obs = sum(len(getattr(self.scene, b) or [])
                     for b in ('cuboid', 'sphere', 'capsule', 'cylinder', 'mesh'))
-        if n_obs > 0:
+        if n_obs > 0 and enable_rasterization:
             try:
                 n_prim = self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
                 node.get_logger().debug(
@@ -427,6 +448,10 @@ class ObstacleManager:
                             f'Filled voxel grid from analytic primitives (CPU, {n_prim} cells)')
                 except Exception as e2:
                     node.get_logger().warn(f'CPU primitive voxelization also failed: {e2}')
+        elif n_obs > 0:
+            node.get_logger().debug(
+                f'Skipping primitives rasterization for {n_obs} obstacle(s) '
+                '(enable_primitives_rasterization=false)')
 
         return voxel_grid, grid_min, size
 

@@ -39,6 +39,14 @@ class DepthMapCameraStrategy(CameraStrategy):
         """
         super().__init__(node, camera_name, topic, camera_info_topic, frame_id, intrinsics, extrinsics)
 
+        # Robot base frame for the camera-pose TF lookup. Read from the node's
+        # 'base_link' parameter (the planner's configurable base frame) instead
+        # of hardcoding 'base_link' — the Doosan base is 'base_0', and 'base_link'
+        # collides with the Ridgeback frame when the mobile base is present.
+        self.base_frame = (
+            node.get_parameter('base_link').get_parameter_value().string_value
+            if node.has_parameter('base_link') else 'base_0')
+
         self.depth_map = None
         self.intrinsics = None
 
@@ -118,9 +126,9 @@ class DepthMapCameraStrategy(CameraStrategy):
                 self.camera_pose = self.camera_pose_static
             else:
                 try:
-                    # Lookup transform from base_link to camera frame
+                    # Lookup transform from the robot base frame to camera frame
                     t = self.tf_buffer.lookup_transform(
-                        "base_link",
+                        self.base_frame,
                         self._frame_id,
                         rclpy.time.Time())
 
@@ -144,7 +152,7 @@ class DepthMapCameraStrategy(CameraStrategy):
 
                 except TransformException as ex:
                     self.node.get_logger().warn(
-                        f'Could not transform base_link to {self._frame_id}: {ex}. Using identity pose.')
+                        f'Could not transform {self.base_frame} to {self._frame_id}: {ex}. Using identity pose.')
                     # Fallback to identity pose
                     self.camera_pose = Pose(
                         position=self.tensor_args.to_device([0, 0, 0]),

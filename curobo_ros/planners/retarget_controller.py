@@ -26,7 +26,8 @@ internally), so unlike the MPC we don't need velocity/acceleration continuity.
 from typing import Any
 
 from curobo.config_io import load_yaml
-from curobo.types import JointState, ToolPoseCriteria
+from curobo.types import JointState
+from curobo._src.cost.tool_pose_criteria import ToolPoseCriteria
 from curobo.motion_retargeter import MotionRetargeter, MotionRetargeterCfg
 
 from .reactive_controller import ReactiveController

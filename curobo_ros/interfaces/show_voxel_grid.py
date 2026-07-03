@@ -11,6 +11,11 @@ class VoxelGridVisualizer(Node):
     def __init__(self):
         super().__init__('voxel_grid_visualizer')
 
+        # Robot base frame the voxel grid is expressed in. Default 'base_0'
+        # (Doosan base); 'base_link' collides with the Ridgeback frame.
+        self.declare_parameter('base_link', 'base_0')
+        self.base_link = self.get_parameter('base_link').get_parameter_value().string_value
+
         self.marker_pub = self.create_publisher(Marker, '/visualise_voxel_grid', 10)
 
     def get_and_visualize_voxel_grid(self):
@@ -47,7 +52,7 @@ class VoxelGridVisualizer(Node):
             Marker: Marker message for RViz2 visualization.
         """
         marker = Marker()
-        marker.header.frame_id = "base_link"  # Adjust as needed
+        marker.header.frame_id = self.base_link
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "voxel_grid"
         marker.id = 0

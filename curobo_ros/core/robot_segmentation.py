@@ -68,7 +68,7 @@ class DepthMapRobotSegmentation(Node):
         self.declare_parameter('joint_states_topic', '/dsr01/joint_states')
         self.declare_parameter('depth_image_topic', '/depth_to_rgb/image_raw')
         self.declare_parameter('camera_info_topic', '/depth_to_rgb/camera_info')
-        self.declare_parameter('robot_base_frame', 'base_link')
+        self.declare_parameter('robot_base_frame', 'base_0')
 
         depth_image_topic = self.get_parameter('depth_image_topic').get_parameter_value().string_value
         camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value

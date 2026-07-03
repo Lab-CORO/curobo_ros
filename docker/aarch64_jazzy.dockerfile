@@ -151,6 +151,26 @@ WORKDIR /pkgs/curobo_src
 # usd-core has no ARM64 wheel on PyPI — usd extra dropped for aarch64
 RUN MAX_JOBS=${MAKEFLAGS##*-j} pip3 install .[cu13,dev] --no-build-isolation
 
+# CuRobo content assets (robot configs, meshes, URDFs) are NOT shipped by
+# `pip install` — curobo's pyproject package-data excludes content/. They only
+# exist in the cloned source. Copy them into the installed package so robot
+# configs (m1013.yml, franka.yml, …) resolve from curobo.content at runtime.
+# cd / so `import curobo` resolves to the installed package (site-packages),
+# not the local source tree (WORKDIR is /pkgs/curobo_src → name collision).
+RUN CUROBO_PKG=$(cd / && python3 -c "import curobo, os; print(os.path.dirname(curobo.__file__))") && \
+    mkdir -p "${CUROBO_PKG}/content" && \
+    cp -r /pkgs/curobo_src/curobo/content/. "${CUROBO_PKG}/content/" && \
+    test -f "${CUROBO_PKG}/content/configs/robot/m1013.yml" -o -f "${CUROBO_PKG}/content/configs/robot/franka.yml" \
+        || ls "${CUROBO_PKG}/content/configs/robot/" | head
+
+# warp-lang compat: warp >=1.14 moved the torch interop out of the public
+# `warp.torch` submodule (functions are now top-level: wp.device_from_torch).
+# CuRobo v0.8.0 still calls wp.torch.device_from_torch(...). Re-expose the
+# submodule. Idempotent: only patches if warp.torch is not importable.
+RUN python3 -c "import warp.torch" 2>/dev/null || \
+    echo 'from warp._src import torch as torch  # curobo v0.8 compat (warp>=1.14)' \
+        >> "$(python3 -c "import warp, os; print(os.path.join(os.path.dirname(warp.__file__), '__init__.py'))")"
+
 # CuRobo v2 internal headers — moved to curobo/_src/curobolib/kernels/{common,...}.
 # v2 compiles kernels via NVRTC (cuda_core backend) reading headers from the
 # installed package, so this copy is best-effort (belt-and-suspenders for any
@@ -227,6 +247,8 @@ RUN apt-get update && apt-get install -y \
     ros-jazzy-realsense2-description \
     && rm -rf /var/lib/apt/lists/* || \
     echo "Warning: RealSense packages not available for jazzy/arm64, skipping"
+
+ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 WORKDIR /home/ros2_ws/src
 
