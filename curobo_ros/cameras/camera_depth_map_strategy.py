@@ -183,9 +183,25 @@ class DepthMapCameraStrategy(CameraStrategy):
             # `world_model.add_camera_frame(...)` / `process_camera_frames(...)` /
             # `update_blox_hashes()` are gone — `mapper.integrate(obs)` does it all.
             mapper = getattr(self.node, 'mapper', None)
+            gpu_lock = getattr(self.node, 'gpu_lock', None)
             if mapper is not None:
-                mapper.integrate(data_camera)
-                torch.cuda.synchronize()
+                # mapper.integrate() is a GPU op; if curobo is capturing a CUDA
+                # graph (plan / MPC cold-start) it holds gpu_lock. Skip this
+                # depth frame rather than invalidate the capture. Safe: ~5 fps,
+                # capture is brief, and refresh_perception_world re-reads the map
+                # right before each plan.
+                if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
+                    self.node.get_logger().debug(
+                        "depth frame skipped (GPU capture in progress)",
+                        throttle_duration_sec=2.0,
+                    )
+                else:
+                    try:
+                        mapper.integrate(data_camera)
+                        torch.cuda.synchronize()
+                    finally:
+                        if gpu_lock is not None:
+                            gpu_lock.release()
             else:
                 self.node.get_logger().warn(
                     "No mapper on node — depth frame ignored. "

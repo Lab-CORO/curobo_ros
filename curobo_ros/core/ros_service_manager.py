@@ -138,6 +138,19 @@ class RosServiceManager:
             partial(self.publish_collision_spheres, self.node)
         )
 
+        # Scene-obstacle markers (always on): shows every scene obstacle, with the
+        # currently attached (→ disabled) one recoloured. Complements the sparse
+        # voxel grid, which doesn't render primitives.
+        self.scene_obstacle_pub = self.node.create_publisher(
+            MarkerArray,
+            self.node.get_name() + '/scene_obstacles',
+            1
+        )
+        self.scene_obstacle_timer = self.node.create_timer(
+            0.5,
+            partial(self.publish_scene_obstacles, self.node)
+        )
+
         # Sparse voxel grid topic publisher (occupied linear indices only).
         # Published periodically so the U-Net consumer gets a steady stream.
         self.sparse_voxel_pub = self.node.create_publisher(
@@ -156,6 +169,65 @@ class RosServiceManager:
     def _publish_sparse_voxel_grid(self, node):
         """Timer callback: publish the current scene occupancy as SparseVoxelGrid."""
         self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
+
+    def publish_scene_obstacles(self, node):
+        """Publish scene obstacles as a MarkerArray, recolouring the currently
+        attached (→ disabled by attach) obstacle so attach/detach is visible.
+
+        Obstacle attrs follow curobo/add_object: cuboid has ``.dims`` + ``.pose``
+        ([x,y,z,qw,qx,qy,qz]); sphere/cylinder have ``.radius`` (cylinder also
+        ``.height``). The attached obstacle's name is exposed by GraspPlanner.
+        """
+        scene = self.obstacle_manager.get_scene()
+        gp = getattr(node, 'grasp_planner', None)
+        attached_name = getattr(gp, '_attached_name', None) if gp is not None else None
+
+        marker_array = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        marker_array.markers.append(clear)
+
+        mid = 0
+        buckets = (('cuboid', Marker.CUBE), ('sphere', Marker.SPHERE),
+                   ('cylinder', Marker.CYLINDER), ('capsule', Marker.CYLINDER))
+        for bucket, mtype in buckets:
+            for obs in (getattr(scene, bucket, None) or []):
+                try:
+                    pose = list(obs.pose)
+                except Exception:
+                    continue
+                m = Marker()
+                m.header.frame_id = self.config_manager.base_link
+                m.header.stamp = node.get_clock().now().to_msg()
+                m.ns = 'scene_obstacles'
+                m.id = mid
+                mid += 1
+                m.type = mtype
+                m.action = Marker.ADD
+                # float(): obs.pose may be a numpy array (world-file / round-tripped
+                # obstacles), and rosidl asserts PyFloat_Check — numpy scalars abort.
+                m.pose.position.x, m.pose.position.y, m.pose.position.z = \
+                    (float(v) for v in pose[0:3])
+                m.pose.orientation.w, m.pose.orientation.x, \
+                    m.pose.orientation.y, m.pose.orientation.z = \
+                    (float(v) for v in pose[3:7])
+                if bucket == 'cuboid':
+                    dims = list(obs.dims)
+                    m.scale.x, m.scale.y, m.scale.z = \
+                        float(dims[0]), float(dims[1]), float(dims[2])
+                else:
+                    d = 2.0 * float(getattr(obs, 'radius', 0.05))
+                    m.scale.x = m.scale.y = d
+                    m.scale.z = float(getattr(obs, 'height', d))
+                if attached_name is not None and getattr(obs, 'name', None) == attached_name:
+                    # attached → disabled world obstacle: grey, translucent
+                    m.color.r, m.color.g, m.color.b, m.color.a = 0.5, 0.5, 0.5, 0.35
+                else:
+                    # active obstacle: orange
+                    m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 0.6
+                marker_array.markers.append(m)
+
+        self.scene_obstacle_pub.publish(marker_array)
 
     def _callback_add_object(self, node, request: AddObject, response):
         """Delegate add_object to ObstacleManager.
@@ -216,8 +288,23 @@ class RosServiceManager:
         if not self.collision_spheres_enabled:
             return
 
-        # Get collision spheres from robot model manager
-        robot_spheres = self.robot_model_manager.get_collision_spheres()
+        # Source spheres from the MotionPlanner's kinematics when available — it
+        # carries grasp attaches (our robot_model_manager kin_model does not), so
+        # the fitted attached-object spheres show and ride the arm. attached_mask
+        # flags them for a distinct colour. Fall back to robot_model_manager.
+        kin = self._attachment_kinematics()
+        if kin is not None:
+            try:
+                robot_spheres, attached_mask = \
+                    self.robot_model_manager.get_collision_spheres_with_attached(kin)
+            except Exception as e:
+                self.node.get_logger().debug(
+                    f"attached-sphere viz fallback: {e}", throttle_duration_sec=5.0)
+                robot_spheres = self.robot_model_manager.get_collision_spheres()
+                attached_mask = [False] * len(robot_spheres)
+        else:
+            robot_spheres = self.robot_model_manager.get_collision_spheres()
+            attached_mask = [False] * len(robot_spheres)
 
         # Create marker array — prepend a DELETEALL to clear stale markers
         marker_array = MarkerArray()
@@ -240,10 +327,23 @@ class RosServiceManager:
             marker.scale.y = sphere[3] * 2
             marker.scale.z = sphere[3] * 2
             marker.color.a = 0.5  # Transparency
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
+            if attached_mask[i]:  # attached object = green, robot body = red
+                marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
+            else:
+                marker.color.r, marker.color.g, marker.color.b = 1.0, 0.0, 0.0
             marker_array.markers.append(marker)
 
         # Publish marker array
         self.publish_collision_spheres_pub.publish(marker_array)
+
+    def _attachment_kinematics(self):
+        """The MotionPlanner's kinematics (carries attached-object spheres), or
+        None if the planner/grasp_planner isn't ready."""
+        gp = getattr(self.node, 'grasp_planner', None)
+        mp = getattr(self.node, 'motion_planner', None)
+        if gp is None or mp is None:
+            return None
+        try:
+            return gp._attachment_manager()._kinematics
+        except Exception:
+            return None

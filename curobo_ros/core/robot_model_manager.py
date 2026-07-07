@@ -61,6 +61,40 @@ class RobotModelManager:
         robot_spheres = kinematics_state.robot_spheres.reshape(-1, 4)
         return robot_spheres.cpu().numpy().tolist()
 
+    def get_collision_spheres_with_attached(
+        self, kinematics, attach_link: str = "attached_object"
+    ) -> Tuple[List[List[float]], List[bool]]:
+        """World collision spheres from an EXTERNAL kinematics, flagging which
+        belong to ``attach_link``.
+
+        Our own ``kin_model`` never receives grasp attaches (those live on the
+        MotionPlanner). Pass the MotionPlanner's kinematics here to render the
+        fitted attached-object spheres. Returns ``(spheres [[x,y,z,r], …],
+        attached_mask [bool, …])``; when nothing is attached the attach_link
+        spheres carry radius <= 0 and are filtered by the caller.
+        """
+        q_js = JointState(
+            position=torch.tensor(
+                self.robot.get_joint_pose(),
+                dtype=self._ops_dtype,
+                device=self._device,
+            ),
+            joint_names=kinematics.joint_names,
+        )
+        spheres = kinematics.compute_kinematics(q_js).robot_spheres.reshape(-1, 4)
+        spheres = spheres.cpu().numpy().tolist()
+
+        kc = kinematics.kinematics_config
+        attached_idx = kc.link_name_to_idx_map.get(attach_link)
+        if attached_idx is None or kc.link_sphere_idx_map is None:
+            return spheres, [False] * len(spheres)
+
+        link_ids = kc.link_sphere_idx_map.reshape(-1).cpu().tolist()
+        mask = [li == attached_idx for li in link_ids]
+        if len(mask) != len(spheres):  # defensive: align to sphere count
+            mask = (mask + [False] * len(spheres))[:len(spheres)]
+        return spheres, mask
+
     def set_link_collision(
         self, link_names: List[str], enabled: bool
     ) -> Tuple[List[str], List[str]]:

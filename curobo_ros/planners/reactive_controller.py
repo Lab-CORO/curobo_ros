@@ -209,7 +209,13 @@ class ReactiveController(TrajectoryPlanner):
         self.start_state = start_state
 
         try:
-            if not self.setup(start_state, goal_request):
+            # setup() → cold_start_solve captures the MPC CUDA graph. Hold the
+            # node's GPU lock so a concurrent depth integrate can't invalidate
+            # the capture. Only setup is locked — the servo loop below runs
+            # unlocked so depth integration resumes between steps.
+            with self.node.gpu_lock:
+                setup_ok = self.setup(start_state, goal_request)
+            if not setup_ok:
                 return PlannerResult(success=False, message="Failed to set reactive goal")
             self.is_goal_active = True
 

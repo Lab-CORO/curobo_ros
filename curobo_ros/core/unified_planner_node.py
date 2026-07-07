@@ -17,6 +17,7 @@ v2 notes:
 - ground plane lives on the Scene via ObstacleManager, not `world_cfg.add_obstacle`.
 """
 
+import threading
 import time
 import traceback
 
@@ -57,6 +58,16 @@ class UnifiedPlannerNode(Node):
         # v2 device config — kept as `tensor_args` for backward-compat with
         # code paths that read `.device` / `.dtype` from it.
         self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
+
+        # Serializes curobo CUDA-graph *capture* (classic first plan, MPC
+        # cold-start) against concurrent GPU work on other executor threads —
+        # notably the depth-camera callback's mapper.integrate(). A GPU op
+        # launched while a stream is capturing invalidates the capture
+        # (cudaErrorStreamCaptureInvalidated). Created before cameras/solvers so
+        # it always exists when callbacks fire. RLock: the holder thread may
+        # re-enter; a different thread (depth callback) fails the non-blocking
+        # acquire and simply skips its frame.
+        self.gpu_lock = threading.RLock()
 
         self.robot_context = RobotContext(self, 0.03)
 
@@ -286,8 +297,11 @@ class UnifiedPlannerNode(Node):
         so no race with CUDA graph capture.
         """
         obs = self.config_wrapper_motion.obstacle_manager
-        if obs.refresh_esdf():
-            self.update_all_solvers_world(obs.get_scene())
+        # ESDF recompute + world push are GPU ops — hold the lock so they never
+        # overlap a concurrent depth integrate / graph capture.
+        with self.gpu_lock:
+            if obs.refresh_esdf():
+                self.update_all_solvers_world(obs.get_scene())
 
     def rebuild_solvers_for_cache_change(self):
         """Rebuild all active solvers after a collision-cache change.
@@ -444,7 +458,10 @@ class UnifiedPlannerNode(Node):
                 else:
                     self.refresh_perception_world()
                     self.get_logger().info(f"Planning with {planner.get_planner_name()}")
-                    result = planner.plan(start_state, goal, config, self.robot_context)
+                    # First plan captures the MotionGen CUDA graph — hold the
+                    # lock so a concurrent depth integrate can't invalidate it.
+                    with self.gpu_lock:
+                        result = planner.plan(start_state, goal, config, self.robot_context)
                     if not result.success:
                         result_msg.success = False
                         result_msg.message = f"Planning failed: {result.message}"

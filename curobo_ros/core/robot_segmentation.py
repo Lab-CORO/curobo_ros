@@ -17,6 +17,8 @@ import struct
 from curobo.kinematics import Kinematics, KinematicsCfg
 from curobo.types import DeviceCfg, JointState
 
+from curobo_msgs.srv import SetMask, RemoveObject
+
 from scipy.spatial.transform import Rotation
 
 from curobo_ros.robot.robot_context import RobotContext
@@ -61,6 +63,11 @@ class DepthMapRobotSegmentation(Node):
         self.depth_frame_id = None
         self.bridge = CvBridge()
 
+        # Extra user-defined masks (e.g. a grasped object) removed from the depth
+        # in addition to the robot. Keyed by name; each entry rides a TF frame so
+        # it follows the arm. See SetMask.srv / _shape_inside_mask.
+        self._masks = {}
+
         # Robot context for joint states
         self.robot_context = RobotContext(self, 0.03)  # dt is not important here
 
@@ -69,6 +76,10 @@ class DepthMapRobotSegmentation(Node):
         self.declare_parameter('depth_image_topic', '/depth_to_rgb/image_raw')
         self.declare_parameter('camera_info_topic', '/depth_to_rgb/camera_info')
         self.declare_parameter('robot_base_frame', 'base_0')
+        # Inflation added to every mask shape's half-extents / radius, separate
+        # from the robot distance_threshold above.
+        self.declare_parameter('mask_margin', 0.0)
+        self.mask_margin = self.get_parameter('mask_margin').get_parameter_value().double_value
 
         depth_image_topic = self.get_parameter('depth_image_topic').get_parameter_value().string_value
         camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
@@ -96,10 +107,67 @@ class DepthMapRobotSegmentation(Node):
             self.listener_callback_camera_info,
             1)
 
+        # Services to add/update and remove extra depth masks (e.g. grasped
+        # object). Sync callbacks: pure dict mutation, no GPU -> safe under spin.
+        self.set_mask_srv = self.create_service(
+            SetMask, 'set_mask', self.set_mask_callback)
+        self.remove_mask_srv = self.create_service(
+            RemoveObject, 'remove_mask', self.remove_mask_callback)
+
         # Timer callback for segmentation
         self.create_timer(0.01, self.timer_callback)
 
         self.get_logger().info("Depth map segmentation node initialized")
+
+    # ── Mask services ────────────────────────────────────────────────────────
+
+    def set_mask_callback(self, request, response):
+        """Add or update a named mask shape (SetMask.srv).
+
+        Dimension conventions mirror obstacle_manager.add_object:
+        CUBOID [dx,dy,dz], SPHERE [r,_,_], CAPSULE [r,h,_] (segment [0,0,0]->[0,0,h]),
+        CYLINDER [r,h,_] (centered, axis z), MESH [sx,sy,sz].
+        """
+        d = request.dimensions
+        if request.type == SetMask.MESH:
+            if not os.path.exists(request.mesh_file_path):
+                response.success = False
+                response.message = f'Mesh file not found: {request.mesh_file_path}'
+                return response
+        elif d.x <= 0 or d.y <= 0 or d.z <= 0:
+            response.success = False
+            response.message = 'Mask dimensions must be positive'
+            return response
+
+        p = request.pose.position
+        o = request.pose.orientation
+        self._masks[request.name] = {
+            'type': request.type,
+            'frame_id': request.frame_id,
+            'mesh_file_path': request.mesh_file_path,
+            'pos': torch.tensor([p.x, p.y, p.z],
+                                dtype=self._ops_dtype, device=self._device),
+            'quat': [o.x, o.y, o.z, o.w],  # scipy order
+            'dims': [d.x, d.y, d.z],
+        }
+        frame = request.frame_id if request.frame_id else \
+            self.get_parameter('robot_base_frame').get_parameter_value().string_value
+        response.success = True
+        response.message = f"Mask '{request.name}' set (type={request.type}, frame='{frame}')"
+        self.get_logger().info(response.message)
+        return response
+
+    def remove_mask_callback(self, request, response):
+        """Remove a named mask (RemoveObject.srv). Idempotent."""
+        if request.name in self._masks:
+            del self._masks[request.name]
+            response.success = True
+            response.message = f"Mask '{request.name}' removed"
+        else:
+            response.success = True
+            response.message = f"Mask '{request.name}' not present (nothing to remove)"
+        self.get_logger().info(response.message)
+        return response
 
     def listener_callback_camera_info(self, msg):
         """
@@ -345,6 +413,13 @@ class DepthMapRobotSegmentation(Node):
         # Keep points that are farther than threshold (i.e. NOT the robot)
         mask = min_distances > self.distance_threshold
 
+        # Also drop points inside any user-defined mask shape (e.g. a grasped
+        # object) so they never reach the mapper / ESDF. Uses the same base-frame
+        # cloud; each mask follows its TF frame.
+        inside_shapes = self._shape_inside_mask(points_base)
+        if inside_shapes is not None:
+            mask = mask & ~inside_shapes
+
         # Publish robot point cloud for debug (the points masked OUT as robot),
         # in the robot base frame to match the transformed coordinates.
         if self.robot_pointcloud_pub.get_subscription_count() > 0:
@@ -369,13 +444,29 @@ class DepthMapRobotSegmentation(Node):
         if self.depth_frame_id is None:
             return None
         robot_base_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value
+        T = self._tf_matrix(robot_base_frame, self.depth_frame_id)
+        if T is None:
+            return None
+
+        homog = torch.cat(
+            [points, torch.ones((points.shape[0], 1),
+                                dtype=self._ops_dtype, device=self._device)],
+            dim=1)  # (N, 4)
+        return (homog @ T.T)[:, :3]
+
+    def _tf_matrix(self, target_frame: str, source_frame: str):
+        """4x4 homogeneous transform ``target <- source`` from TF, or None.
+
+        Shared by the robot base transform and the per-mask frame tracking.
+        Returns None (with a throttled warning) if the transform is unavailable.
+        """
         try:
             tf = self.tf_buffer.lookup_transform(
-                robot_base_frame, self.depth_frame_id, rclpy.time.Time())
+                target_frame, source_frame, rclpy.time.Time())
         except Exception as e:  # TransformException and friends
             self.get_logger().warn(
-                f'TF {self.depth_frame_id} -> {robot_base_frame} unavailable, '
-                f'robot not masked: {e}', throttle_duration_sec=2.0)
+                f'TF {source_frame} -> {target_frame} unavailable: {e}',
+                throttle_duration_sec=2.0)
             return None
 
         tr = tf.transform.translation
@@ -385,12 +476,89 @@ class DepthMapRobotSegmentation(Node):
         T[:3, :3] = torch.tensor(R, dtype=self._ops_dtype, device=self._device)
         T[:3, 3] = torch.tensor([tr.x, tr.y, tr.z],
                                 dtype=self._ops_dtype, device=self._device)
+        return T
 
+    def _pose_matrix(self, pos: torch.Tensor, quat) -> torch.Tensor:
+        """4x4 homogeneous transform from a position tensor (3,) and a scipy
+        quaternion [x, y, z, w]."""
+        R = Rotation.from_quat(quat).as_matrix()
+        T = torch.eye(4, dtype=self._ops_dtype, device=self._device)
+        T[:3, :3] = torch.tensor(R, dtype=self._ops_dtype, device=self._device)
+        T[:3, 3] = pos
+        return T
+
+    def _shape_inside_mask(self, points_base: torch.Tensor):
+        """Boolean (N,) mask, True where a base-frame point lies inside ANY
+        user-defined mask shape. Returns None when no masks are defined.
+
+        Each mask pose is expressed in its ``frame_id`` (re-resolved every cycle
+        so it follows the arm); an empty frame_id means the robot base frame.
+        """
+        if not self._masks:
+            return None
+
+        base_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value
+        N = points_base.shape[0]
         homog = torch.cat(
-            [points, torch.ones((points.shape[0], 1),
-                                dtype=self._ops_dtype, device=self._device)],
+            [points_base, torch.ones((N, 1),
+                                     dtype=self._ops_dtype, device=self._device)],
             dim=1)  # (N, 4)
-        return (homog @ T.T)[:, :3]
+        inside_any = torch.zeros(N, dtype=torch.bool, device=self._device)
+
+        for m in self._masks.values():
+            T_frame_mask = self._pose_matrix(m['pos'], m['quat'])
+            if m['frame_id']:
+                T_base_frame = self._tf_matrix(base_frame, m['frame_id'])
+                if T_base_frame is None:
+                    continue  # TF missing this cycle -> skip only this mask
+                T_base_mask = T_base_frame @ T_frame_mask
+            else:
+                T_base_mask = T_frame_mask
+
+            # Points into the mask-local frame, then analytic inside test.
+            local = (homog @ torch.inverse(T_base_mask).T)[:, :3]
+            inside = self._inside_shape(local, m)
+            if inside is not None:
+                inside_any |= inside
+
+        return inside_any
+
+    def _inside_shape(self, local: torch.Tensor, m: dict):
+        """Analytic point-inside test in the shape's local frame (+mask_margin).
+        Returns bool (N,), or None for unsupported types."""
+        t = self.mask_margin
+        dims = m['dims']
+        typ = m['type']
+
+        if typ == SetMask.CUBOID:
+            hx, hy, hz = dims[0] / 2 + t, dims[1] / 2 + t, dims[2] / 2 + t
+            return ((local[:, 0].abs() <= hx)
+                    & (local[:, 1].abs() <= hy)
+                    & (local[:, 2].abs() <= hz))
+
+        if typ == SetMask.SPHERE:
+            return torch.norm(local, dim=1) <= dims[0] + t
+
+        if typ == SetMask.CYLINDER:  # centered, axis z, z in [-h/2, h/2]
+            r, hz = dims[0] + t, dims[1] / 2 + t
+            radial = torch.norm(local[:, :2], dim=1)
+            return (local[:, 2].abs() <= hz) & (radial <= r)
+
+        if typ == SetMask.CAPSULE:  # segment [0,0,0]->[0,0,h] along +z
+            r, h = dims[0] + t, dims[1]
+            z_clamped = local[:, 2].clamp(0.0, h)
+            dz = local[:, 2] - z_clamped
+            dist = torch.sqrt(local[:, 0] ** 2 + local[:, 1] ** 2 + dz ** 2)
+            return dist <= r
+
+        if typ == SetMask.MESH:
+            self.get_logger().warn(
+                "MESH mask not supported analytically yet — skipped. "
+                "(future: curobo WorldMeshCollision zero-radius point SDF)",
+                throttle_duration_sec=5.0)
+            return None
+
+        return None
 
     def depth_tensor_to_image_msg(self, depth_tensor: torch.Tensor) -> Image:
         """
