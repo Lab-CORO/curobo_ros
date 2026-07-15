@@ -142,11 +142,14 @@ class RobotModelManager:
         return response
 
     def get_joint_state(self) -> JointState:
+        # Canonical joint names come from the kinematics model (DOF-agnostic).
+        # The previous hardcoded ['joint_1'..'joint_6'] did not even match the
+        # real m1013 names ('joint1'..'joint6') and broke any non-6-DOF robot.
         return JointState(
             position=torch.tensor(
                 self.robot.get_joint_pose(),
                 dtype=self._ops_dtype,
                 device=self._device,
             ),
-            joint_names=['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'],
+            joint_names=self.kin_model.joint_names,
         )

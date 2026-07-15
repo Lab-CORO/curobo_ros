@@ -1,0 +1,13 @@
+# Robot descriptor — Doosan M1013 (6-DOF), executed via the leeloo trajectory bridge.
+# base_link / joint_names / dof come from the cuRobo config below (not duplicated here).
+# strategy_params = the ROBOT DRIVER interface only (no camera/perception topics).
+name: doosan_m1013
+display_name: "Doosan M1013"
+
+curobo_config: package://curobo_ros/curobo_doosan/src/m1013/m1013.yml
+
+strategy: joint_speed
+strategy_params:
+  command_topic: /leeloo/execute_trajectory
+  state_topic: /leeloo/trajectory_state
+  joint_states_topic: /dsr01/joint_states

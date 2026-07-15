@@ -1,0 +1,11 @@
+# Robot descriptor — RViz emulator (no hardware). Uses the M1013 model by default;
+# point curobo_config at any robot to emulate it. The emulator just replays planned
+# JointStates, so its only driver interface is the joint_states topic it publishes.
+name: emulator
+display_name: "Emulator (RViz)"
+
+curobo_config: package://curobo_ros/curobo_doosan/src/m1013/m1013.yml
+
+strategy: emulator
+strategy_params:
+  joint_states_topic: /emulator/joint_states
