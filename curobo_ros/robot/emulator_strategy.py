@@ -11,35 +11,21 @@ class EmulatorStrategy(JointCommandStrategy):
     This allows testing and visualization of trajectories in RViz.
     '''
 
-    def __init__(self, node, dt):
-        super().__init__(node, dt)
+    def __init__(self, node, dt, description=None):
+        super().__init__(node, dt, description)
 
-        # Publisher for joint states (standard ROS topic for robot visualization)
-        self.pub_joint_states = node.create_publisher(
-            JointState,
-            '/emulator/joint_states',
-            10
-        )
+        # Publisher for joint states (topic from the descriptor).
+        joint_states_topic = self.params.get('joint_states_topic', '/emulator/joint_states')
+        self.pub_joint_states = node.create_publisher(JointState, joint_states_topic, 10)
 
-        # Emulator state
-        self.position_command = []
-        self.vel_command = []
-        self.accel_command = []
-        self.joint_names = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
-        self.current_joint_positions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
-        self.command_index = 0
-        self.dt = dt
-        self.robot_state = RobotState.IDLE
-        self.trajectory_progression = 0.0
-
-        self.node = node
+        # Current simulated pose, sized to the robot's DOF (DOF-agnostic).
+        self.current_joint_positions = [0.0] * self.dof
 
         # Thread for trajectory execution simulation
         self.execution_thread = None
         self.stop_execution = threading.Event()
 
-        node.get_logger().info("✅ Emulator strategy initialized - Publishing to /joint_states")
+        node.get_logger().info(f"✅ Emulator strategy initialized - Publishing to {joint_states_topic}")
 
     def send_trajectrory(self):
         '''

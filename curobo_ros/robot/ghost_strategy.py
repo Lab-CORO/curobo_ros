@@ -7,17 +7,11 @@ class GhostStrategy(JointCommandStrategy):
     This class is a strategie to control doosan robot with motion_gen
     '''
 
-    def __init__(self, node, dt):
+    def __init__(self, node, dt, description=None):
+        super().__init__(node, dt, description)
         # create a publisher
         self.pub_command = node.create_publisher(JointTrajectory, 'trajectory', 10)
-        self.position_command = []
-        self.vel_command = []
-        self.accel_command = []
-        self.joint_names = []
-        self.command_index = 0
         self.dt = 0.02  # value defined by interpolation_dt can't be changed (esealy), need to rebuild curobo.
-        self.robot_state = RobotState.IDLE
-        self.node = node
 
  
 
@@ -59,5 +53,16 @@ class GhostStrategy(JointCommandStrategy):
 
 
         self.pub_command.publish(joint_trajectory_msg)
+
+    # GhostStrategy is visualization-only (RViz preview): the rest of the
+    # JointCommandStrategy contract is inert.
+    def get_joint_pose(self):
+        return []
+
+    def stop_robot(self):
+        self.robot_state = RobotState.STOPPED
+
+    def get_progression(self):
+        return self.trajectory_progression
 
 
