@@ -167,8 +167,26 @@ class RosServiceManager:
             )
 
     def _publish_sparse_voxel_grid(self, node):
-        """Timer callback: publish the current scene occupancy as SparseVoxelGrid."""
-        self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
+        """Timer callback: publish the current scene occupancy as SparseVoxelGrid.
+
+        This queries the Mapper on the GPU (extract_occupied_voxels + primitive
+        rasterization). It runs on a 7 Hz timer independent of planning, so
+        without guarding it, it WILL eventually overlap a MotionGen/MPC CUDA graph
+        capture and invalidate it — which poisons the whole process's CUDA context
+        (cudaErrorStreamCaptureInvalidated), breaking every later plan until restart.
+
+        Same non-blocking guard as the depth camera: if the planner is capturing a
+        graph it holds gpu_lock; skip this publish cycle rather than race it. Never
+        blocks the planner (non-blocking acquire) and costs nothing when idle.
+        """
+        gpu_lock = getattr(node, 'gpu_lock', None)
+        if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
+            return  # planner is capturing a CUDA graph — skip this cycle
+        try:
+            self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
+        finally:
+            if gpu_lock is not None:
+                gpu_lock.release()
 
     def publish_scene_obstacles(self, node):
         """Publish scene obstacles as a MarkerArray, recolouring the currently

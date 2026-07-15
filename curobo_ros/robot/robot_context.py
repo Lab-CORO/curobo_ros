@@ -1,140 +1,127 @@
-from curobo_ros.robot.ghost_strategy import GhostStrategy
-from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
-from std_srvs.srv import SetBool, Trigger
-from curobo_msgs.srv import SetRobotStrategy
-from rclpy.parameter import Parameter
 import threading
 from functools import partial
 
-# Single source of truth: (internal_key, enum_id, display_name)
-# enum_id matches SetRobotStrategy.Request constants
-_STRATEGY_CATALOG = [
-    ('doosan_m1013', SetRobotStrategy.Request.DOOSAN_M1013, 'Doosan M1013'),
-    ('emulator',     SetRobotStrategy.Request.EMULATOR,     'Emulator'),
-    ('ur10',         SetRobotStrategy.Request.UR10,         'UR10'),
-]
+from rclpy.parameter import Parameter
+from std_srvs.srv import Trigger
+from curobo_msgs.srv import SetRobotStrategy
 
-# Derived lookup used by set_robot_strategy_callback
-_STRATEGY_INT_TO_STR = {eid: key for key, eid, _ in _STRATEGY_CATALOG}
+from curobo_ros.robot.ghost_strategy import GhostStrategy
+from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
+from curobo_ros.robot.robot_registry import create_strategy, available_strategies
+from curobo_ros.robot.robot_description import load_robot_description
 
 
 class RobotContext:
     '''
-    The context of the robot if you want to select and change robot strategy dynamically.
-    Provides a service to switch between different robot control strategies.
+    Selects and switches the joint-command CONTROL STRATEGY at runtime.
+
+    Two independent axes:
+      - ``robot``            (param): WHICH robot -> descriptor (model + driver topics
+                                      + default strategy + joint names).
+      - ``control_strategy`` (param): HOW to command joints -> emulator / joint_speed /
+                                      joint_pose / ... (robot-agnostic, from the registry).
+
+    Default control strategy comes from the descriptor; it can be overridden at launch
+    and switched at runtime via the ``set_robot_strategy`` service (now a string key).
     '''
     robot_strategy: JointCommandStrategy
 
     def __init__(self, node, dt):
-        # Store node and dt for strategy switching
         self.node = node
         self.dt = dt
-
-        # Thread safety for strategy switching
         self.strategy_lock = threading.Lock()
 
-        # Initialize robot type parameter
-        node.declare_parameter('robot_type', "doosan_m1013")
+        # Which robot (model + driver topics + default strategy).
+        if not node.has_parameter('robot'):
+            node.declare_parameter('robot', 'doosan_m1013')
+        robot = node.get_parameter('robot').get_parameter_value().string_value or 'doosan_m1013'
+        self.description = load_robot_description(robot)
 
-        # Track current strategy name
-        self.current_strategy_name = node.get_parameter('robot_type').get_parameter_value().string_value
+        # Which control strategy (default = descriptor's, overridable).
+        if not node.has_parameter('control_strategy'):
+            node.declare_parameter('control_strategy', self.description.strategy_key)
+        self.current_strategy_name = node.get_parameter('control_strategy').get_parameter_value().string_value
 
-        # Select initial strategy
         self.robot_strategy = self.select_strategy(node, dt)
-        self.ghost_strategy = GhostStrategy(node, dt)
+        self.ghost_strategy = GhostStrategy(node, dt, self.description)
 
-        # Create service for dynamic strategy switching
         self.set_strategy_srv = node.create_service(
             SetRobotStrategy,
             node.get_name() + '/set_robot_strategy',
             partial(self.set_robot_strategy_callback, node)
         )
-
-        # Create service to get current strategy (legacy text response)
         self.get_strategy_srv = node.create_service(
             Trigger,
             node.get_name() + '/get_robot_strategy',
             self.get_robot_strategy_callback
         )
 
-        node.get_logger().info(f"Robot strategy initialized: {self.current_strategy_name}")
+        node.get_logger().info(
+            f"Control strategy initialized: {self.current_strategy_name} "
+            f"(robot: {self.description.name})")
+
+    def bind_kinematics(self, kin):
+        '''Adopt canonical joint names/DOF from the built kinematics into the descriptor.'''
+        self.description.bind_kinematics(kin)
 
     def select_strategy(self, node, time_dilation_factor):
-        '''
-        This method select the robot strategy based on the ros2 param robot_type.
-        And instanciate the robot strategy.
-        '''
-        robot_type = node.get_parameter('robot_type').get_parameter_value().string_value
-        match robot_type:
-            case "doosan_m1013":
-                # The robot lib are loaded here to avoid import error if this robot is not use.
-                from curobo_ros.robot.doosan_strategy import DoosanControl
-                robot_strategy = DoosanControl(node, time_dilation_factor)
-            case "ur5e":
-                robot_strategy = None
-                node.get_logger().warn("UR5e strategy not yet implemented")
-            case "emulator":
-                # Robot emulator for testing and visualization
-                from curobo_ros.robot.emulator_strategy import EmulatorStrategy
-                robot_strategy = EmulatorStrategy(node, time_dilation_factor)
-            case _:
-                robot_strategy = None
-                node.get_logger().warn(f"Unknown robot type: {robot_type}")
-
-        return robot_strategy
+        '''Instantiate the control strategy named by the ``control_strategy`` param.'''
+        key = node.get_parameter('control_strategy').get_parameter_value().string_value
+        strategy = create_strategy(key, node, time_dilation_factor, self.description)
+        if strategy is None:
+            node.get_logger().warn(
+                f"Unknown control strategy: '{key}'. Available: {available_strategies()}")
+        return strategy
 
     def set_robot_strategy_callback(self, node, request, response):
-        '''
-        Service callback to dynamically change the robot control strategy.
-        The strategy is received directly in the request (SetRobotStrategy.srv).
-        The 'robot_type' parameter is updated to stay in sync.
-        '''
+        '''Switch the control strategy at runtime. request.robot_strategy is a string key.'''
         try:
-            new_strategy_name = _STRATEGY_INT_TO_STR.get(request.robot_strategy)
-            if new_strategy_name is None:
+            new_strategy_name = request.robot_strategy
+            if new_strategy_name not in available_strategies():
                 response.success = False
-                response.message = f"Unknown strategy id: {request.robot_strategy}"
+                response.message = (
+                    f"Unknown strategy: '{new_strategy_name}'. "
+                    f"Available: {available_strategies()}")
                 node.get_logger().error(response.message)
                 return response
 
             response.previous_robot_strategy = self.current_strategy_name
 
-            # Check if already using this strategy
             if new_strategy_name == self.current_strategy_name:
                 response.success = True
                 response.current_robot_strategy = self.current_strategy_name
                 response.message = f"Already using strategy: {new_strategy_name}"
                 return response
 
-            node.get_logger().info(f"Switching strategy from '{self.current_strategy_name}' to '{new_strategy_name}'...")
+            node.get_logger().info(
+                f"Switching control strategy '{self.current_strategy_name}' -> '{new_strategy_name}'...")
 
             with self.strategy_lock:
-                # Stop current robot if it exists
                 if self.robot_strategy is not None:
                     try:
                         self.robot_strategy.stop_robot()
-                        node.get_logger().info("Previous robot strategy stopped")
                     except Exception as e:
                         node.get_logger().warn(f"Could not stop previous strategy: {e}")
 
-                # Update parameter so select_strategy (and ros2 param get) stay in sync
-                node.set_parameters([Parameter('robot_type', Parameter.Type.STRING, new_strategy_name)])
-
+                node.set_parameters([
+                    Parameter('control_strategy', Parameter.Type.STRING, new_strategy_name)])
                 new_strategy = self.select_strategy(node, self.dt)
 
                 if new_strategy is None:
                     response.success = False
-                    response.message = f"Strategy '{new_strategy_name}' is not implemented yet"
+                    response.message = f"Strategy '{new_strategy_name}' is not registered"
                     node.get_logger().error(response.message)
                     return response
 
                 self.robot_strategy = new_strategy
                 self.current_strategy_name = new_strategy_name
-                self.ghost_strategy = GhostStrategy(node, self.dt)
+                self.ghost_strategy = GhostStrategy(node, self.dt, self.description)
 
                 response.success = True
                 response.current_robot_strategy = new_strategy_name
-                response.message = f"Strategy switched from '{response.previous_robot_strategy}' to '{new_strategy_name}'"
+                response.message = (
+                    f"Strategy switched from '{response.previous_robot_strategy}' "
+                    f"to '{new_strategy_name}'")
                 node.get_logger().info(f"✅ {response.message}")
 
         except Exception as e:
@@ -147,136 +134,79 @@ class RobotContext:
         return response
 
     def get_robot_strategy_callback(self, request, response):
-        '''
-        Service callback to get the current robot control strategy.
-
-        Args:
-            request: Trigger request (empty)
-            response: Trigger response
-
-        Returns:
-            Response with current strategy name
-        '''
+        '''Return the current control strategy name (Trigger).'''
         response.success = True
         response.message = self.current_strategy_name
         return response
 
     def get_robot_strategies_callback(self, node, request, response):
-        '''Return the list of available strategies with their enum IDs for the RViz plugin.'''
-        response.strategy_names = [name for _, _, name in _STRATEGY_CATALOG]
-        response.strategy_ids   = [int(eid) for _, eid, _ in _STRATEGY_CATALOG]
-
-        response.current_strategy_name = 'Unknown'
-        response.current_strategy_id   = 255
-        for key, eid, name in _STRATEGY_CATALOG:
-            if key == self.current_strategy_name:
-                response.current_strategy_name = name
-                response.current_strategy_id   = int(eid)
-                break
-
+        '''Return the list of available control strategies (string names).'''
+        response.strategy_names = available_strategies()
+        response.current_strategy_name = self.current_strategy_name
         response.success = True
         node.get_logger().info(
-            f"GetRobotStrategies: {len(_STRATEGY_CATALOG)} strategies, current={response.current_strategy_name}"
-        )
+            f"GetRobotStrategies: {response.strategy_names}, current={self.current_strategy_name}")
         return response
 
     def set_robot_strategy(self, robot_strategy, node, dt):
-        '''
-        DEPRECATED: Use set_robot_strategy_callback via ROS service instead.
-        This method is kept for backward compatibility.
-        '''
+        '''DEPRECATED: use the set_robot_strategy service instead.'''
         self.robot_strategy = robot_strategy
-        self.ghost_strategy = GhostStrategy(node, dt) 
+        self.ghost_strategy = GhostStrategy(node, dt, self.description)
 
-
-    def set_command(self, joint_names,  vel_command, accel_command, position_command):
-        '''
-        Set the velocity, position and acceleration command of the robot.
-        The command send to the ghost are directly send to show it on rviz.
-        Thread-safe during strategy switching.
-        '''
+    def set_command(self, joint_names, vel_command, accel_command, position_command):
+        '''Forward a command to the active strategy and the RViz ghost. Thread-safe.'''
         with self.strategy_lock:
-            # If there is a real robot
             if self.robot_strategy is not None:
                 self.robot_strategy.set_command(joint_names, vel_command, accel_command, position_command)
-            # Active all the time for rviz visualisation
             self.ghost_strategy.set_command(joint_names, vel_command, accel_command, position_command)
             self.ghost_strategy.send_trajectrory()
 
     def get_joint_pose(self):
-        '''
-        This method return the pose of the robot.
-        Thread-safe during strategy switching.
-        '''
         with self.strategy_lock:
             if self.robot_strategy is None:
-                return [0.0] * 6  # Default 6-DOF robot
+                return [0.0] * self.description.dof
             return self.robot_strategy.get_joint_pose()
 
-    def get_joint_name(self):
-        '''
-        This method return the joint names of the robot.
-        Thread-safe during strategy switching.
-        '''
+    def get_joint_velocity(self):
+        """Real, measured joint velocity (driver feedback), if the active
+        strategy provides one — else zeros. See JointCommandStrategy.
+        """
         with self.strategy_lock:
             if self.robot_strategy is None:
-                return ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
+                return [0.0] * self.description.dof
+            return self.robot_strategy.get_joint_velocity()
+
+    def get_joint_name(self):
+        with self.strategy_lock:
+            if self.robot_strategy is None:
+                return self.description.joint_names
             return self.robot_strategy.get_joint_name()
 
     def stop_robot(self):
-        '''
-        The methode send a twits command of 0 to stop the robot.
-        The robot will stop at the current position. The list of command (position and velocity are empty)
-        and the progression is set to 0.
-        Thread-safe during strategy switching.
-        '''
         with self.strategy_lock:
             if self.robot_strategy is not None:
                 self.robot_strategy.stop_robot()
 
     def get_progression(self):
-        '''
-        The methode return the progression of the robot.
-        The progression is a float between 0 and 1. 0 mean the robot is at the beginning of the trajectory
-        and 1 mean the robot is at the end of the trajectory.
-        Thread-safe during strategy switching.
-        '''
         with self.strategy_lock:
             if self.robot_strategy is None:
                 return 0.0
             return self.robot_strategy.get_progression()
 
     def send_trajectrory(self):
-        '''
-        This method set the send_to_robot variable.
-        The send_to_robot variable activates the command list send to the robot.
-        Thread-safe during strategy switching.
-        '''
         with self.strategy_lock:
             if self.robot_strategy is None:
                 return None
             return self.robot_strategy.send_trajectrory()
 
     def get_send_to_robot(self):
-        '''
-        Get the send_to_robot status.
-        Thread-safe during strategy switching.
-        '''
         with self.strategy_lock:
             if self.robot_strategy is None:
                 return False
             return self.robot_strategy.get_send_to_robot()
 
     def get_robot_state(self):
-        '''
-        Get the current robot state.
-        Thread-safe during strategy switching.
-
-        Returns:
-            RobotState enum value (IDLE, RUNNING, STOPPED, ERROR)
-        '''
         with self.strategy_lock:
             if self.robot_strategy is None:
                 return RobotState.IDLE
             return self.robot_strategy.robot_state
-

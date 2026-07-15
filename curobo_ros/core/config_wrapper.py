@@ -54,6 +54,12 @@ class ConfigWrapper(ABC):
             node=node,
         )
 
+        # Adopt the canonical joint order/DOF from the built kinematics into the
+        # descriptor, so every downstream consumer (strategies, context) is
+        # DOF-agnostic and reads the real joint names instead of a hardcoded list.
+        self.config_manager.get_robot_description().bind_kinematics(
+            self.robot_model_manager.kin_model)
+
         # Phase 4: ObstacleManager - Manage obstacles (before RosServiceManager)
         # Pass initial Scene from ConfigManager to ObstacleManager
         self.obstacle_manager = ObstacleManager(
