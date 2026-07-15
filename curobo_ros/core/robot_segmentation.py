@@ -114,8 +114,8 @@ class DepthMapRobotSegmentation(Node):
         self.remove_mask_srv = self.create_service(
             RemoveObject, 'remove_mask', self.remove_mask_callback)
 
-        # Timer callback for segmentation
-        self.create_timer(0.01, self.timer_callback)
+        # Segmentation is driven by the depth-frame subscriber callback (runs at
+        # the camera rate), not a fixed timer — see listener_callback_depth.
 
         self.get_logger().info("Depth map segmentation node initialized")
 
@@ -129,7 +129,7 @@ class DepthMapRobotSegmentation(Node):
         CYLINDER [r,h,_] (centered, axis z), MESH [sx,sy,sz].
         """
         d = request.dimensions
-        if request.type == SetMask.MESH:
+        if request.type == 4:
             if not os.path.exists(request.mesh_file_path):
                 response.success = False
                 response.message = f'Mesh file not found: {request.mesh_file_path}'
@@ -198,22 +198,21 @@ class DepthMapRobotSegmentation(Node):
             self.depth_image = torch.from_numpy(depth_img).to(
                 dtype=self._ops_dtype, device=self._device)
             self.depth_frame_id = msg.header.frame_id
-            
+
         except CvBridgeError as e:
             self.get_logger().error(f"CvBridge Error: {e}")
+            return
 
-    def timer_callback(self):
-        """
-        Timer callback that triggers the segmentation process every 10 milliseconds.
-        """
-        if self.depth_image is not None and self.camera_info is not None and self.q_js is not None:
-            # Get joint state
+        # Segmentation pilotée par l'ARRIVÉE de la frame (= rythme caméra, ~5Hz)
+        # plutôt qu'un timer 100Hz qui republiait la même frame → nvblox
+        # ré-intégrait ~6x la même donnée depth (surcharge GPU inutile,
+        # concurrence avec le solve MPPI). cf. debug 2026-07-15.
+        if self.camera_info is not None:
             self.q_js.position = torch.tensor(
                 self.robot_context.get_joint_pose(),
                 dtype=self._ops_dtype,
                 device=self._device)
             self.q_js.joint_names = self.robot_context.get_joint_name()
-
             self.segment_and_publish()
 
     def segment_and_publish(self):
@@ -530,28 +529,28 @@ class DepthMapRobotSegmentation(Node):
         dims = m['dims']
         typ = m['type']
 
-        if typ == SetMask.CUBOID:
+        if typ == 0:
             hx, hy, hz = dims[0] / 2 + t, dims[1] / 2 + t, dims[2] / 2 + t
             return ((local[:, 0].abs() <= hx)
                     & (local[:, 1].abs() <= hy)
                     & (local[:, 2].abs() <= hz))
 
-        if typ == SetMask.SPHERE:
+        if typ == 1:
             return torch.norm(local, dim=1) <= dims[0] + t
 
-        if typ == SetMask.CYLINDER:  # centered, axis z, z in [-h/2, h/2]
+        if typ == 2:  # centered, axis z, z in [-h/2, h/2]
             r, hz = dims[0] + t, dims[1] / 2 + t
             radial = torch.norm(local[:, :2], dim=1)
             return (local[:, 2].abs() <= hz) & (radial <= r)
 
-        if typ == SetMask.CAPSULE:  # segment [0,0,0]->[0,0,h] along +z
+        if typ == 3:  # segment [0,0,0]->[0,0,h] along +z
             r, h = dims[0] + t, dims[1]
             z_clamped = local[:, 2].clamp(0.0, h)
             dz = local[:, 2] - z_clamped
             dist = torch.sqrt(local[:, 0] ** 2 + local[:, 1] ** 2 + dz ** 2)
             return dist <= r
 
-        if typ == SetMask.MESH:
+        if typ == 4:
             self.get_logger().warn(
                 "MESH mask not supported analytically yet — skipped. "
                 "(future: curobo WorldMeshCollision zero-radius point SDF)",
