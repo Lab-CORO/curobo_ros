@@ -2,7 +2,6 @@
 
 from typing import List, Dict
 import torch
-from curobo.types import CameraObservation
 from curobo_ros.cameras.camera_strategy import CameraStrategy
 from curobo_ros.cameras.camera_depth_map_strategy import DepthMapCameraStrategy
 
@@ -90,71 +89,10 @@ class CameraContext:
         else:
             self.node.get_logger().warn(f"Camera '{name}' not found")
 
-    def get_camera_observation(self, name: str) -> CameraObservation:
-        """
-        Get camera observation from a specific camera.
-
-        Args:
-            name: Identifier of the camera
-
-        Returns:
-            CameraObservation or None if camera not ready
-        """
-        if name not in self.cameras:
-            self.node.get_logger().error(f"Camera '{name}' not found")
-            return None
-
-        camera = self.cameras[name]
-        if not camera.is_ready():
-            self.node.get_logger().warn(f"Camera '{name}' is not ready")
-            return None
-
-        return camera.get_camera_observation()
-
-    def get_all_camera_observations(self) -> List[CameraObservation]:
-        """
-        Get camera observations from all ready cameras.
-
-        Returns:
-            List of CameraObservation objects from all ready cameras
-        """
-        observations = []
-
-        for name, camera in self.cameras.items():
-            if camera.is_ready():
-                try:
-                    obs = camera.get_camera_observation()
-                    if obs is not None:
-                        observations.append(obs)
-                except Exception as e:
-                    self.node.get_logger().error(
-                        f"Error getting observation from camera '{name}': {e}"
-                    )
-
-        return observations
-
-    def is_camera_ready(self, name: str) -> bool:
-        """
-        Check if a specific camera is ready.
-
-        Args:
-            name: Identifier of the camera
-
-        Returns:
-            bool: True if camera exists and is ready
-        """
-        if name not in self.cameras:
-            return False
-        return self.cameras[name].is_ready()
-
-    def are_any_cameras_ready(self) -> bool:
-        """
-        Check if any cameras are ready.
-
-        Returns:
-            bool: True if at least one camera is ready
-        """
-        return any(camera.is_ready() for camera in self.cameras.values())
+    # NOTE: the pull-based observation API (get_camera_observation / is_ready /
+    # ...) was removed — it was dead AND broken (no strategy implements is_ready()
+    # or get_camera_observation()). In v2 perception is PUSH-based:
+    # DepthMapCameraStrategy feeds frames directly into the Mapper TSDF.
 
     def get_camera_names(self) -> List[str]:
         """

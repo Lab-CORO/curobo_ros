@@ -122,13 +122,6 @@ class ObstacleManager:
         self._mapper_depth_max = self._declare_param('mapper_depth_max', 5.0)
         # ESDF voxel size shares the pre-existing `voxel_size` param.
         self._esdf_voxel_size = self._declare_param('voxel_size', 0.05)
-        # Whether to rasterize analytic primitives into the voxel grid via the
-        # GPU SceneCollision path. Disabled by default because the first call
-        # triggers NVRTC kernel compilation (~90 s warmup). Enable it once the
-        # system is fully up with:
-        #   ros2 param set /<node> enable_primitives_rasterization true
-        # Read dynamically so it can be toggled at runtime without restarting.
-        self._declare_param('enable_primitives_rasterization', False)
 
     # ---- Observer wiring (propagation to solvers) ----
 
@@ -427,14 +420,15 @@ class ObstacleManager:
                 node.get_logger().warn(f'Mapper perception query failed: {e}')
 
         # ---- Analytic primitives (AddObject obstacles) — GPU path ----
-        # Gated by `enable_primitives_rasterization` because the first call
-        # allocates SceneCollision and triggers NVRTC kernel compilation (~90 s).
-        # Read the param fresh each call so it can be toggled at runtime:
-        #   ros2 param set /<node> enable_primitives_rasterization true
-        enable_rasterization = node.get_parameter('enable_primitives_rasterization').value
+        # Always rasterized: cuboids/spheres/etc. added via add_object must show
+        # up in the voxel grid (just like the camera perception). The collision
+        # kernels are Warp-based and disk-cached (/root/.cache/warp), so the
+        # first call does not recompile (~0.02 s measured in a cold process). The
+        # node additionally pre-warms this path at startup via
+        # prewarm_voxel_rasterization() (covers the rare empty-Warp-cache case).
         n_obs = sum(len(getattr(self.scene, b) or [])
                     for b in ('cuboid', 'sphere', 'capsule', 'cylinder', 'mesh'))
-        if n_obs > 0 and enable_rasterization:
+        if n_obs > 0:
             try:
                 n_prim = self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
                 node.get_logger().debug(
@@ -448,10 +442,6 @@ class ObstacleManager:
                             f'Filled voxel grid from analytic primitives (CPU, {n_prim} cells)')
                 except Exception as e2:
                     node.get_logger().warn(f'CPU primitive voxelization also failed: {e2}')
-        elif n_obs > 0:
-            node.get_logger().debug(
-                f'Skipping primitives rasterization for {n_obs} obstacle(s) '
-                '(enable_primitives_rasterization=false)')
 
         return voxel_grid, grid_min, size
 
@@ -505,6 +495,36 @@ class ObstacleManager:
         msg.occupied_indices = occupied.tolist()
         publisher.publish(msg)
 
+    def prewarm_voxel_rasterization(self, node) -> None:
+        """Pre-warm the GPU primitive-rasterization path.
+
+        Builds the voxel `SceneCollision` and runs a dummy query so that any
+        Warp kernel compilation/loading happens AT STARTUP (called from the
+        node's ``__init__``, before the executor serves any service) rather than
+        on the first ``get_voxel_grid`` call.
+
+        On this machine the Warp kernels are already disk-cached (~0.02 s), but
+        this pre-warm also covers an empty Warp cache (very first boot). It works
+        even with an empty scene (the kernel is still exercised). Silent no-op on
+        failure — it must never block node startup.
+        """
+        try:
+            import time as _time
+            t0 = _time.perf_counter()
+            voxel_size = self._resolve_voxel_size(node)
+            center = np.array(self._mapper_grid_center, dtype=np.float32)
+            half = np.array(self._mapper_extent_xyz, dtype=np.float32) / 2.0
+            grid_min = center - half
+            grid_max = center + half
+            size = np.ceil((grid_max - grid_min) / voxel_size).astype(np.int32)
+            voxel_grid = np.zeros((size[0], size[1], size[2]), dtype=np.uint32)
+            self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
+            node.get_logger().info(
+                f"Voxel primitive rasterization pre-warmed in "
+                f"{_time.perf_counter() - t0:.2f}s")
+        except Exception as e:
+            node.get_logger().warn(f"Voxel rasterization pre-warm skipped: {e}")
+
     def _rasterize_primitives_gpu(self, node, voxel_grid, grid_min, voxel_size, size) -> int:
         """Rasterize analytic primitives using a pre-allocated GPU SceneCollision query.
 
@@ -531,7 +551,16 @@ class ObstacleManager:
 
             dev_cfg = DeviceCfg(device=device)
             # SceneCollision is built fresh — it will be synced with the scene below.
-            cfg = SceneCollisionCfg(device_cfg=dev_cfg, scene_model=self.scene)
+            # Pré-allouer le cache VOXEL: la scène gagne une couche VoxelGrid (ESDF
+            # nvblox) APRÈS la construction de ce checker, et load_collision_model
+            # échoue alors avec "Voxel cache not initialized" → fallback CPU (~10s,
+            # pur CPU, bloque la boucle MPC — cf. debug 2026-07-15, GPU idle). On
+            # ne touche PAS cuboid/mesh (défaut = dimensionné sur la scène).
+            cfg = SceneCollisionCfg(
+                device_cfg=dev_cfg,
+                scene_model=self.scene,
+                cache={"voxel": self.collision_cache["voxel"]},
+            )
             self._voxel_sc = SceneCollision.from_config(cfg)
 
             # [1, 1, N, 4] — batch=1, horizon=1, N point-spheres, radius=0

@@ -103,11 +103,10 @@ class DepthMapCameraStrategy(CameraStrategy):
             msg: Image message
         """
         try:
-            # Convert ROS image to numpy array
-            # Assume depth is in millimeters (16UC1) or meters (32FC1)
+            # ---- CPU-only work first (safe to run during a CUDA graph capture) ----
+            # Convert ROS image to numpy (millimetres 16UC1 or metres 32FC1).
             if msg.encoding == "16UC1":
                 depth_img = self.bridge.imgmsg_to_cv2(msg, "16UC1")
-                # Convert millimeters to meters
                 depth_img_float = depth_img.astype(np.float32) / 1000.0
             elif msg.encoding == "32FC1":
                 depth_img_float = self.bridge.imgmsg_to_cv2(msg, "32FC1")
@@ -115,101 +114,72 @@ class DepthMapCameraStrategy(CameraStrategy):
                 self.node.get_logger().warn(f"Unsupported depth encoding: {msg.encoding}, trying 32FC1")
                 depth_img_float = self.bridge.imgmsg_to_cv2(msg, "32FC1")
 
-            # Convert to torch tensor and move to GPU
-            depth_tensor = torch.from_numpy(depth_img_float).to(
-                device=self.tensor_args.device,
-                dtype=self.tensor_args.dtype
-            )
-
-            # Use static pose from config if available, otherwise query TF
-            if self.camera_pose_static is not None:
-                self.camera_pose = self.camera_pose_static
-            else:
+            # Resolve the camera pose as a plain CPU list; GPU conversion is deferred
+            # to the locked section below.
+            pose_list = None
+            if self.camera_pose_static is None:
                 try:
-                    # Lookup transform from the robot base frame to camera frame
                     t = self.tf_buffer.lookup_transform(
-                        self.base_frame,
-                        self._frame_id,
-                        rclpy.time.Time())
-
-                    # Extract translation
+                        self.base_frame, self._frame_id, rclpy.time.Time())
                     translation = t.transform.translation
                     position = [translation.x, translation.y, translation.z]
-
-                    # Extract rotation and convert to quaternion using scipy
                     rotation_msg = t.transform.rotation
-                    # ROS quaternion format: (x, y, z, w)
                     quat_ros = [rotation_msg.x, rotation_msg.y, rotation_msg.z, rotation_msg.w]
-
-                    # Convert to scipy Rotation
-                    rot = Rotation.from_quat(quat_ros)  # scipy expects [x, y, z, w]
-                    quat_scipy = rot.as_quat()  # Returns [x, y, z, w]
-
+                    quat_scipy = Rotation.from_quat(quat_ros).as_quat()  # [x, y, z, w]
                     # cuRobo expects [x, y, z, qw, qx, qy, qz]
-                    camera_pose = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
-
-                    self.camera_pose = Pose.from_list(camera_pose, device_cfg=self.tensor_args)
-
+                    pose_list = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
                 except TransformException as ex:
                     self.node.get_logger().warn(
                         f'Could not transform {self.base_frame} to {self._frame_id}: {ex}. Using identity pose.')
-                    # Fallback to identity pose
-                    self.camera_pose = Pose(
-                        position=self.tensor_args.to_device([0, 0, 0]),
-                        quaternion=self.tensor_args.to_device([1, 0, 0, 0])
-                    )
-            # v2 Mapper requires a leading camera dimension on every field and a
-            # paired rgb image. We have no colour for collision mapping, so a
-            # zero rgb buffer is passed. depth -> (1, H, W), rgb -> (1, H, W, 3),
-            # intrinsics -> (1, 3, 3). The camera pose keeps its (1, 3)/(1, 4)
-            # batch shape (the integrator views it as (num_cameras, ...)).
-            depth_b = depth_tensor.unsqueeze(0) if depth_tensor.ndim == 2 else depth_tensor
-            intrinsics_b = (
-                self.intrinsics.unsqueeze(0) if self.intrinsics.ndim == 2 else self.intrinsics
-            )
-            rgb_b = torch.zeros(
-                (depth_b.shape[0], depth_b.shape[1], depth_b.shape[2], 3),
-                dtype=torch.uint8,
-                device=self.tensor_args.device,
-            )
-            data_camera = CameraObservation(
-                depth_image=depth_b,
-                rgb_image=rgb_b,
-                intrinsics=intrinsics_b,
-                pose=self.camera_pose,
-            )
+                    pose_list = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
-            # v2: depth frames are integrated by the node's `Mapper`.
-            # `world_model.add_camera_frame(...)` / `process_camera_frames(...)` /
-            # `update_blox_hashes()` are gone — `mapper.integrate(obs)` does it all.
+            # ---- GPU section: EVERY CUDA op is under the lock ----
+            # depth->cuda, pose->cuda, rgb alloc AND mapper.integrate are all GPU
+            # ops. If curobo is capturing a CUDA graph (plan / MPC cold-start) it
+            # holds gpu_lock, so skip the WHOLE frame — issuing ANY of these ops
+            # mid-capture raises cudaErrorStreamCaptureUnsupported and poisons the
+            # process's CUDA context. (Previously only integrate() was guarded, so
+            # the depth->cuda copy above still raced the capture.)
             mapper = getattr(self.node, 'mapper', None)
-            gpu_lock = getattr(self.node, 'gpu_lock', None)
-            if mapper is not None:
-                # mapper.integrate() is a GPU op; if curobo is capturing a CUDA
-                # graph (plan / MPC cold-start) it holds gpu_lock. Skip this
-                # depth frame rather than invalidate the capture. Safe: ~5 fps,
-                # capture is brief, and refresh_perception_world re-reads the map
-                # right before each plan.
-                if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
-                    self.node.get_logger().debug(
-                        "depth frame skipped (GPU capture in progress)",
-                        throttle_duration_sec=2.0,
-                    )
-                else:
-                    try:
-                        mapper.integrate(data_camera)
-                        torch.cuda.synchronize()
-                    finally:
-                        if gpu_lock is not None:
-                            gpu_lock.release()
-            else:
+            if mapper is None:
                 self.node.get_logger().warn(
                     "No mapper on node — depth frame ignored. "
                     "Unified planner should expose `node.mapper` (curobo.perception.Mapper).",
-                    throttle_duration_sec=5.0,
-                )
+                    throttle_duration_sec=5.0)
+                return
+            gpu_lock = getattr(self.node, 'gpu_lock', None)
+            if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
+                self.node.get_logger().debug(
+                    "depth frame skipped (GPU capture in progress)",
+                    throttle_duration_sec=2.0)
+                return
+            try:
+                depth_tensor = torch.from_numpy(depth_img_float).to(
+                    device=self.tensor_args.device, dtype=self.tensor_args.dtype)
 
-            self.depth_map = depth_tensor
+                if self.camera_pose_static is not None:
+                    self.camera_pose = self.camera_pose_static
+                else:
+                    self.camera_pose = Pose.from_list(pose_list, device_cfg=self.tensor_args)
+
+                # v2 Mapper requires a leading camera dimension on every field and a
+                # paired rgb image (zero buffer — no colour for collision mapping).
+                depth_b = depth_tensor.unsqueeze(0) if depth_tensor.ndim == 2 else depth_tensor
+                intrinsics_b = (
+                    self.intrinsics.unsqueeze(0) if self.intrinsics.ndim == 2 else self.intrinsics)
+                rgb_b = torch.zeros(
+                    (depth_b.shape[0], depth_b.shape[1], depth_b.shape[2], 3),
+                    dtype=torch.uint8, device=self.tensor_args.device)
+                data_camera = CameraObservation(
+                    depth_image=depth_b, rgb_image=rgb_b,
+                    intrinsics=intrinsics_b, pose=self.camera_pose)
+
+                mapper.integrate(data_camera)
+                torch.cuda.synchronize()
+                self.depth_map = depth_tensor
+            finally:
+                if gpu_lock is not None:
+                    gpu_lock.release()
 
         except CvBridgeError as e:
             self.node.get_logger().error(f"CvBridge error: {e}")
