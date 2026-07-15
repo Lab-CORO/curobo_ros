@@ -63,7 +63,11 @@ class ReactiveController(TrajectoryPlanner):
         self.convergence_threshold = 0.01      # meters
         self.max_iterations = 1000
         # Refresh the perception ESDF every N steps (0 disables, 1 = every step).
-        self.perception_refresh_period = 20
+        # À 20 (~3s à 7Hz) le monde de collision du MPC était trop lent pour un
+        # obstacle dynamique (main) — le bras touchait avant la mise à jour. 2 ≈
+        # rythme caméra (5Hz), possible depuis que la voxelization est sur GPU
+        # (plus de fallback CPU ~10s). cf. debug 2026-07-15.
+        self.perception_refresh_period = 2
 
         # Latest scalar position error, written by step(), read by is_converged().
         self._last_position_error = float('inf')
@@ -153,12 +157,18 @@ class ReactiveController(TrajectoryPlanner):
     # ------------------------------------------------------------------
 
     def _set_target(self, raw) -> GoalToolPose:
-        """Store the target xyz (for FK error) and build the tool-pose goal."""
+        """Store the target xyz (for FK error) and build the tool-pose goal.
+
+        Passes ordered_tool_frames + num_goalset like the official cuRobo reactive
+        example so the goal buffer is shaped exactly as the solver expects.
+        """
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
         )
         return GoalToolPose.from_poses(
-            {self.solver.tool_frames[0]: Pose.from_list(list(raw))}
+            {self.solver.tool_frames[0]: Pose.from_list(list(raw))},
+            ordered_tool_frames=self.solver.tool_frames,
+            num_goalset=1,
         )
 
     def _compute_ee_position(self, current_state: JointState):
@@ -209,10 +219,6 @@ class ReactiveController(TrajectoryPlanner):
         self.start_state = start_state
 
         try:
-            # setup() → cold_start_solve captures the MPC CUDA graph. Hold the
-            # node's GPU lock so a concurrent depth integrate can't invalidate
-            # the capture. Only setup is locked — the servo loop below runs
-            # unlocked so depth integration resumes between steps.
             with self.node.gpu_lock:
                 setup_ok = self.setup(start_state, goal_request)
             if not setup_ok:
@@ -240,9 +246,6 @@ class ReactiveController(TrajectoryPlanner):
             self.node.get_logger().error(traceback.format_exc())
             return PlannerResult(success=False, message=f"Reactive setup error: {e}")
 
-    # ------------------------------------------------------------------
-    # Execution: the shared closed-loop control loop.
-    # ------------------------------------------------------------------
 
     def execute(self, robot_context, goal_handle=None) -> bool:
         if not self.is_goal_active or self.solver is None:
@@ -294,13 +297,19 @@ class ReactiveController(TrajectoryPlanner):
 
                 self._send_command(robot_context, action)
 
-                # Advance the solver state from its OWN prediction (position +
-                # velocity + acceleration). This is the cuRobo reactive-control
-                # pattern: it keeps dynamic continuity AND avoids racing the
-                # robot's asynchronous joint-state feedback (which otherwise lags
-                # and stalls the controller). The robot follows the streamed
-                # commands; the world/goal are still re-optimized every step.
-                current_state = self._state_from_action(action)
+                # Close the loop with the REAL robot position (a fast,
+                # non-blocking read of the joint_states subscriber's latest
+                # cached value — no wait, so no new lag). Purely trusting the
+                # solver's own predicted position (position-only, from
+                # _state_from_action) drifts from reality once a horizon takes
+                # real wall-clock time to execute (observed on hardware: MPC
+                # correcting toward an imagined position -> growing tracking
+                # error, unstable motion). Velocity/acceleration stay the
+                # solver's own prediction — the driver doesn't give reliable
+                # velocity feedback, and the MPC needs SOME dynamic-continuity
+                # estimate for warm-starting.
+                predicted_state = self._state_from_action(action)
+                current_state = self._close_state_loop(robot_context, predicted_state)
                 self._last_action = action
 
                 if goal_handle is not None and tstep % 5 == 0:
@@ -347,6 +356,8 @@ class ReactiveController(TrajectoryPlanner):
         )
         try:
             pos = action_state.position
+            if pos.dim() == 3:
+                pos = pos[:, -1, :]  # full-horizon action: report the last (current-target) point
             fb.joint_command.position = (pos[0] if pos.dim() > 1 else pos).cpu().tolist()
         except Exception:
             pass
@@ -361,11 +372,18 @@ class ReactiveController(TrajectoryPlanner):
     # ------------------------------------------------------------------
 
     def _read_state(self, robot_context) -> JointState:
-        """Initial solver state from the robot's joint positions (zero vel/acc)."""
+        """Initial solver state from the robot's joint positions.
+
+        Matches the official cuRobo reactive example: joint_names are labelled and
+        velocity/acceleration are explicitly zeroed so the solver's dynamic state
+        is well-defined at start (an unlabelled/vel-less state weakens tracking).
+        """
         actual_joint_pose = robot_context.get_joint_pose()
-        return JointState.from_position(
-            torch.tensor([actual_joint_pose], dtype=self._dtype, device=self._device)
-        )
+        pos = torch.tensor([actual_joint_pose], dtype=self._dtype, device=self._device)
+        js = JointState.from_position(pos, joint_names=self.solver.joint_names)
+        js.velocity = torch.zeros_like(pos)
+        js.acceleration = torch.zeros_like(pos)
+        return js
 
     @staticmethod
     def _row(t):
@@ -376,14 +394,58 @@ class ReactiveController(TrajectoryPlanner):
         return t if t.dim() > 1 else t.unsqueeze(0)
 
     def _state_from_action(self, action: JointState) -> JointState:
-        """Build the next solver state from a commanded action (pos+vel+acc)."""
-        state = JointState.from_position(self._row(action.position))
-        vel = self._row(getattr(action, 'velocity', None))
-        acc = self._row(getattr(action, 'acceleration', None))
+        """Build the next solver state from a commanded action (pos+vel+acc).
+
+        For a full-horizon action (position ``[1, horizon, dof]``, from MPC's
+        ``optimize_action_sequence``), only the LAST horizon point is used to
+        warm-start the next optimize call — matches cuRobo's own
+        reactive_control example's state-continuity pattern.
+        """
+        pos, vel, acc = action.position, getattr(action, 'velocity', None), getattr(action, 'acceleration', None)
+        if pos.dim() == 3:
+            pos = pos[:, -1, :]
+            vel = vel[:, -1, :] if vel is not None else None
+            acc = acc[:, -1, :] if acc is not None else None
+
+        state = JointState.from_position(self._row(pos))
+        vel = self._row(vel)
+        acc = self._row(acc)
         if vel is not None:
             state.velocity = vel
         if acc is not None:
             state.acceleration = acc
+        return state
+
+    def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
+        """Replace the predicted POSITION with the robot's real, latest joint
+        feedback; keep the solver's own PREDICTED velocity/acceleration.
+
+        ``robot_context.get_joint_pose()`` is a plain attribute read of the
+        value already cached by the async joint_states subscriber callback —
+        no wait, so no new lag. Without this, the MPC corrects toward a
+        purely-imagined position that drifts from where the arm actually is
+        once a horizon takes real wall-clock time to execute (observed on
+        hardware: growing tracking error, unstable motion).
+
+        Velocity is intentionally kept PREDICTED, not real, even though real
+        velocity IS available (dsr_hw_interface2.cpp reads actual_joint_velocity
+        from the same real-time struct as position — verified in source).
+        Feeding the REAL velocity back here was tried and made things worse:
+        the outgoing hardware safety clamp (JointSpeedStrategy) deliberately
+        throttles commanded velocity below what the solver just planned: real
+        velocity always lags. Reporting that throttled reality back as the
+        solver's own state told it "you're going much slower than you
+        decided", which the warm-started optimizer (only 25 iterations) can't
+        reconcile each cycle without oscillating/diverging. The safety clamp
+        legitimately uses real velocity (JointSpeedStrategy._clamp_velocities)
+        — that's a downstream actuation limit, not the planner's own model of
+        its trajectory, and the two must stay decoupled.
+        """
+        real_pose = robot_context.get_joint_pose()
+        pos = torch.tensor([real_pose], dtype=self._dtype, device=self._device)
+        state = JointState.from_position(pos, joint_names=self.solver.joint_names)
+        state.velocity = predicted_state.velocity
+        state.acceleration = predicted_state.acceleration
         return state
 
     def _init_robot_at_start(self, robot_context, start_state: JointState):
@@ -401,31 +463,34 @@ class ReactiveController(TrajectoryPlanner):
         )
 
     def _send_command(self, robot_context, action_state: JointState):
-        """Push a single control action (position/velocity/acceleration) to the robot."""
-        position = (
-            action_state.position[0].cpu().tolist()
-            if action_state.position.dim() > 1
-            else action_state.position.cpu().tolist()
-        )
+        """Push a control action to the robot.
 
-        if action_state.velocity is not None:
-            velocity = (
-                action_state.velocity[0].cpu().tolist()
-                if action_state.velocity.dim() > 1
-                else action_state.velocity.cpu().tolist()
-            )
-        else:
-            velocity = [0.0] * len(position)
+        Two shapes are supported:
+          - Single point: position ``[dof]`` or ``[1, dof]`` -> one
+            JointTrajectory point (open-loop planners, RetargetController).
+          - Full horizon: position ``[1, horizon, dof]`` (from MPC's
+            optimize_action_sequence) -> ALL horizon points are streamed as a
+            multi-point JointTrajectory. optimize_action_sequence re-optimizes
+            fully every call (slow, ~1s on this hardware); sending only a
+            single point per call left the robot idle between calls then
+            jumping to a very different velocity — a discontinuity that
+            tripped the Doosan's acceleration limit. Streaming the whole
+            horizon gives it a smooth sequence to execute in between.
+        """
+        pos_t, vel_t, acc_t = action_state.position, action_state.velocity, action_state.acceleration
 
-        if action_state.acceleration is not None:
-            acceleration = (
-                action_state.acceleration[0].cpu().tolist()
-                if action_state.acceleration.dim() > 1
-                else action_state.acceleration.cpu().tolist()
-            )
+        if pos_t.dim() == 3:
+            position = pos_t[0].cpu().tolist()
+            velocity = vel_t[0].cpu().tolist() if vel_t is not None else [[0.0] * pos_t.shape[-1]] * pos_t.shape[1]
+            acceleration = acc_t[0].cpu().tolist() if acc_t is not None else [[0.0] * pos_t.shape[-1]] * pos_t.shape[1]
         else:
-            acceleration = [0.0] * len(position)
+            p = pos_t[0] if pos_t.dim() > 1 else pos_t
+            position = [p.cpu().tolist()]
+            v = vel_t[0] if (vel_t is not None and vel_t.dim() > 1) else vel_t
+            velocity = [v.cpu().tolist() if v is not None else [0.0] * len(position[0])]
+            a = acc_t[0] if (acc_t is not None and acc_t.dim() > 1) else acc_t
+            acceleration = [a.cpu().tolist() if a is not None else [0.0] * len(position[0])]
 
         joint_names = robot_context.get_joint_name()
-        robot_context.set_command(joint_names, [velocity], [acceleration], [position])
+        robot_context.set_command(joint_names, velocity, acceleration, position)
         robot_context.send_trajectrory()

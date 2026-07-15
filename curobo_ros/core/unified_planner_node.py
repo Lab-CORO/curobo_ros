@@ -89,6 +89,29 @@ class UnifiedPlannerNode(Node):
         # Reactive (MPC) solver build params — read by MPCController.build_solver().
         self.declare_parameter('mpc_step_dt', 0.03)
         self.declare_parameter('mpc_horizon_steps', 30)
+        # LBFGS iterations per optimize call. cuRobo's defaults (200 warm-start,
+        # 300 cold-start) are tuned for the offline getting-started demo, not
+        # real-time control — they made optimize_action_sequence() take ~1-1.3s
+        # per call on this hardware (vs. optimization_dt=0.03s), so the arm went
+        # long stretches uncorrected then jumped, causing overshoot/oscillation.
+        # NOTE: cuRobo's LBFGS requires num_iters to be a MULTIPLE of its inner
+        # loop size (25) — e.g. 25/50/75/100 are valid, 10 raises ValueError.
+        # Isolated test (franka.yml, no real hardware): 25/100 -> ~18ms/call
+        # (vs ~74ms/call at 200/300) and converges FASTER in wall-clock terms
+        # despite fewer iterations per call (more, cheaper corrections beat
+        # fewer, expensive ones for a receding-horizon controller).
+        self.declare_parameter('mpc_warm_start_iters', 25)
+        self.declare_parameter('mpc_cold_start_iters', 100)
+        # MPC solver selection. 'lbfgs_bspline' (défaut) = comportement actuel.
+        # 'mppi_acceleration' = recette validée sur m1013 réel (MPPI + espace
+        # ACCELERATION), pour les postures où L-BFGS+B-spline se fige.
+        # ⚠️ mpc_warm_start_iters/mpc_cold_start_iters ci-dessus (25/100) sont
+        # tunés pour L-BFGS. En 'mppi_acceleration', passer aussi
+        # mpc_warm_start_iters:=5 mpc_cold_start_iters:=10 (valeurs validées) —
+        # sinon MPPI est non tuné (lent, ne converge pas dans la fenêtre du pont).
+        self.declare_parameter('mpc_solver_type', 'lbfgs_bspline')
+        self.declare_parameter('mpc_mppi_num_particles', 600)
+        self.declare_parameter('mpc_vel_feedback_alpha', 0.5)
         # Reactive (Retarget/teleop) build params — read by RetargetController.
         self.declare_parameter('retarget_position_weight', 1.0)
         self.declare_parameter('retarget_orientation_weight', 1.0)
@@ -100,6 +123,10 @@ class UnifiedPlannerNode(Node):
         # Single shared context for every solver (robot + obstacles + scene +
         # collision cache). The MPC solver is built lazily from this same context.
         self.config_wrapper_motion = ConfigWrapperMotion(self, self.robot_context)
+
+        # Adopt the canonical joint order/DOF into the RobotContext descriptor now
+        # that the kinematics exist (RobotContext is built before the kin model).
+        self.robot_context.bind_kinematics(self.config_wrapper_motion.kin_model)
 
         # Shared Scene for all planners — references ObstacleManager's Scene.
         # All planners see the same obstacles after update_world(scene).
@@ -131,6 +158,11 @@ class UnifiedPlannerNode(Node):
         initial_planner = self.get_parameter('planner_type').get_parameter_value().string_value
         self._warmup_initial_planner(initial_planner)
         self.planner_manager.set_current_planner(initial_planner)
+
+        # Pre-warm the voxel-grid primitive rasterization path while the executor
+        # is not yet spinning (no service can be served until __init__ returns),
+        # so the first get_voxel_grid call never pays kernel compilation.
+        self.config_wrapper_motion.obstacle_manager.prewarm_voxel_rasterization(self)
 
         self.generate_trajectory_srv = self.create_service(
             TrajectoryGeneration,
@@ -244,16 +276,16 @@ class UnifiedPlannerNode(Node):
             self.get_logger().info("  -> MotionPlanner already initialized (cache)")
 
     def _ensure_ground_plane(self):
-        """Ensure a ground-plane cuboid exists on the shared Scene (once)."""
-        obs_mgr = self.config_wrapper_motion.obstacle_manager
-        if not any(c.name == "ground" for c in obs_mgr.get_scene().cuboid):
-            obs_mgr._append('cuboid', Cuboid(
-                name="ground",
-                pose=[0, 0, -0.1, 1, 0, 0, 0],
-                dims=[3.0, 3.0, 0.01],
-                color=[0.5, 0.5, 0.5, 1.0],
-            ))
-            self.get_logger().info("  -> Added ground plane to shared Scene")
+        """No-op : le sol est le cuboid `floor` de leeloo_world.yaml (z=-0.8).
+
+        Avant, cette méthode ajoutait au runtime un cuboid `ground` à z=-0.1.
+        Ce 4ᵉ cuboid était ajouté APRÈS la pré-allocation de la SceneCollision
+        de voxelization (dimensionnée sur les 3 cuboids du world.yaml), ce qui
+        débordait son cache à chaque perception refresh → fallback CPU (~10s)
+        qui gelait la boucle MPC. Supprimé : la base du robot est à ~80cm au-
+        dessus du floor, qui suffit donc comme sol de collision.
+        """
+        return
 
     def _warmup_reactive(self, key: str):
         """Build a reactive controller's solver on demand from the shared context.
@@ -352,7 +384,12 @@ class UnifiedPlannerNode(Node):
             self.refresh_perception_world()
 
             self.get_logger().info(f"Planning with {planner.get_planner_name()}")
-            result = planner.plan(start_state, request, config, self.robot_context)
+            # plan() may (re)capture the MotionGen CUDA graph — hold the lock so a
+            # concurrent depth integrate can't invalidate the capture (mirrors the
+            # execute-action path). Without this, the camera callback's
+            # mapper.integrate() races the capture -> cudaErrorStreamCaptureInvalidated.
+            with self.gpu_lock:
+                result = planner.plan(start_state, request, config, self.robot_context)
 
             response.success = result.success
             response.message = result.message
