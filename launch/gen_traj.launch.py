@@ -55,6 +55,21 @@ def launch_setup(context, *args, **kwargs):
     # Récupérer les valeurs résolues des arguments
     robot_config_file = LaunchConfiguration('robot_config_file').perform(context)
     urdf_path_arg = LaunchConfiguration('urdf_path').perform(context)
+    robot_name = LaunchConfiguration('robot').perform(context)
+
+    # Si un robot (descripteur) est fourni et que robot_config_file n'a pas été
+    # surchargé explicitement, dériver le YAML curobo (+ base_link) du descripteur.
+    descriptor_base_link = None
+    if robot_name:
+        try:
+            from curobo_ros.robot.robot_description import load_robot_description
+            _desc = load_robot_description(robot_name)
+            descriptor_base_link = _desc.base_link
+            if not robot_config_file:
+                robot_config_file = _desc.curobo_config_path
+            print(f"[gen_traj.launch] robot='{robot_name}' -> config {robot_config_file}")
+        except Exception as e:
+            print(f"[gen_traj.launch] Warning: could not load descriptor '{robot_name}': {e}")
 
     # Chemin par défaut pour urdf_path
     default_urdf_path = os.path.join(
@@ -72,8 +87,8 @@ def launch_setup(context, *args, **kwargs):
         urdf_path_resolved = urdf_path_arg
         print(f"[gen_traj.launch] Using provided urdf_path: {urdf_path_resolved}")
 
-    # Extraire le base_link depuis le fichier de configuration
-    default_base_link = "base_0"
+    # base_link : descripteur en priorité, sinon extrait du YAML curobo.
+    default_base_link = descriptor_base_link or "base_0"
     base_link = get_base_link_from_config(robot_config_file, default_base_link)
     print(f"[gen_traj.launch] Using base_link: {base_link}")
 
@@ -133,6 +148,7 @@ def launch_setup(context, *args, **kwargs):
             executable='curobo_trajectory_planner',
             output='screen',
             parameters=[{
+                'robot': robot_name,
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
                 'cameras_config_file': LaunchConfiguration('cameras_config_file'),
                 'base_link': base_link,
@@ -225,11 +241,18 @@ def generate_launch_description():
         default_value='',
         description='Chemin vers le fichier URDF du robot (si vide, chargé depuis robot_config_file)'
     )
-    # Déclaration de l'argument robot_config_file
+    # Sélecteur de robot (descripteur robots/<robot>.yaml). Pilote le YAML curobo,
+    # le base_link et la stratégie par défaut.
+    declare_robot = DeclareLaunchArgument(
+        'robot',
+        default_value='doosan_m1013',
+        description='Nom du descripteur robot (robots/<robot>.yaml) ou chemin'
+    )
+    # robot_config_file : override explicite du YAML curobo (vide = dérivé du descripteur)
     declare_robot_config_file = DeclareLaunchArgument(
         'robot_config_file',
-        default_value=default_robot_config,
-        description='Chemin vers le fichier de configuration YAML du robot'
+        default_value='',
+        description='Override du YAML curobo (si vide, dérivé du descripteur robot)'
     )
     declare_camera_config_file = DeclareLaunchArgument(
         'cameras_config_file',
@@ -257,6 +280,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         # Définition des arguments de lancement
+        declare_robot,
         declare_urdf_path,
         declare_robot_config_file,
         declare_camera_config_file,
