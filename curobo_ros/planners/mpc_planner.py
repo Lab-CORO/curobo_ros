@@ -8,6 +8,10 @@ import time
 from typing import Any
 
 import torch
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
+from visualization_msgs.msg import Marker
+
 from curobo.types import JointState, GoalToolPose, Pose
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 from curobo.model_predictive_control import (
@@ -172,6 +176,10 @@ class MPCController(ReactiveController):
         self._use_mppi_acceleration = (solver_type == 'mppi_acceleration')
         self._vel_feedback_alpha = node.get_parameter('mpc_vel_feedback_alpha').get_parameter_value().double_value
         self._step_dt = step_dt  # For debug CSV (point-to-point interval in the loop)
+        # Fixed-interval command pacing (s); 0.0 = off. Read by the servo loop
+        # (ReactiveController.execute) to hold each command window for its full
+        # execution duration before re-solving. See mpc_command_interval param.
+        self._command_interval = node.get_parameter('mpc_command_interval').get_parameter_value().double_value
         if self._use_mppi_acceleration:
             num_particles = node.get_parameter('mpc_mppi_num_particles').get_parameter_value().integer_value
             # NO num_control_points here: it writes n_knots (B-spline concept).
@@ -180,7 +188,7 @@ class MPCController(ReactiveController):
                 optimizer_configs=[_build_mppi_optimizer_config(warm_iters, num_particles)],
                 transition_model=_build_mppi_transition_model(step_dt, horizon),
                 squared_l2_regularization_weight=_MPPI_CSPACE_REGULARIZATION,
-                interpolation_steps=4,
+                interpolation_steps=8,
                 **base_kwargs,
             )
         else:
@@ -191,6 +199,11 @@ class MPCController(ReactiveController):
         solver = ModelPredictiveControl(cfg)
 
         node.mpc = solver
+        # Predicted end-effector path (current MPC horizon), for RViz (nav_msgs/Path
+        # renders natively, no custom plugin needed).
+        self._path_pub = node.create_publisher(Path, 'mpc_predicted_path', 10)
+        self._goal_marker_pub = node.create_publisher(Marker, 'mpc_goal_marker', 10)
+        self._path_frame = cw.base_link
         node.get_logger().info(
             f"MPC solver built: solver_type={solver_type}, optimization_dt={step_dt}s, "
             f"horizon={horizon}, warm_start_iters={warm_iters}, cold_start_iters={cold_iters}, "
@@ -210,6 +223,7 @@ class MPCController(ReactiveController):
         self.solver.setup(start_state)
         applied = self._apply_goal(goal, raw, start_state)
         self.goal = goal
+        self._publish_goal_marker(raw)
 
         if self._debug_enabled():
             ee_pos, ee_quat = None, None
@@ -286,6 +300,45 @@ class MPCController(ReactiveController):
             + [f"{deg(v):.2f}" for v in vfirst] + [f"{deg(v):.2f}" for v in vlast])
         self._csv_file.flush()
 
+    def _publish_predicted_path(self, result):
+        """Publish the MPC's full predicted end-effector path for RViz.
+
+        ``result.action_sequence`` (used elsewhere to command the robot) is
+        NOT the full optimized horizon: cuRobo's TrajectoryExecutionManager
+        trims it to only ``interpolation_steps * 2`` points — the near-term
+        slice meant to be executed before the next re-plan (see
+        ``get_command_sequence()``). The full horizon the optimizer actually
+        reasoned over (collision costs, goal convergence, etc.) is
+        ``result.robot_state_sequence`` instead, already FK'd (untrimmed).
+        """
+        if getattr(self, '_path_pub', None) is None:
+            return
+        try:
+            state_seq = getattr(result, 'robot_state_sequence', None)
+            if state_seq is not None and state_seq.tool_poses is not None:
+                ee_pos = state_seq.tool_poses.position.reshape(-1, 3).cpu().tolist()
+            else:
+                # Fallback: FK on the trimmed action_sequence (partial horizon).
+                seq = result.action_sequence
+                js = JointState.from_position(seq.position[0], joint_names=self.solver.joint_names)
+                fk = getattr(self.solver, 'compute_kinematics', None) or self.solver.kinematics.compute_kinematics
+                ee_pos = fk(js).tool_poses.position.reshape(-1, 3).cpu().tolist()
+        except Exception as e:
+            self.node.get_logger().warn(f"[MPC DIAG] predicted path FK failed: {e}", throttle_duration_sec=5.0)
+            return
+        path = Path()
+        path.header.frame_id = self._path_frame
+        path.header.stamp = self.node.get_clock().now().to_msg()
+        for x, y, z in ee_pos:
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = z
+            pose.pose.orientation.w = 1.0
+            path.poses.append(pose)
+        self._path_pub.publish(path)
+
     def step(self, current_state: JointState) -> JointState:
 
         if getattr(self, '_use_mppi_acceleration', False):
@@ -316,6 +369,7 @@ class MPCController(ReactiveController):
         self._last_position_error = self._fk_position_error(current_state)
         if seq is not None and seq.position.shape[1] > 0:
             self._csv_write(seq, solve_ms)
+            self._publish_predicted_path(result)
 
         if self._debug_enabled():
             try:
@@ -338,7 +392,33 @@ class MPCController(ReactiveController):
         goal = self._set_target(raw_goal)
         applied = self._apply_goal(goal, raw_goal)
         self.goal = goal
+        self._publish_goal_marker(raw_goal)
         return applied
+
+    def _publish_goal_marker(self, raw):
+        """Publish a sphere Marker at the current Cartesian goal, for RViz."""
+        if getattr(self, '_goal_marker_pub', None) is None:
+            return
+        marker = Marker()
+        marker.header.frame_id = self._path_frame
+        marker.header.stamp = self.node.get_clock().now().to_msg()
+        marker.ns = "mpc_goal"
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(raw[0])
+        marker.pose.position.y = float(raw[1])
+        marker.pose.position.z = float(raw[2])
+        marker.pose.orientation.w = float(raw[3])
+        marker.pose.orientation.x = float(raw[4])
+        marker.pose.orientation.y = float(raw[5])
+        marker.pose.orientation.z = float(raw[6])
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.03
+        marker.color.a = 1.0
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        self._goal_marker_pub.publish(marker)
 
     def update_world(self, scene) -> None:
         """Reload the shared Scene into the MPC's collision checker.

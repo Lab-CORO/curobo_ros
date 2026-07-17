@@ -27,6 +27,28 @@ class EmulatorStrategy(JointCommandStrategy):
 
         node.get_logger().info(f"✅ Emulator strategy initialized - Publishing to {joint_states_topic}")
 
+    def _apply_immediate(self, index):
+        '''Publish a single point of the current command buffer right away
+        (no playback thread) and mark the buffer as fully consumed.'''
+        self.stop_execution.set()  # stop any lingering playback thread
+        positions = self.position_command[index]
+        velocities = (
+            self.vel_command[index] if self.vel_command
+            else [0.0] * len(positions)
+        )
+        self.current_joint_positions = positions
+
+        joint_state_msg = JointState()
+        joint_state_msg.header.stamp = self.node.get_clock().now().to_msg()
+        joint_state_msg.name = self.joint_names
+        joint_state_msg.position = positions
+        joint_state_msg.velocity = velocities
+        joint_state_msg.effort = []
+        self.pub_joint_states.publish(joint_state_msg)
+
+        self.robot_state = RobotState.RUNNING
+        self.trajectory_progression = 1.0
+
     def send_trajectrory(self):
         '''
         Start simulating trajectory execution by publishing joint states progressively.
@@ -41,24 +63,22 @@ class EmulatorStrategy(JointCommandStrategy):
         # each streamed command costs ~dt + thread spawn/join, capping reactive
         # control at a few Hz. With it, the control loop runs at its native rate.
         if len(self.position_command) == 1:
-            self.stop_execution.set()  # stop any lingering playback thread
-            positions = self.position_command[0]
-            velocities = (
-                self.vel_command[0] if self.vel_command
-                else [0.0] * len(positions)
-            )
-            self.current_joint_positions = positions
+            self._apply_immediate(0)
+            return
 
-            joint_state_msg = JointState()
-            joint_state_msg.header.stamp = self.node.get_clock().now().to_msg()
-            joint_state_msg.name = self.joint_names
-            joint_state_msg.position = positions
-            joint_state_msg.velocity = velocities
-            joint_state_msg.effort = []
-            self.pub_joint_states.publish(joint_state_msg)
-
-            self.robot_state = RobotState.RUNNING
-            self.trajectory_progression = 1.0
+        # Reactive controllers (MPC) also stream the FULL predicted horizon on
+        # every step (~every 90ms), not a single point — see reactive_controller
+        # ._send_command. If the previous multi-point playback thread is still
+        # running, we're being re-invoked far faster than that thread can play
+        # out (dt=0.02s/point * horizon), a signature open-loop callers never
+        # produce (they call send_trajectrory() once and wait for progression
+        # to reach 1.0). In that case, threading through the new buffer would
+        # just get killed again next step, leaving current_joint_positions
+        # (read back into the MPC's state loop) stuck near the start of each
+        # horizon. Apply the horizon's last (current-target) point immediately
+        # instead — same fast path as the single-point case.
+        if self.execution_thread is not None and self.execution_thread.is_alive():
+            self._apply_immediate(-1)
             return
 
         # Stop any previous execution

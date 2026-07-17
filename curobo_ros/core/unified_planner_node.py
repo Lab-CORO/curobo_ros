@@ -110,8 +110,16 @@ class UnifiedPlannerNode(Node):
         # mpc_warm_start_iters:=5 mpc_cold_start_iters:=10 (valeurs validées) —
         # sinon MPPI est non tuné (lent, ne converge pas dans la fenêtre du pont).
         self.declare_parameter('mpc_solver_type', 'lbfgs_bspline')
-        self.declare_parameter('mpc_mppi_num_particles', 600)
-        self.declare_parameter('mpc_vel_feedback_alpha', 0.5)
+        self.declare_parameter('mpc_mppi_num_particles', 400)
+        self.declare_parameter('mpc_vel_feedback_alpha', 1.0)
+        # Fixed-interval command pacing (seconds). 0.0 = off (re-solve/re-send as
+        # fast as the solve allows, ~70ms — replaces the previous window before the
+        # bridge finishes it). >0 = hold each command window for this long before
+        # re-solving/re-sending, and read the real robot state only AFTER it has
+        # executed (fresh + velocity-consistent). Set to the window duration
+        # (interpolation_steps*2 * mpc_step_dt = 8*0.03 = 0.24) to fully execute
+        # each window. cf. debug 2026-07-16.
+        self.declare_parameter('mpc_command_interval', 0.24)
         # Reactive (Retarget/teleop) build params — read by RetargetController.
         self.declare_parameter('retarget_position_weight', 1.0)
         self.declare_parameter('retarget_orientation_weight', 1.0)

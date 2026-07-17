@@ -29,6 +29,7 @@ switch then works for it, and it automatically shares the node's single context
 (robot, obstacles, scene, collision cache).
 """
 
+import threading
 import time
 import traceback
 from abc import abstractmethod
@@ -36,6 +37,7 @@ from typing import Any, Optional
 
 import torch
 from curobo.types import JointState, Pose, GoalToolPose
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
 from curobo_msgs.action import SendTrajectory
@@ -80,6 +82,22 @@ class ReactiveController(TrajectoryPlanner):
         self._last_action = None
         # Wall-clock of the last status log (throttled, rate-independent).
         self._last_log_time = 0.0
+
+        # Fixed-interval command pacing (used only when a subclass sets
+        # self._command_interval > 0, e.g. MPCController via the
+        # mpc_command_interval ROS param). Producer/consumer split: the
+        # execute() loop is the producer (solves continuously, never blocks on
+        # sending); a per-goal timer is the consumer (sends the latest action
+        # at a fixed cadence, or warns and sends nothing if none is fresh
+        # since the last tick). Only the producer ever calls step() (CUDA),
+        # so the timer's callback group only needs to prevent a slow SEND from
+        # overlapping the next tick — no GPU-concurrency concern. cf. debug
+        # 2026-07-17.
+        self._timer_cb_group = None
+        self._pending_lock = threading.Lock()
+        self._pending_action = None
+        self._pending_action_fresh = False
+        self._paced_send_error = False
 
         # Device/dtype for building tensors on the hot path.
         self._device = getattr(config_wrapper, '_device', torch.device('cuda'))
@@ -248,12 +266,25 @@ class ReactiveController(TrajectoryPlanner):
 
 
     def execute(self, robot_context, goal_handle=None) -> bool:
+        """Dispatch to the paced (producer/consumer) or immediate servo loop.
+
+        Paced mode (self._command_interval > 0, e.g. MPCController via the
+        mpc_command_interval ROS param) decouples solve time from send
+        cadence — see _execute_paced. Every other caller (interval 0, the
+        default) gets the original behavior, untouched, via _execute_immediate.
+        """
         if not self.is_goal_active or self.solver is None:
             self.node.get_logger().error(
                 f"{self.get_planner_name()} not initialized. Call plan() first."
             )
             return False
 
+        interval = getattr(self, '_command_interval', 0.0)
+        if interval > 0.0:
+            return self._execute_paced(robot_context, goal_handle, interval)
+        return self._execute_immediate(robot_context, goal_handle)
+
+    def _execute_immediate(self, robot_context, goal_handle=None) -> bool:
         try:
             tstep = 0
             self._step_times = []
@@ -342,6 +373,131 @@ class ReactiveController(TrajectoryPlanner):
             self.node.get_logger().error(traceback.format_exc())
             robot_context.stop_robot()
             return False
+
+    def _execute_paced(self, robot_context, goal_handle, interval: float) -> bool:
+        """Producer/consumer servo loop: this loop (producer) solves as fast as
+        it can and deposits the latest action under a lock, never blocking on
+        sending; a per-goal timer (consumer) sends the latest action at a
+        fixed cadence, or warns and sends nothing if none is fresh since the
+        last tick (no resending stale data). Only this loop calls step()
+        (CUDA) — the timer only reads a pointer and sends, so it never
+        contends for the GPU with a slow/cold-start solve. cf. debug 2026-07-17.
+        """
+        try:
+            tstep = 0
+            self._step_times = []
+            self._last_action = None
+            self._last_log_time = 0.0
+            self._pending_action = None
+            self._pending_action_fresh = False
+            self._paced_send_error = False
+            self.node.get_logger().info(
+                f"Starting {self.get_planner_name()} servo loop (paced, interval={interval}s)"
+            )
+
+            current_state = self._read_state(robot_context)
+
+            if self._timer_cb_group is None:
+                self._timer_cb_group = MutuallyExclusiveCallbackGroup()
+            timer = self.node.create_timer(
+                interval, lambda: self._on_send_tick(robot_context, goal_handle),
+                callback_group=self._timer_cb_group,
+            )
+
+            try:
+                while self.is_goal_active:
+                    if goal_handle is not None and goal_handle.is_cancel_requested:
+                        self.node.get_logger().info(f"{self.get_planner_name()} cancel requested")
+                        break
+                    if goal_handle is None and tstep >= self.max_iterations:
+                        break
+                    if self._paced_send_error:
+                        break
+
+                    if (self.perception_refresh_period > 0
+                            and tstep % self.perception_refresh_period == 0
+                            and hasattr(self.node, 'refresh_perception_world')):
+                        self.node.refresh_perception_world()
+
+                    if self.latest_goal is not None:
+                        raw = self.latest_goal
+                        self.latest_goal = None
+                        self.apply_live_goal(raw)
+
+                    st_time = time.time()
+                    action = self.step(current_state)
+                    if tstep > 5:
+                        self._step_times.append(time.time() - st_time)
+
+                    with self._pending_lock:
+                        self._pending_action = action
+                        self._pending_action_fresh = True
+
+                    predicted_state = self._state_from_action(action)
+                    current_state = self._close_state_loop(robot_context, predicted_state)
+                    self._last_action = action
+
+                    now = time.time()
+                    if now - self._last_log_time > 1.0:
+                        self._last_log_time = now
+                        self.node.get_logger().info(
+                            f"{self.get_planner_name()}: error="
+                            f"{self.get_position_error():.4f}m on_target={self.is_on_target()}"
+                        )
+
+                    tstep += 1
+            finally:
+                self.node.destroy_timer(timer)
+
+            robot_context.stop_robot()
+
+            if self._step_times:
+                avg_time = sum(self._step_times) / len(self._step_times)
+                self.node.get_logger().info(
+                    f"{self.get_planner_name()} stopped: {tstep} steps, "
+                    f"avg time={avg_time * 1000:.1f}ms/step"
+                )
+
+            return not self._paced_send_error
+
+        except Exception as e:
+            self.node.get_logger().error(f"{self.get_planner_name()} execution error: {e}")
+            self.node.get_logger().error(traceback.format_exc())
+            robot_context.stop_robot()
+            return False
+
+    def _on_send_tick(self, robot_context, goal_handle):
+        """Consumer: send the latest produced action if fresh, else warn.
+
+        Never calls step()/CUDA — only reads the pending slot and sends. Any
+        exception here is caught (never let it escape an rclpy timer callback)
+        and signaled to the producer loop via _paced_send_error, which checks
+        it every iteration and stops cleanly (mirrors the immediate loop's
+        except-block behavior: stop_robot() + return False).
+        """
+        try:
+            with self._pending_lock:
+                if self._pending_action_fresh:
+                    action = self._pending_action
+                    self._pending_action_fresh = False
+                else:
+                    action = None
+
+            if action is None:
+                self.node.get_logger().warn(
+                    f"{self.get_planner_name()}: command tick out of time — nothing sent",
+                    throttle_duration_sec=1.0,
+                )
+                return
+
+            self._send_command(robot_context, action)
+            if goal_handle is not None:
+                self._publish_feedback(goal_handle, action)
+
+        except Exception as e:
+            self.node.get_logger().error(f"{self.get_planner_name()} send-tick error: {e}")
+            self.node.get_logger().error(traceback.format_exc())
+            self._paced_send_error = True
 
     def _publish_feedback(self, goal_handle, action_state):
         """Publish the reactive status through the action feedback (no status topic)."""
