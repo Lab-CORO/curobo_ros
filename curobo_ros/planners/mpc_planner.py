@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 
+import copy
 import csv
 import math
 import os
@@ -12,14 +13,18 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker
 
+from curobo_msgs.msg import MpcCosts
+from curobo.content import get_task_configs_path
 from curobo.types import JointState, GoalToolPose, Pose
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 from curobo.model_predictive_control import (
     ModelPredictiveControl,
     ModelPredictiveControlCfg,
 )
+from curobo._src.util.config_io import resolve_config, join_path
 
 from .reactive_controller import ReactiveController
+from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 
 
 # --- MPPI recipe + ACCELERATION control space ------
@@ -81,7 +86,7 @@ def _build_mppi_optimizer_config(num_iters: int, num_particles: int = 800) -> di
                     "cspace_non_terminal_weight_factor": 0.05,
                 },
                 "tool_pose_cfg": {
-                    "use_lie_group": False,
+                    "use_lie_group": True,
                     "weight": [5000.0, 2000.0],
                     "_terminal_pose_convergence_tolerance": [0.0, 0.0],
                 },
@@ -138,6 +143,31 @@ def _build_mppi_optimizer_config(num_iters: int, num_particles: int = 800) -> di
     }
 
 
+def _build_metrics_rollout_cfg(cost_cfg_source: dict) -> dict:
+    """metrics_base.yml (the default metrics_rollout) has NO cost_cfg — only
+    constraint_cfg + convergence_cfg — so get_current_metrics() never exposes
+    weighted COST magnitudes, only constraint violations. Mirror the ACTIVE
+    branch's tool_pose_cfg/cspace_cfg into a copy of metrics_base.yml's own
+    cost_cfg so the metrics rollout (fixed batch size, no cuda-graph rebatch)
+    computes them too, safe to read via get_current_metrics() every solve.
+
+    CRASH-SAFETY (cf. debug 2026-07-20): a prior version instead called
+    compute_metrics_from_action() on the OPTIMIZATION rollout (use_cuda_graph=True,
+    shared with the optimizer) to get these same magnitudes — its rebatch
+    (num_particles -> 1) under a captured graph triggered a device-side assert
+    that corrupted the whole CUDA context. This metrics-rollout approach avoids
+    that entirely: validated in sandbox with use_cuda_graph=True, identical cost
+    values to the removed dangerous path, zero CUDA errors."""
+    metrics_cfg = copy.deepcopy(
+        resolve_config(join_path(get_task_configs_path(), "metrics_base.yml"))
+    )
+    metrics_cfg["rollout"]["cost_cfg"] = {
+        "tool_pose_cfg": copy.deepcopy(cost_cfg_source["tool_pose_cfg"]),
+        "cspace_cfg": copy.deepcopy(cost_cfg_source["cspace_cfg"]),
+    }
+    return metrics_cfg
+
+
 class MPCController(ReactiveController):
     """Closed-loop MPC built on cuRobo ``ModelPredictiveControl`` (v2)."""
 
@@ -161,11 +191,17 @@ class MPCController(ReactiveController):
         # Common kwargs for both branches. The REAL production collision scene
         # (obstacle_manager) must be preserved — do not copy the scene_model=None
         # from the standalone script.
+        #
+        # Built WITHOUT the perception voxel layer on purpose: handing a live
+        # ESDF layer to the constructor makes cuRobo alias the solver's collision
+        # buffer onto our tensor, and the first update_world then clears it to
+        # "solid everywhere". collision_cache pre-allocates the voxel storage
+        # instead; update_world fills it by copy. See primitives_only_scene().
         base_kwargs = dict(
             robot=cw.robot_config_file,
-            scene_model=cw.obstacle_manager.get_scene(),
+            scene_model=cw.obstacle_manager.primitives_only_scene(),
             optimization_dt=step_dt,
-            use_cuda_graph=True,
+            use_cuda_graph=resolve_use_cuda_graph(node),
             self_collision_check=True,
             collision_cache=cw.collision_cache,
             store_debug=False,
@@ -182,18 +218,24 @@ class MPCController(ReactiveController):
         self._command_interval = node.get_parameter('mpc_command_interval').get_parameter_value().double_value
         if self._use_mppi_acceleration:
             num_particles = node.get_parameter('mpc_mppi_num_particles').get_parameter_value().integer_value
+            mppi_optimizer_cfg = _build_mppi_optimizer_config(warm_iters, num_particles)
             # NO num_control_points here: it writes n_knots (B-spline concept).
             # The horizon lives in the transition_model dict we provide.
             cfg = ModelPredictiveControlCfg.create(
-                optimizer_configs=[_build_mppi_optimizer_config(warm_iters, num_particles)],
+                optimizer_configs=[mppi_optimizer_cfg],
                 transition_model=_build_mppi_transition_model(step_dt, horizon),
                 squared_l2_regularization_weight=_MPPI_CSPACE_REGULARIZATION,
                 interpolation_steps=8,
+                metrics_rollout=_build_metrics_rollout_cfg(mppi_optimizer_cfg["rollout"]["cost_cfg"]),
                 **base_kwargs,
             )
         else:
+            lbfgs_cost_cfg = resolve_config(
+                join_path(get_task_configs_path(), "mpc/lbfgs_mpc.yml")
+            )["rollout"]["cost_cfg"]
             cfg = ModelPredictiveControlCfg.create(
                 num_control_points=horizon,
+                metrics_rollout=_build_metrics_rollout_cfg(lbfgs_cost_cfg),
                 **base_kwargs,
             )
         solver = ModelPredictiveControl(cfg)
@@ -203,6 +245,9 @@ class MPCController(ReactiveController):
         # renders natively, no custom plugin needed).
         self._path_pub = node.create_publisher(Path, 'mpc_predicted_path', 10)
         self._goal_marker_pub = node.create_publisher(Marker, 'mpc_goal_marker', 10)
+        # Cost/constraint breakdown, for live inspection via rqt_plot (each
+        # named field is individually plottable). See _cost_breakdown().
+        self._cost_pub = node.create_publisher(MpcCosts, 'mpc_costs', 10)
         self._path_frame = cw.base_link
         node.get_logger().info(
             f"MPC solver built: solver_type={solver_type}, optimization_dt={step_dt}s, "
@@ -264,9 +309,10 @@ class MPCController(ReactiveController):
             self._csv = None
             self.node.get_logger().warn(f"[MPC DIAG] CSV init failed: {e}")
 
-    def _csv_write(self, seq, solve_ms):
+    def _csv_write(self, result, solve_ms, breakdown: dict):
         if getattr(self, '_csv', None) is None:
             return
+        seq = result.action_sequence
         now = time.monotonic()
         dt_step_ms = (now - self._csv_t_prev) * 1000.0  # Loop period: captures 248ms AND pauses ~10s
         self._csv_t_prev = now
@@ -285,10 +331,16 @@ class MPCController(ReactiveController):
             accel_bd = 0.0
         self._csv_last_vlast = vlast
         vbc = self._v_bc[0].cpu().tolist() if getattr(self, '_v_bc', None) is not None else [0.0] * dof
+        pos_err = getattr(result, 'position_error', None)
+        rot_err = getattr(result, 'rotation_error', None)
+        pose_pos_err = float(pos_err.reshape(-1)[0].item()) if pos_err is not None else float('nan')
+        pose_rot_err = float(rot_err.reshape(-1)[0].item()) if rot_err is not None else float('nan')
         if not self._csv_header_written:
             self._csv.writerow(
                 ["t_s", "dt_step_ms", "solve_ms", "fk_err_m", "vfirst_max_dps", "vlast_max_dps",
-                 "accel_win_max_dps2", "accel_boundary_dps2", "vbc_max_dps"]
+                 "accel_win_max_dps2", "accel_boundary_dps2", "vbc_max_dps",
+                 "pose_pos_err_m", "pose_rot_err_rad", "cost_tool_pose_pos", "cost_tool_pose_orient",
+                 "cost_cspace", "con_self_collision", "con_scene_collision", "con_cspace_bound"]
                 + [f"vfirst_j{i+1}_dps" for i in range(dof)]
                 + [f"vlast_j{i+1}_dps" for i in range(dof)])
             self._csv_header_written = True
@@ -296,7 +348,14 @@ class MPCController(ReactiveController):
             [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
              f"{self._last_position_error:.5f}", f"{deg(max(abs(v) for v in vfirst)):.2f}",
              f"{deg(max(abs(v) for v in vlast)):.2f}", f"{accel_win:.1f}", f"{accel_bd:.1f}",
-             f"{deg(max(abs(v) for v in vbc)):.2f}"]
+             f"{deg(max(abs(v) for v in vbc)):.2f}",
+             f"{pose_pos_err:.5f}", f"{pose_rot_err:.5f}",
+             f"{breakdown.get('cost_tool_pose_pos', float('nan')):.4f}",
+             f"{breakdown.get('cost_tool_pose_orient', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace', float('nan')):.4f}",
+             f"{breakdown.get('con_self_collision', float('nan')):.4f}",
+             f"{breakdown.get('con_scene_collision', float('nan')):.4f}",
+             f"{breakdown.get('con_cspace_bound', float('nan')):.4f}"]
             + [f"{deg(v):.2f}" for v in vfirst] + [f"{deg(v):.2f}" for v in vlast])
         self._csv_file.flush()
 
@@ -339,6 +398,73 @@ class MPCController(ReactiveController):
             path.poses.append(pose)
         self._path_pub.publish(path)
 
+    def _cost_breakdown(self, result) -> dict:
+        """Per-term COST and CONSTRAINT values (horizon-summed) for this solve.
+
+        CRASH-SAFETY NOTE (cf. debug 2026-07-20): an earlier version read the
+        weighted COST magnitudes (tool_pose, cspace/anchor) via
+        `compute_metrics_from_action(result.action_buffer)` on the
+        OPTIMIZATION rollout (the only one with cost_cfg set by default). That
+        rollout runs with use_cuda_graph=True and is shared with the
+        optimizer; the extra call rebatches it (num_particles -> 1) while a
+        CUDA graph is captured for a different batch size, which triggered a
+        device-side assert (`index out of bounds`) on real hardware. A
+        device-side assert corrupts the WHOLE CUDA context for the process —
+        unrecoverable via try/except, and it took down the next solve,
+        _send_command, and perception/voxelization with it. That call has
+        been REMOVED. Do not reintroduce compute_metrics_from_action on a
+        use_cuda_graph=True rollout shared with the optimizer.
+
+        Costs are recovered safely instead: build_solver() injects a cost_cfg
+        (mirroring the active branch's tool_pose_cfg/cspace_cfg) into the
+        METRICS rollout's config (see _build_metrics_rollout_cfg) — a
+        fixed-batch-size rollout, never rebatched, so it computes these costs
+        as a side effect of the normal solve. get_current_metrics() just
+        returns an attribute (`_current_metrics`) already populated during
+        that solve — no rebatch, no graph, no extra GPU call. Validated in
+        sandbox: identical cost values to the removed dangerous path, zero
+        CUDA errors across use_cuda_graph=True runs."""
+        try:
+            m = self.solver.trajectory_execution_manager.get_current_metrics()
+            if m is None:
+                return {}
+            cc = m.costs_and_constraints
+            out = {}
+            for name, val in zip(cc.costs.names, cc.costs.values):
+                if name == "tool_pose":
+                    out["cost_tool_pose_pos"] = float(val[0, :, 0].sum().item())
+                    out["cost_tool_pose_orient"] = float(val[0, :, 1].sum().item())
+                else:
+                    out[f"cost_{name}"] = float(val.sum().item())
+            for name, val in zip(cc.constraints.names, cc.constraints.values):
+                if name == "cspace":
+                    out["con_cspace_bound"] = float(val.sum().item())
+                else:
+                    out[f"con_{name}"] = float(val.sum().item())
+            return out
+        except Exception as e:
+            self.node.get_logger().warn(f"[MPC DIAG] cost breakdown failed: {e}", throttle_duration_sec=5.0)
+            return {}
+
+    def _publish_costs(self, result, breakdown: dict):
+        if getattr(self, '_cost_pub', None) is None:
+            return
+        msg = MpcCosts()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self._path_frame
+        msg.fk_err_m = float(self._last_position_error)
+        pos_err = getattr(result, 'position_error', None)
+        rot_err = getattr(result, 'rotation_error', None)
+        msg.pose_pos_err_m = float(pos_err.reshape(-1)[0].item()) if pos_err is not None else 0.0
+        msg.pose_rot_err_rad = float(rot_err.reshape(-1)[0].item()) if rot_err is not None else 0.0
+        msg.cost_tool_pose_pos = breakdown.get("cost_tool_pose_pos", 0.0)
+        msg.cost_tool_pose_orient = breakdown.get("cost_tool_pose_orient", 0.0)
+        msg.cost_cspace = breakdown.get("cost_cspace", 0.0)
+        msg.con_self_collision = breakdown.get("con_self_collision", 0.0)
+        msg.con_scene_collision = breakdown.get("con_scene_collision", 0.0)
+        msg.con_cspace_bound = breakdown.get("con_cspace_bound", 0.0)
+        self._cost_pub.publish(msg)
+
     def step(self, current_state: JointState) -> JointState:
 
         if getattr(self, '_use_mppi_acceleration', False):
@@ -368,7 +494,10 @@ class MPCController(ReactiveController):
 
         self._last_position_error = self._fk_position_error(current_state)
         if seq is not None and seq.position.shape[1] > 0:
-            self._csv_write(seq, solve_ms)
+            if self._debug_enabled():
+                breakdown = self._cost_breakdown(result)
+                self._csv_write(result, solve_ms, breakdown)
+                self._publish_costs(result, breakdown)
             self._publish_predicted_path(result)
 
         if self._debug_enabled():

@@ -457,10 +457,10 @@ class SinglePlanner(TrajectoryPlanner):
 
                     progression = robot_context.get_progression()
                     # Only log at significant milestones to reduce spam
-                    if progression >= 0.99 or int(progression * 10) != int((progression - 0.1) * 10):
-                        self.node.get_logger().info(
-                            f"Trajectory progress: {progression*100:.1f}%"
-                        )
+                    # if progression >= 0.99 or int(progression * 10) != int((progression - 0.1) * 10):
+                        # self.node.get_logger().info(
+                        #     f"Trajectory progress: {progression*100:.1f}%"
+                        # )
                     start_time = time.time()
 
                 # Small sleep to prevent busy-waiting

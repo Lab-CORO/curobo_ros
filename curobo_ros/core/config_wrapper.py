@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 
 # Import all manager classes
@@ -6,6 +7,25 @@ from curobo_ros.core.robot_model_manager import RobotModelManager
 from curobo_ros.core.obstacle_manager import ObstacleManager
 from curobo_ros.core.camera_system_manager import CameraSystemManager
 from curobo_ros.core.ros_service_manager import RosServiceManager
+
+
+def resolve_use_cuda_graph(node, default: bool = True) -> bool:
+    """Resolve whether solvers should capture/replay CUDA graphs.
+
+    Precedence: the ``CUROBO_USE_CUDA_GRAPH`` env var wins if set
+    (``0``/``false``/``no``/``off`` -> False, anything else -> True), else the
+    ROS ``use_cuda_graph`` parameter, else ``default``.
+
+    Disabling graphs is the escape hatch for the MPC->Classic replay segfault
+    (a stale captured MotionGen graph); the env var lets it be flipped without
+    editing code or params.
+    """
+    env = os.environ.get('CUROBO_USE_CUDA_GRAPH')
+    if env is not None:
+        return env.strip().lower() not in ('0', 'false', 'no', 'off')
+    if node is not None and node.has_parameter('use_cuda_graph'):
+        return bool(node.get_parameter('use_cuda_graph').get_parameter_value().bool_value)
+    return default
 
 
 class ConfigWrapper(ABC):

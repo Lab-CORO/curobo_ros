@@ -150,7 +150,9 @@ class IKServices:
 
     def _init(self, batch_size: int):
         """Create (or recreate) the IK solver for the given batch size."""
-        scene = self._config.obstacle_manager.get_scene()
+        # Primitives only at construction; update_world() pushes the perception
+        # layer by copy afterwards. See primitives_only_scene().
+        scene = self._config.obstacle_manager.primitives_only_scene()
         robot_yml = self._config.robot_config_file
 
         self._node.get_logger().info(f"Initializing IK solver (batch_size={batch_size})...")

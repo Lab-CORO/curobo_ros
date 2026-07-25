@@ -86,6 +86,15 @@ class UnifiedPlannerNode(Node):
         self.declare_parameter('interpolation_dt', 0.025)
         self.declare_parameter('convergence_threshold', 0.01)
         self.declare_parameter('max_mpc_iterations', 1000)
+        # Capture/replay CUDA graphs in the solvers (faster, but a captured
+        # MotionGen graph can be invalidated by intervening MPC activity — see
+        # the MPC->Classic re-warmup in _setup_planner). Override at runtime with
+        # the CUROBO_USE_CUDA_GRAPH env var (0 disables) for A/B testing.
+        self.declare_parameter('use_cuda_graph', True)
+        # Diagnostic toggle (see update_all_solvers_world): set false to withhold
+        # the perception ESDF from the solvers. Leave true for normal operation —
+        # false disables camera-based collision avoidance.
+        self.declare_parameter('push_esdf_to_solvers', True)
         # Reactive (MPC) solver build params — read by MPCController.build_solver().
         self.declare_parameter('mpc_step_dt', 0.03)
         self.declare_parameter('mpc_horizon_steps', 30)
@@ -100,8 +109,8 @@ class UnifiedPlannerNode(Node):
         # (vs ~74ms/call at 200/300) and converges FASTER in wall-clock terms
         # despite fewer iterations per call (more, cheaper corrections beat
         # fewer, expensive ones for a receding-horizon controller).
-        self.declare_parameter('mpc_warm_start_iters', 25)
-        self.declare_parameter('mpc_cold_start_iters', 100)
+        self.declare_parameter('mpc_warm_start_iters', 1) #25
+        self.declare_parameter('mpc_cold_start_iters', 10) #100
         # MPC solver selection. 'lbfgs_bspline' (défaut) = comportement actuel.
         # 'mppi_acceleration' = recette validée sur m1013 réel (MPPI + espace
         # ACCELERATION), pour les postures où L-BFGS+B-spline se fige.
@@ -109,7 +118,7 @@ class UnifiedPlannerNode(Node):
         # tunés pour L-BFGS. En 'mppi_acceleration', passer aussi
         # mpc_warm_start_iters:=5 mpc_cold_start_iters:=10 (valeurs validées) —
         # sinon MPPI est non tuné (lent, ne converge pas dans la fenêtre du pont).
-        self.declare_parameter('mpc_solver_type', 'lbfgs_bspline')
+        self.declare_parameter('mpc_solver_type', 'mppi_acceleration')
         self.declare_parameter('mpc_mppi_num_particles', 400)
         self.declare_parameter('mpc_vel_feedback_alpha', 1.0)
         # Fixed-interval command pacing (seconds). 0.0 = off (re-solve/re-send as
@@ -146,6 +155,16 @@ class UnifiedPlannerNode(Node):
         self.mpc = None             # reactive: ModelPredictiveControl
         self.retargeter = None      # reactive: MotionRetargeter (teleop)
 
+        # Which solver currently owns the single live CUDA graph. Two captured
+        # graphs cannot safely coexist in one CUDA context: the inactive one's
+        # baked device addresses get invalidated by the active one's allocator
+        # activity, so replaying it segfaults in cuGraphLaunch. We enforce
+        # "exactly one live graph" by releasing every other solver's graph
+        # whenever the owner changes (see _ensure_exclusive_graph). Keys:
+        # 'motion' for all open-loop planners (they share one MotionPlanner),
+        # 'reactive:<name>' for each reactive controller. None = no owner yet.
+        self._active_graph_owner = None
+
         # Native grasp pipeline (its own plan_grasp action; reuses motion_planner).
         self.grasp_planner = GraspPlanner(self, self.config_wrapper_motion)
 
@@ -166,6 +185,11 @@ class UnifiedPlannerNode(Node):
         initial_planner = self.get_parameter('planner_type').get_parameter_value().string_value
         self._warmup_initial_planner(initial_planner)
         self.planner_manager.set_current_planner(initial_planner)
+        # Startup warms exactly one solver, so it is already the sole graph
+        # owner — record it so the first plan reuses that warmup graph instead
+        # of needlessly releasing and re-capturing it.
+        self._active_graph_owner = self._graph_owner_key(
+            self.planner_manager.get_current_planner())
 
         # Pre-warm the voxel-grid primitive rasterization path while the executor
         # is not yet spinning (no service can be served until __init__ returns),
@@ -316,6 +340,18 @@ class UnifiedPlannerNode(Node):
     def update_all_solvers_world(self, scene=None):
         """Propagate scene updates to all initialized solvers."""
         scene = scene if scene is not None else self.shared_scene
+
+        # DIAGNOSTIC (default off => normal behaviour). Withholds the perception
+        # ESDF voxel layer from the solvers so only analytic primitives remain,
+        # to test whether the voxel layer is what pegs con_scene_collision at its
+        # sentinel value. SAFETY: with this enabled the solvers do NOT see
+        # camera-observed obstacles, so run it only with a clear workspace.
+        if not self.get_parameter('push_esdf_to_solvers').get_parameter_value().bool_value:
+            scene = self.config_wrapper_motion.obstacle_manager.primitives_only_scene()
+            self.get_logger().warn(
+                "push_esdf_to_solvers=false: solvers see analytic primitives ONLY "
+                "(no camera obstacles) — diagnostic mode",
+                throttle_duration_sec=5.0)
 
         if self.motion_planner is not None:
             self.motion_planner.update_world(scene)
@@ -633,6 +669,12 @@ class UnifiedPlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _setup_planner(self, planner):
+        # Enforce a single live CUDA graph before this planner runs: if it isn't
+        # the current graph owner, release every other solver's captured graph so
+        # this one re-captures (on its next call) as the sole live graph. Cheap
+        # no-op when the owner is unchanged (repeated plans reuse the graph).
+        self._ensure_exclusive_graph(planner)
+
         # Open-loop planners share one MotionPlanner instance (class-level).
         if isinstance(planner, SinglePlanner):
             if self.motion_planner is None:
@@ -648,6 +690,99 @@ class UnifiedPlannerNode(Node):
                 self.get_logger().info("On-demand warmup: reactive controller")
                 self._ensure_ground_plane()
             planner.ensure_solver()
+
+    # ------------------------------------------------------------------
+    # CUDA graph exclusivity (only the active solver holds a live graph)
+    # ------------------------------------------------------------------
+
+    def _graph_owner_key(self, planner):
+        """Stable key identifying which captured graph a planner would use.
+
+        All open-loop planners share one MotionPlanner (one graph) -> 'motion'.
+        Each reactive controller owns its own solver/graph -> 'reactive:<name>'.
+        """
+        if isinstance(planner, SinglePlanner):
+            return 'motion'
+        if isinstance(planner, ReactiveController):
+            return f'reactive:{planner.get_planner_name()}'
+        return None
+
+    def _ensure_exclusive_graph(self, planner):
+        """Guarantee the given planner is the sole owner of a live CUDA graph."""
+        self._ensure_exclusive_graph_key(self._graph_owner_key(planner))
+
+    def _ensure_exclusive_graph_key(self, owner_key):
+        """Make owner_key the sole live-graph owner, releasing all others.
+
+        No-op if graphs are disabled or the owner is unchanged. Otherwise release
+        every captured graph (the incoming solver re-captures cleanly, alone, on
+        its next call) and record the new owner. Also used by the grasp pipeline,
+        which reuses the shared MotionPlanner outside the switch path. See
+        _active_graph_owner.
+        """
+        if not self.config_wrapper_motion.use_cuda_graph:
+            return
+        if owner_key is None or owner_key == self._active_graph_owner:
+            return
+        self.get_logger().info(
+            f"CUDA graph owner {self._active_graph_owner} -> {owner_key}: releasing "
+            f"other captured graphs so only the active solver holds one")
+        self._release_all_solver_cuda_graphs()
+        self._active_graph_owner = owner_key
+
+    def _release_all_solver_cuda_graphs(self):
+        """Free every solver's captured CUDA graph (frees the graph + its pool).
+
+        reset_cuda_graph() -> GraphExecutor.reset() calls CUDAGraph.reset(), which
+        releases the graph's private memory pool; the solver itself and its shared
+        collision world are untouched (it re-captures on next use). Held under the
+        GPU lock so it can't overlap a concurrent capture / depth integrate.
+        """
+        with self.gpu_lock:
+            if self.motion_planner is not None:
+                for name in ('trajopt_solver', 'ik_solver'):
+                    self._safe_reset_graph(getattr(self.motion_planner, name, None))
+            self._safe_reset_graph(self.mpc)
+            self._safe_reset_graph(self.retargeter)
+
+    def _safe_reset_graph(self, solver):
+        """Release a solver's captured CUDA graph(s); never raise into callers.
+
+        Uses reset_cuda_graph(), NOT destroy(): SolverCore.destroy() shares its
+        body with reset_cuda_graph() (resets optimizer/metrics_rollout/additional
+        rollouts) but drops both of reset_cuda_graph()'s guards (use_cuda_graph,
+        _task_initialized). Calling it unconditionally on metrics_rollout was
+        tried and found to orphan its constraint tensors -- con_scene_collision
+        froze at a huge constant instead of tracking live geometry (see debug
+        2026-07-25) -- while cost_tool_pose_pos kept updating from the same
+        get_current_metrics() call, proving the rollout's buffers were left in a
+        stale/half-reset state rather than actually corrupted geometry.
+
+        reset_cuda_graph() alone still has the original gap: IKSolver.reset_cuda_graph()
+        never reaches the nested SeedIKSolver's private Levenberg-Marquardt
+        GraphExecutor. That gap is what caused the original cuGraphLaunch segfault
+        on Classic after MPC. So instead of destroy(), reach seed_ik_solver
+        explicitly and narrowly: SeedIKSolver.destroy() only resets its own two
+        GraphExecutors and touches no rollout/collision state, so it's safe to
+        call unconditionally. Also recurse into a nested ik_solver (MpcSolver owns
+        one for goal-state IK; MpcSolver.reset_cuda_graph() only forwards to
+        self.core and never releases it, so its seed-IK graphs were never being
+        freed at all).
+        """
+        if solver is None:
+            return
+        try:
+            if hasattr(solver, 'reset_cuda_graph'):
+                solver.reset_cuda_graph()
+            seed_ik_solver = getattr(solver, 'seed_ik_solver', None)
+            if seed_ik_solver is not None:
+                seed_ik_solver.destroy()
+            nested_ik_solver = getattr(solver, 'ik_solver', None)
+            if nested_ik_solver is not None and nested_ik_solver is not solver:
+                self._safe_reset_graph(nested_ik_solver)
+        except Exception as e:
+            self.get_logger().warn(
+                f"CUDA graph release failed on {type(solver).__name__}: {e}")
 
     def _get_planner_config(self, planner) -> dict:
         if isinstance(planner, SinglePlanner):
@@ -911,6 +1046,14 @@ class UnifiedPlannerNode(Node):
 
 
 def main(args=None):
+    # Dump a Python traceback on a fatal signal (SIGSEGV/SIGABRT). A GPU illegal
+    # access surfaces as a native segfault (process exit -11) with no Python
+    # error otherwise — faulthandler shows which CuRobo call was executing.
+    # Redundant with PYTHONFAULTHANDLER=1 set in the launch file; harmless if run
+    # standalone without that env.
+    import faulthandler
+    faulthandler.enable()
+
     rclpy.init(args=args)
     node = UnifiedPlannerNode()
 

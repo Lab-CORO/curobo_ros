@@ -34,8 +34,10 @@ _curobo_runtime_public.cuda_graph_reset = True
 from curobo.types import JointState
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
+from curobo._src.geom.collision.buffer_collision import CollisionBuffer
+from curobo._src.types.device_cfg import DeviceCfg
 
-from .config_wrapper import ConfigWrapper
+from .config_wrapper import ConfigWrapper, resolve_use_cuda_graph
 
 
 class ConfigWrapperMotion(ConfigWrapper):
@@ -47,7 +49,10 @@ class ConfigWrapperMotion(ConfigWrapper):
         # v2 trajopt / IK / batch tunables
         self.num_ik_seeds = 32
         self.num_trajopt_seeds = 12
-        self.use_cuda_graph = True
+        # ROS param 'use_cuda_graph' (default True), overridable via the
+        # CUROBO_USE_CUDA_GRAPH env var. Disabling avoids the MPC->Classic
+        # captured-graph replay segfault at the cost of per-plan latency.
+        self.use_cuda_graph = resolve_use_cuda_graph(node)
         self.interpolation_dt = 0.03
         self.self_collision_check = True
         self.position_tolerance = 0.005
@@ -70,7 +75,11 @@ class ConfigWrapperMotion(ConfigWrapper):
 
         Called at init and on demand via the `update_motion_gen_config` service.
         """
-        scene = self.obstacle_manager.get_scene()
+        # No perception voxel layer at construction — collision_cache allocates
+        # the voxel storage and update_world fills it by copy. Passing the live
+        # layer aliases the solver's buffer onto our ESDF tensor, which the first
+        # update_world then clears to "solid". See primitives_only_scene().
+        scene = self.obstacle_manager.primitives_only_scene()
         collision_activation_distance = node.get_parameter(
             'collision_activation_distance'
         ).get_parameter_value().double_value
@@ -169,7 +178,9 @@ class ConfigWrapperIK(ConfigWrapper):
         )
 
     def set_ik_gen_config(self, node, _, response):
-        scene = self.obstacle_manager.get_scene()
+        # Primitives only at construction; the update_world() below pushes the
+        # perception layer by copy. See primitives_only_scene().
+        scene = self.obstacle_manager.primitives_only_scene()
 
         cfg = InverseKinematicsCfg.create(
             robot=self.robot_config_file,
@@ -202,8 +213,13 @@ def _compute_sphere_distance(wrapper, node, response):
     """
     Query collision distance for the robot's current configuration.
 
-    v2: the legacy `CollisionQueryBuffer` API is gone. We rely on the solver's
-    scene model, which exposes `get_sphere_distance` with a simpler signature.
+    v2: the legacy `CollisionQueryBuffer` API is gone. Solvers (`MotionPlanner`,
+    `ModelPredictiveControl`, `InverseKinematics`) expose the world/scene
+    collision checker as `scene_collision_checker` (a `SceneCollision`), not
+    `scene_model` (which is just the CPU-side scene config). Its
+    `get_sphere_distance` takes the full `KinematicsState`, a pre-allocated
+    `CollisionBuffer`, and `weight`/`activation_distance` tensors — there is
+    no `compute_esdf` kwarg.
     """
     q_js = JointState(
         position=torch.tensor(
@@ -223,13 +239,30 @@ def _compute_sphere_distance(wrapper, node, response):
         response.data = []
         return response
 
-    scene_model = getattr(solver, 'scene_model', None)
-    if scene_model is None or not hasattr(scene_model, 'get_sphere_distance'):
+    scene_collision_checker = getattr(solver, 'scene_collision_checker', None)
+    if scene_collision_checker is None or not hasattr(scene_collision_checker, 'get_sphere_distance'):
         response.nb_sphere = 0
         response.data = []
         return response
 
-    sphere_dist = scene_model.get_sphere_distance(robot_spheres, compute_esdf=True)
+    if node.has_parameter('collision_activation_distance'):
+        activation_distance = node.get_parameter(
+            'collision_activation_distance'
+        ).get_parameter_value().double_value
+    else:
+        activation_distance = 0.025
+
+    device_cfg = DeviceCfg(device=wrapper._device, dtype=wrapper._ops_dtype)
+    collision_buffer = CollisionBuffer.from_shape(robot_spheres.shape, device_cfg)
+    weight = device_cfg.to_device([1.0])
+    activation_distance_t = device_cfg.to_device([activation_distance])
+
+    sphere_dist = scene_collision_checker.get_sphere_distance(
+        kinematics_state,
+        collision_buffer,
+        weight,
+        activation_distance=activation_distance_t,
+    )
     sphere_dist_ar = torch.flatten(sphere_dist, start_dim=0).tolist()
     response.nb_sphere = len(sphere_dist_ar)
     response.data = sphere_dist_ar

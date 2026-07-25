@@ -200,7 +200,7 @@ class ObstacleManager:
             # sans fin et le nombre de voxels occupés croît de façon monotone même
             # sur une scène statique (bruit de bord franchissant peu à peu le seuil).
             # <1.0 fait décroître les vieilles observations → carte stationnaire.
-            decay_factor=0.95,
+            decay_factor=0.1,
             num_cameras=1,
         ))
         self.node.mapper = self.mapper
@@ -228,10 +228,82 @@ class ObstacleManager:
             return False
         if vg is None:
             return False
+        # Sanity-check the perception ESDF before it reaches the collision
+        # kernels. A corrupt grid (NaN/Inf values, or more voxels than the grid
+        # the collision cache was sized for) makes CuRobo's collision kernel read
+        # out of bounds → GPU illegal access → host SIGSEGV (exit -11). Reject it
+        # here rather than crash the whole node mid-plan.
+        if not self._inspect_esdf(vg):
+            return False
         # Single perception voxel grid in the Scene (replaces any previous one).
         self.scene.voxel = [vg]
         self._esdf_voxel_name = vg.name
         return True
+
+    def _inspect_esdf(self, vg) -> bool:
+        """Validate a perception ESDF voxel grid before it is pushed to the
+        collision solvers.
+
+        Returns False (reject the grid) only on *definite* corruption — non-finite
+        values, or a voxel count that exceeds the configured grid (the "array
+        overflow" that segfaults the collision kernel). A merely cluttered scene
+        (high occupancy) is logged but still allowed to plan. The inspection is
+        wrapped so it can never itself break planning.
+        """
+        try:
+            ft = getattr(vg, 'feature_tensor', None)
+            if ft is None or ft.numel() == 0:
+                return True  # not voxelised yet — nothing to check
+
+            n = int(ft.numel())
+            n_bad = int((~torch.isfinite(ft)).sum().item())
+
+            if n_bad > 0:
+                self.node.get_logger().error(
+                    f"Perception ESDF has {n_bad}/{n} non-finite (NaN/Inf) values "
+                    f"— rejecting to avoid a collision-kernel segfault "
+                    f"(dims={getattr(vg, 'dims', '?')}).",
+                    throttle_duration_sec=2.0)
+                return False
+
+            # Expected voxel count from the configured mapper extent / resolution.
+            vsize = float(getattr(vg, 'voxel_size', 0.0)) or self._esdf_voxel_size
+            expected = int(np.prod(np.ceil(
+                np.array(self._mapper_extent_xyz, dtype=np.float64) / vsize)))
+            if expected and n > int(expected * 1.01) + 1:
+                # More voxels than the grid the collision cache was allocated for:
+                # the exact "array overflow" that indexes out of bounds in the
+                # kernel. Reject — letting it through would segfault the node.
+                self.node.get_logger().error(
+                    f"Perception ESDF voxel count {n} exceeds expected {expected} "
+                    f"(voxel_size={vsize}, extent={self._mapper_extent_xyz}) — "
+                    f"rejecting to avoid a collision-kernel overflow.",
+                    throttle_duration_sec=2.0)
+                return False
+
+            # Occupancy diagnostic — informational only. A value near 1.0 is the
+            # "entire area is in collision" state seen right before the crash;
+            # note: unobserved cells can bias this, so it is a heuristic, not a
+            # rejection criterion.
+            occ = float((ft <= 0).float().mean().item())
+            if occ > 0.98:
+                self.node.get_logger().warn(
+                    f"Perception ESDF looks saturated: ~{occ*100:.1f}% of "
+                    f"{n} voxels have SDF<=0. Planning will likely report "
+                    f"'Start or End state in collision' — check the mapper/TSDF "
+                    f"input (stale depth, bad extrinsics, empty cloud).",
+                    throttle_duration_sec=2.0)
+            else:
+                self.node.get_logger().debug(
+                    f"Perception ESDF pushed: {n} voxels, ~{occ*100:.1f}% occupied "
+                    f"(sdf min={float(ft.min()):.3f} max={float(ft.max()):.3f})",
+                    throttle_duration_sec=2.0)
+            return True
+        except Exception as e:
+            # Diagnostics must never break planning — let the grid through.
+            self.node.get_logger().warn(
+                f"ESDF inspection skipped (error: {e})", throttle_duration_sec=5.0)
+            return True
 
     # ---- Services ----
 
@@ -393,6 +465,10 @@ class ObstacleManager:
         size = np.ceil((grid_max - grid_min) / voxel_size).astype(np.int32)
 
         voxel_grid = np.zeros((size[0], size[1], size[2]), dtype=np.uint32)
+        # Per-source occupancy, logged together at the end. Split out because a
+        # 100%-occupied grid is otherwise indistinguishable between "perception
+        # says everything is solid" and "primitive rasterization floods it".
+        n_occ = n_prim = 0
 
         # ---- Mapper perception (camera-based) ----
         # extract_occupied_voxels() returns only the *observed* occupied voxel
@@ -414,8 +490,6 @@ class ObstacleManager:
                     valid = np.all((idx >= 0) & (idx < size), axis=1)
                     idx = idx[valid]
                     voxel_grid[idx[:, 0], idx[:, 1], idx[:, 2]] = 1
-                node.get_logger().debug(
-                    f'Filled voxel grid from Mapper perception ({n_occ} occupied cells)')
             except Exception as e:
                 node.get_logger().warn(f'Mapper perception query failed: {e}')
 
@@ -431,8 +505,6 @@ class ObstacleManager:
         if n_obs > 0:
             try:
                 n_prim = self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
-                node.get_logger().debug(
-                    f'Filled voxel grid from analytic primitives ({n_prim} occupied cells)')
             except Exception as e:
                 node.get_logger().warn(f'GPU primitive voxelization failed ({e}), falling back to CPU')
                 try:
@@ -442,6 +514,16 @@ class ObstacleManager:
                             f'Filled voxel grid from analytic primitives (CPU, {n_prim} cells)')
                 except Exception as e2:
                     node.get_logger().warn(f'CPU primitive voxelization also failed: {e2}')
+
+        # Attributes each occupied cell to its source: n_occ is the Mapper's
+        # observed-and-inside voxels, n_prim is what _rasterize_primitives_gpu
+        # flags against analytic primitives only (see primitives_only_scene()).
+        total = int(size[0]) * int(size[1]) * int(size[2])
+        n_final = int(voxel_grid.sum())
+        node.get_logger().debug(
+            f'Voxel grid: mapper={n_occ} primitives={n_prim} '
+            f'final={n_final}/{total} ({100.0 * n_final / total:.1f}% occupied)',
+            throttle_duration_sec=2.0)
 
         return voxel_grid, grid_min, size
 
@@ -536,9 +618,13 @@ class ObstacleManager:
         reused across calls. They are only rebuilt when the grid parameters change
         (voxel_size or extent). The scene is synced via ``load_collision_model``
         on every call to reflect the current set of obstacles.
+
+        The scene handed to this query is ANALYTIC PRIMITIVES ONLY — see
+        primitives_only_scene() for why the perception voxel layer must stay out.
         """
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         dtype = torch.float32
+        primitives_scene = self.primitives_only_scene()
 
         # Build grid centers [N, 3] — same layout as get_voxel_grid
         grid_key = (tuple(grid_min.tolist()), float(voxel_size), tuple(size.tolist()))
@@ -558,7 +644,7 @@ class ObstacleManager:
             # ne touche PAS cuboid/mesh (défaut = dimensionné sur la scène).
             cfg = SceneCollisionCfg(
                 device_cfg=dev_cfg,
-                scene_model=self.scene,
+                scene_model=primitives_scene,
                 cache={"voxel": self.collision_cache["voxel"]},
             )
             self._voxel_sc = SceneCollision.from_config(cfg)
@@ -574,7 +660,7 @@ class ObstacleManager:
             self._voxel_grid_key = grid_key
 
         # Sync current scene obstacles into the checker (cheap — no GPU realloc).
-        self._voxel_sc.load_collision_model(self.scene)
+        self._voxel_sc.load_collision_model(primitives_scene)
 
         self._voxel_buf.zero_()
         self._voxel_sc.get_sphere_distance_raw(
@@ -588,6 +674,48 @@ class ObstacleManager:
         occ_flat = occ_mask.reshape(sx, sy, sz)
         voxel_grid[:] |= occ_flat.astype(np.uint32)
         return int(occ_mask.sum())
+
+    def primitives_only_scene(self) -> Scene:
+        """The current Scene minus the perception ESDF voxel layer.
+
+        Scene.objects is assembled from every bucket *including* `voxel`, so
+        handing self.scene to a SceneCollision query also queries the nvblox ESDF
+        layer. That is wrong for the voxel-grid rasterization for two reasons:
+
+        1. Double-counting. _compute_dense_voxel_grid already fills perception
+           from the Mapper via extract_occupied_voxels(), which reads the TSDF and
+           therefore reports only *observed* cells.
+        2. Correctness. Querying the dense ESDF re-introduces the unobserved-cell
+           ambiguity that the Mapper branch exists to avoid: unobserved cells are
+           not "far from an obstacle", so they read as in-collision. Benign while
+           the ESDF is barely populated, but once MPC starts refreshing perception
+           on its servo loop the query saturates — measured 2026-07-25, primitives
+           went 124620 -> 2097152 (100% of the grid) at the first MPC step while
+           the Mapper count stayed healthy at ~13.5k.
+
+        It is also what a solver must be *constructed* with. SceneData.from_scene_cfg
+        ignores the pre-allocated voxel cache whenever the scene already carries a
+        voxel layer, and VoxelData.from_scene_cfg then takes the zero-copy branch
+        (create_from_voxel_grids: `features = feature_tensor.view(...)`), aliasing
+        the solver's collision buffer onto our live ESDF tensor. Every later
+        update_world does clear() -> re-add, and clear() writes -max_esdf_distance
+        into that aliased buffer -- i.e. into our source tensor -- so the re-add
+        copies -100 ("solid everywhere") onto itself. Passing this primitives-only
+        Scene instead makes the constructor honour collision_cache["voxel"] and
+        allocate its own buffer, after which update_world copies normally. See the
+        2026-07-25 debug: MPC was built after perception was live and read
+        -100 everywhere, while MotionGen -- built at startup, before any ESDF
+        existed -- got a real cache and stayed healthy.
+
+        Cheap: the lists are shared by reference, only the container is new.
+        """
+        return Scene(
+            cuboid=self.scene.cuboid,
+            sphere=self.scene.sphere,
+            capsule=self.scene.capsule,
+            cylinder=self.scene.cylinder,
+            mesh=self.scene.mesh,
+        )
 
     def _rasterize_primitives_cpu(self, node, voxel_grid, grid_min, voxel_size, size) -> int:
         """CPU trimesh fallback for analytic primitive rasterization."""
