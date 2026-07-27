@@ -130,24 +130,6 @@ tests:
       trajectory_constraints: [0, 0, 1, 0, 0, 0]
     expect: {success: True}
 
-  # ---- Native grasp pipeline (plan_grasp action) ----
-
-  - name: "13 Plan grasp (goalset reachability)"
-    action: "/unified_planner/plan_grasp"
-    type: curobo_msgs/action/GraspPlan
-    # Plan-only, goalset leg only (no linear approach/grasp/lift, no attach):
-    # validates the GraspPlan action + plan_grasp call + result plumbing on a
-    # reachable candidate. The linear legs / attach are covered manually.
-    data:
-      grasp_candidates:
-        - position: {x: 0.5, y: 0.0, z: 0.5}
-          orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-      plan_approach_to_grasp: false
-      plan_grasp_to_lift: false
-      execute: false
-    timeout: 90.0
-    expect: {success: True}
-
   # ---- Reactive (Motion Retargeting / teleop): continuous, ends only on cancel ----
 
   - name: "14 Set planner retarget"

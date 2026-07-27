@@ -1,6 +1,4 @@
-import csv
 import math
-import os
 import time
 
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -11,6 +9,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
 
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
+from curobo_ros.core.diagnostics import open_diag_csv
 
 
 class JointSpeedStrategy(JointCommandStrategy):
@@ -96,22 +95,37 @@ class JointSpeedStrategy(JointCommandStrategy):
             prev = row
         return clamped
 
+    def _debug_csv_enabled(self) -> bool:
+        # Off by default: per-publish diagnostic CSV, not meant to run in
+        # production (every send_trajectrory() call would otherwise write a
+        # row and keep a file open for the strategy's whole lifetime).
+        if not self.node.has_parameter('joint_speed_debug_csv'):
+            self.node.declare_parameter('joint_speed_debug_csv', False)
+        return bool(self.node.get_parameter('joint_speed_debug_csv').value)
+
     def _debug_csv_init(self):
-        d = "/home/ros2_ws/src/curobo_ros/config"
-        os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, f"speedj_publish_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-        self._debug_csv_file = open(path, "w", newline="")
-        self._debug_csv = csv.writer(self._debug_csv_file)
-        self._debug_csv.writerow([
+        self._debug_csv = open_diag_csv(self.node, "speedj_publish")
+        if self._debug_csv is None:
+            return
+        self._debug_csv.write_header_once([
             "t_s", "n_points", "real_vel_max_dps", "point0_max_dps",
             "point0_vs_real_accel_dps2", "unclamped_point0_max_dps",
             "clamp_active_j", "intra_batch_accel_max_dps2",
         ])
         self._debug_csv_t0 = time.monotonic()
 
+    def _debug_csv_close(self):
+        if getattr(self, "_debug_csv", None) is not None:
+            self._debug_csv.close()
+        self._debug_csv = None
+
     def _debug_csv_write(self, vel_clamped):
-        if not hasattr(self, "_debug_csv"):
+        if not self._debug_csv_enabled():
+            return
+        if getattr(self, "_debug_csv", None) is None:
             self._debug_csv_init()
+        if self._debug_csv is None:
+            return
         deg = math.degrees
         real = self.joint_velocity
         p0 = vel_clamped[0] if vel_clamped else [0.0] * self.dof
@@ -131,7 +145,6 @@ class JointSpeedStrategy(JointCommandStrategy):
             f"{accel_p0:.1f}", f"{deg(max(abs(v) for v in raw0)):.2f}",
             str(clamp_active), f"{intra:.1f}",
         ])
-        self._debug_csv_file.flush()
 
     def send_trajectrory(self):
         self.robot_state = RobotState.RUNNING
@@ -175,6 +188,7 @@ class JointSpeedStrategy(JointCommandStrategy):
         self.trajectory_progression = 0.0
         self.robot_state = RobotState.STOPPED
         self.pub_trajectory.publish(JointTrajectory())
+        self._debug_csv_close()
 
     def callback_trajectory_state(self, msg):
         self.trajectory_progression = msg.data

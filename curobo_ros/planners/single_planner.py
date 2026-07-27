@@ -147,8 +147,7 @@ class SinglePlanner(TrajectoryPlanner):
         ``[theta_x, theta_y, theta_z, x, y, z]``; 1 = lock that axis along the
         path) and sets ``ToolPoseCriteria.non_terminal_pose_axes_weight_factor``
         (order ``[x, y, z, roll, pitch, yaw]``) on the shared MotionPlanner.
-        This is the v2 replacement for the removed PoseCostMetric (same call
-        ``plan_grasp`` uses for linear approach/lift).
+        This is the v2 replacement for the removed PoseCostMetric.
 
         Returns True if constraints were applied (caller must reset afterwards).
         """
@@ -348,7 +347,6 @@ class SinglePlanner(TrajectoryPlanner):
         - ClassicPlanner: goal_request.target_pose  → single GoalToolPose
         - MultiPointPlanner: goal_request.target_poses → goalset GoalToolPose
         - JointSpacePlanner: goal_request.target_joints → joint goal
-        - GraspPlanner: goal_request.target_pose + gripper config
 
         Args:
             start_state: Initial joint configuration
@@ -380,7 +378,6 @@ class SinglePlanner(TrajectoryPlanner):
 
         Override this in child classes if you need to modify the trajectory
         after it's generated. For example:
-        - GraspPlanner: Add gripper open/close commands
         - SlowPlanner: Reduce velocities for safety
         - VibrateFilter: Smooth out high-frequency oscillations
 

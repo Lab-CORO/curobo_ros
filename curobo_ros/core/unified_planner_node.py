@@ -30,18 +30,18 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import JointState as JointStateMsg
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import AttachObject, TrajectoryGeneration, SetPlanner, GetPlanners
-from curobo_msgs.action import GraspPlan, SendTrajectory
+from curobo_msgs.srv import TrajectoryGeneration, SetPlanner, GetPlanners
+from curobo_msgs.action import SendTrajectory
 
 from curobo.types import DeviceCfg, JointState
 from curobo.scene import Cuboid
 
 from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion
+from curobo_ros.core.attachment_services import AttachmentServices
 from curobo_ros.core.ik_services import IKServices
 from curobo_ros.core.fk_services import FKServices
 from curobo_ros.planners import (
-    GraspPlanner,
     PlannerFactory,
     PlannerManager,
     ReactiveController,
@@ -68,6 +68,15 @@ class UnifiedPlannerNode(Node):
         # re-enter; a different thread (depth callback) fails the non-blocking
         # acquire and simply skips its frame.
         self.gpu_lock = threading.RLock()
+
+        # Serializes goal admission: only one execute_trajectory goal may be
+        # active at a time (open-loop or reactive). Guards against two
+        # concurrent servo/execute loops driving the robot at once. Set in
+        # goal_callback (accept-time, closing the race with execute_callback)
+        # and cleared in execute_callback's finally. Also consulted by
+        # set_planner_callback to refuse switching planners mid-goal.
+        self._goal_lock = threading.Lock()
+        self._goal_active = False
 
         self.robot_context = RobotContext(self, 0.03)
 
@@ -165,8 +174,10 @@ class UnifiedPlannerNode(Node):
         # 'reactive:<name>' for each reactive controller. None = no owner yet.
         self._active_graph_owner = None
 
-        # Native grasp pipeline (its own plan_grasp action; reuses motion_planner).
-        self.grasp_planner = GraspPlanner(self, self.config_wrapper_motion)
+        # Attach/detach a scene obstacle to the arm's attached_object link
+        # (standalone feature — pre-positioned objects, simulation, tests).
+        # Registers its own attach_object/detach_object services.
+        self.attachment_services = AttachmentServices(self, self.config_wrapper_motion)
 
         # Cached open-loop plan from a generate_trajectory (preview) call, reused
         # by the execute action when its target matches. See _pending_plan_*.
@@ -231,34 +242,6 @@ class UnifiedPlannerNode(Node):
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
             callback_group=ReentrantCallbackGroup(),
-        )
-
-        # Native grasp pipeline action (plan_grasp): goalset -> approach -> grasp
-        # -> [attach] -> lift. Separate from execute_trajectory (grasp-specific
-        # inputs). Reentrant so cancel can run during execution.
-        self._grasp_action_server = ActionServer(
-            self,
-            GraspPlan,
-            f'{self.get_name()}/plan_grasp',
-            execute_callback=self.grasp_callback,
-            goal_callback=self.goal_callback,
-            cancel_callback=self.cancel_callback,
-            callback_group=ReentrantCallbackGroup(),
-        )
-        # Attach a scene obstacle to the arm's attached_object link independently
-        # of a grasp action (useful for pre-positioned objects, simulation, tests).
-        self.attach_object_srv = self.create_service(
-            AttachObject,
-            f'{self.get_name()}/attach_object',
-            self.attach_object_callback,
-            callback_group=MutuallyExclusiveCallbackGroup(),
-        )
-        # Release a previously attached (grasped) object.
-        self.detach_object_srv = self.create_service(
-            Trigger,
-            f'{self.get_name()}/detach_object',
-            self.detach_object_callback,
-            callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
         from geometry_msgs.msg import Pose as PoseMsg
@@ -527,6 +510,13 @@ class UnifiedPlannerNode(Node):
                 return result_msg
 
             goal = goal_handle.request
+            return self._execute_goal(goal_handle, goal, planner, result_msg)
+        finally:
+            with self._goal_lock:
+                self._goal_active = False
+
+    def _execute_goal(self, goal_handle, goal, planner, result_msg):
+        try:
             _, start_state = self._resolve_start_state(goal)
             config = self._get_planner_config(planner)
             self._setup_planner(planner)
@@ -591,6 +581,18 @@ class UnifiedPlannerNode(Node):
         try:
             previous = self.planner_manager.get_current_planner()
             previous_name = previous.get_planner_name() if previous else "None"
+
+            with self._goal_lock:
+                if self._goal_active:
+                    response.success = False
+                    response.message = (
+                        "Cannot switch planner while an execution goal is active "
+                        "— cancel it first."
+                    )
+                    response.previous_planner = previous_name
+                    response.current_planner = previous_name
+                    self.get_logger().error(response.message)
+                    return response
 
             key, error = PlannerFactory.switch_planner(request.planner_type, self.planner_manager)
             if error:
@@ -716,9 +718,7 @@ class UnifiedPlannerNode(Node):
 
         No-op if graphs are disabled or the owner is unchanged. Otherwise release
         every captured graph (the incoming solver re-captures cleanly, alone, on
-        its next call) and record the new owner. Also used by the grasp pipeline,
-        which reuses the shared MotionPlanner outside the switch path. See
-        _active_graph_owner.
+        its next call) and record the new owner. See _active_graph_owner.
         """
         if not self.config_wrapper_motion.use_cuda_graph:
             return
@@ -908,6 +908,22 @@ class UnifiedPlannerNode(Node):
         return response
 
     def goal_callback(self, goal):
+        """Admit at most one execute_trajectory goal at a time.
+
+        Two concurrent execute() loops (open-loop or reactive) would both
+        stream commands to the robot. The flag is set here (accept-time) so
+        there is no race with execute_callback starting; it is cleared in
+        execute_callback's finally, however the goal ends (succeed / abort /
+        cancel / exception).
+        """
+        with self._goal_lock:
+            if self._goal_active:
+                self.get_logger().warn(
+                    "Rejecting execution goal: another goal is already active "
+                    "— cancel it first."
+                )
+                return rclpy.action.GoalResponse.REJECT
+            self._goal_active = True
         self.get_logger().info("Received execution goal")
         return rclpy.action.GoalResponse.ACCEPT
 
@@ -918,131 +934,6 @@ class UnifiedPlannerNode(Node):
             planner.cancel()
         self.get_logger().info("Goal cancelled")
         return rclpy.action.CancelResponse.ACCEPT
-
-    # ------------------------------------------------------------------
-    # Native grasp pipeline (plan_grasp action) + attach/detach
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _as_bool(t) -> bool:
-        """Reduce a cuRobo success tensor (or plain bool/None) to a Python bool."""
-        if t is None:
-            return False
-        if hasattr(t, 'any'):
-            try:
-                return bool(t.any().item())
-            except Exception:
-                return bool(t)
-        return bool(t)
-
-    def grasp_callback(self, goal_handle):
-        """Plan (and optionally execute) a native cuRobo grasp pipeline."""
-        result_msg = GraspPlan.Result()
-        try:
-            goal = goal_handle.request
-
-            # The grasp planner reuses the shared MotionPlanner.
-            if self.motion_planner is None:
-                self.get_logger().info("On-demand warmup for grasp: MotionPlanner")
-                self._warmup_classic()
-            SinglePlanner.set_motion_planner(self.motion_planner)
-
-            _, start_state = self._resolve_start_state(goal)
-            self.refresh_perception_world()
-
-            self.get_logger().info(
-                f"Planning grasp ({len(goal.grasp_candidates)} candidate(s))")
-            fb = GraspPlan.Feedback()
-            fb.phase = "PLANNING"
-            fb.progression = 0.0
-            goal_handle.publish_feedback(fb)
-
-            result = self.grasp_planner.plan(start_state, goal)
-
-            result_msg.approach_success = self._as_bool(result.approach_success)
-            result_msg.grasp_success = self._as_bool(result.grasp_success)
-            result_msg.lift_success = self._as_bool(result.lift_success)
-            success = self._as_bool(result.success)
-            result_msg.success = success
-            result_msg.message = result.status or (
-                "Grasp planned" if success else "Grasp planning failed")
-            result_msg.dt = GraspPlanner.dt_of(result)
-            result_msg.approach_trajectory = GraspPlanner.traj_to_msgs(
-                result.approach_interpolated_trajectory,
-                result.approach_interpolated_last_tstep)
-            result_msg.grasp_trajectory = GraspPlanner.traj_to_msgs(
-                result.grasp_interpolated_trajectory,
-                result.grasp_interpolated_last_tstep)
-            result_msg.lift_trajectory = GraspPlanner.traj_to_msgs(
-                result.lift_interpolated_trajectory,
-                result.lift_interpolated_last_tstep)
-
-            if not success:
-                self.get_logger().error(f"Grasp planning failed: {result_msg.message}")
-                fb.phase = "FAILED"
-                goal_handle.publish_feedback(fb)
-                goal_handle.abort()
-                return result_msg
-
-            if not goal.execute:
-                self.get_logger().info("Grasp planned (execute=false)")
-                goal_handle.succeed()
-                return result_msg
-
-            self.get_logger().info("Executing grasp pipeline")
-            exec_ok = self.grasp_planner.execute(
-                self.robot_context, result, goal, goal_handle)
-
-            if goal_handle.is_cancel_requested:
-                result_msg.success = False
-                result_msg.message = "Grasp execution canceled"
-                goal_handle.canceled()
-                return result_msg
-
-            result_msg.success = bool(exec_ok)
-            result_msg.message = "Grasp completed" if exec_ok else "Grasp execution failed"
-            if exec_ok:
-                goal_handle.succeed()
-            else:
-                goal_handle.abort()
-            return result_msg
-
-        except Exception as e:
-            self.get_logger().error(f"Grasp error: {e}")
-            self.get_logger().error(traceback.format_exc())
-            result_msg.success = False
-            result_msg.message = f"Error: {e}"
-            if goal_handle.is_active:
-                goal_handle.abort()
-            return result_msg
-
-    def attach_object_callback(self, request, response):
-        """Attach a scene obstacle to the arm at its current joint configuration."""
-        try:
-            if self.motion_planner is None:
-                self._warmup_classic()
-            _, current_state = self._resolve_start_state(None)
-            self.grasp_planner.attach(request.object_name, current_state)
-            response.success = True
-            response.message = f"Attached '{request.object_name}'"
-        except Exception as e:
-            response.success = False
-            response.message = f"Attach error: {e}"
-            self.get_logger().error(response.message)
-        return response
-
-    def detach_object_callback(self, request, response):
-        """Release a previously attached (grasped) object from the arm."""
-        try:
-            released = self.grasp_planner.detach()
-            response.success = True
-            response.message = (
-                f"Detached '{released}'" if released else "Nothing attached")
-        except Exception as e:
-            response.success = False
-            response.message = f"Detach error: {e}"
-            self.get_logger().error(response.message)
-        return response
 
 
 def main(args=None):

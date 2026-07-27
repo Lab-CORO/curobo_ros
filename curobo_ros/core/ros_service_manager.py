@@ -194,11 +194,11 @@ class RosServiceManager:
 
         Obstacle attrs follow curobo/add_object: cuboid has ``.dims`` + ``.pose``
         ([x,y,z,qw,qx,qy,qz]); sphere/cylinder have ``.radius`` (cylinder also
-        ``.height``). The attached obstacle's name is exposed by GraspPlanner.
+        ``.height``). The attached obstacle's name is exposed by AttachmentServices.
         """
         scene = self.obstacle_manager.get_scene()
-        gp = getattr(node, 'grasp_planner', None)
-        attached_name = getattr(gp, '_attached_name', None) if gp is not None else None
+        attach_svc = getattr(node, 'attachment_services', None)
+        attached_name = attach_svc.attached_name if attach_svc is not None else None
 
         marker_array = MarkerArray()
         clear = Marker()
@@ -307,8 +307,8 @@ class RosServiceManager:
             return
 
         # Source spheres from the MotionPlanner's kinematics when available — it
-        # carries grasp attaches (our robot_model_manager kin_model does not), so
-        # the fitted attached-object spheres show and ride the arm. attached_mask
+        # carries attaches (our robot_model_manager kin_model does not), so the
+        # fitted attached-object spheres show and ride the arm. attached_mask
         # flags them for a distinct colour. Fall back to robot_model_manager.
         kin = self._attachment_kinematics()
         if kin is not None:
@@ -356,12 +356,9 @@ class RosServiceManager:
 
     def _attachment_kinematics(self):
         """The MotionPlanner's kinematics (carries attached-object spheres), or
-        None if the planner/grasp_planner isn't ready."""
-        gp = getattr(self.node, 'grasp_planner', None)
+        None if the planner/attachment_services isn't ready."""
+        attach_svc = getattr(self.node, 'attachment_services', None)
         mp = getattr(self.node, 'motion_planner', None)
-        if gp is None or mp is None:
+        if attach_svc is None or mp is None:
             return None
-        try:
-            return gp._attachment_manager()._kinematics
-        except Exception:
-            return None
+        return attach_svc.kinematics()

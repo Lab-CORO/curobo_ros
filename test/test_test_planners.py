@@ -27,7 +27,6 @@ from curobo_msgs.srv import TrajectoryGeneration
 from curobo_msgs.srv import SetRobotStrategy
 from curobo_msgs.action import SendTrajectory
 from std_srvs.srv import Trigger
-from curobo_msgs.action import GraspPlan
 
 def generate_test_description():
     """Generate launch description for test."""
@@ -528,51 +527,6 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertEqual(
             response.success,
-            True,
-            f"Field 'success' doesn't match expected value"
-        )
-
-    def test_13_plan_grasp_goalset_reachability(self):
-        """13 Plan grasp (goalset reachability)"""
-
-        # Storage for feedback messages
-        self.received_feedback = []
-
-        def feedback_callback(feedback_msg):
-            self.received_feedback.append(feedback_msg.feedback)
-
-        # Create action client
-        client = ActionClient(self.node, GraspPlan, '/unified_planner/plan_grasp')
-
-        # Wait for the action server to be available
-        timeout = 90.0
-        if not client.wait_for_server(timeout_sec=timeout):
-            self.fail(f"Action server '/unified_planner/plan_grasp' not available after {timeout}s")
-
-        # Create and send the goal
-        goal = GraspPlan.Goal()
-        set_message_fields(goal, {'grasp_candidates': [{'position': {'x': 0.5, 'y': 0.0, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}}], 'plan_approach_to_grasp': False, 'plan_grasp_to_lift': False, 'execute': False})
-
-        send_future = client.send_goal_async(goal, feedback_callback=feedback_callback)
-        rclpy.spin_until_future_complete(self.node, send_future, timeout_sec=timeout)
-
-        goal_handle = send_future.result()
-        if goal_handle is None:
-            self.fail("Goal request to '/unified_planner/plan_grasp' timed out")
-        self.assertTrue(goal_handle.accepted, "Goal was rejected by '/unified_planner/plan_grasp'")
-
-        # Wait for the result
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=timeout)
-
-        if result_future.result() is None:
-            self.fail("Action '/unified_planner/plan_grasp' did not return a result in time")
-
-        result = result_future.result().result
-
-
-        self.assertEqual(
-            result.success,
             True,
             f"Field 'success' doesn't match expected value"
         )

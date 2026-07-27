@@ -129,9 +129,16 @@ class DepthMapCameraStrategy(CameraStrategy):
                     # cuRobo expects [x, y, z, qw, qx, qy, qz]
                     pose_list = position + [quat_scipy[3], quat_scipy[0], quat_scipy[1], quat_scipy[2]]
                 except TransformException as ex:
+                    # Do NOT fall back to an identity pose: that would integrate
+                    # this frame's depth as if the camera sat at the robot base,
+                    # placing phantom obstacles in the collision world (and
+                    # leaving the real observed volume uncovered) — worse than
+                    # skipping the frame entirely. Drop it and retry next frame.
                     self.node.get_logger().warn(
-                        f'Could not transform {self.base_frame} to {self._frame_id}: {ex}. Using identity pose.')
-                    pose_list = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+                        f'Could not transform {self.base_frame} to {self._frame_id}: '
+                        f'{ex}. Dropping this depth frame (no integration).',
+                        throttle_duration_sec=2.0)
+                    return
 
             # ---- GPU section: EVERY CUDA op is under the lock ----
             # depth->cuda, pose->cuda, rgb alloc AND mapper.integrate are all GPU

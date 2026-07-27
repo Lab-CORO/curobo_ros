@@ -94,6 +94,17 @@ ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 # Safe inside an isolated Docker container.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
+# ── Pin cuda-bindings à l'ABI du driver CUDA 13.2 du Jetson ────────────────────
+# Sans ce pin, l'extra curobo `.[cu13]` (ÉTAPE curobo) tire cuda-bindings 13.3.x,
+# dont le cydriver demande au driver des symboles CUDA 13.3 via cuGetProcAddress_v2
+# absents du driver 13.2 (« cudaVersion 13030 exceeds driver 13020 ») → pointeur de
+# fonction invalide → « illegal memory access » au runtime (voxelisation /
+# perception mapper / kinematics), avec contexte CUDA corrompu en cascade.
+# PIP_CONSTRAINT applique ce pin à TOUS les pip install suivants du build : 13.3
+# n'est jamais installé (au lieu d'être rétrogradé après coup).
+RUN echo "cuda-bindings==13.2.0" > /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
 ARG CACHE_DATE=2026-04-09
 
 # ============================================================
@@ -150,6 +161,13 @@ RUN mkdir /pkgs/curobo_src && cd /pkgs/curobo_src && \
 WORKDIR /pkgs/curobo_src
 # usd-core has no ARM64 wheel on PyPI — usd extra dropped for aarch64
 RUN MAX_JOBS=${MAKEFLAGS##*-j} pip3 install .[cu13,dev] --no-build-isolation
+
+# Guard: fail the build loudly if anything (curobo's [cu13] extra, cuda-core, …)
+# pulled cuda-bindings back to 13.3.x despite PIP_CONSTRAINT. Shipping a 13.3
+# binding on the 13.2 driver = « illegal memory access » on the robot at runtime.
+RUN python3 -c "from importlib.metadata import version; \
+v = version('cuda-bindings'); print('cuda-bindings', v); \
+assert v.startswith('13.2'), 'cuda-bindings must be 13.2.x for the CUDA 13.2 driver, got '+v"
 
 # CuRobo content assets (robot configs, meshes, URDFs) are NOT shipped by
 # `pip install` — curobo's pyproject package-data excludes content/. They only

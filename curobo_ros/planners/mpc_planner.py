@@ -2,9 +2,7 @@
 
 
 import copy
-import csv
 import math
-import os
 import time
 from typing import Any
 
@@ -25,6 +23,7 @@ from curobo._src.util.config_io import resolve_config, join_path
 
 from .reactive_controller import ReactiveController
 from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
+from curobo_ros.core.diagnostics import open_diag_csv
 
 
 # --- MPPI recipe + ACCELERATION control space ------
@@ -278,7 +277,7 @@ class MPCController(ReactiveController):
                 ee_quat = [round(v, 4) for v in kin.tool_poses.quaternion.reshape(-1, 4)[0].cpu().tolist()]
             except Exception as e:
                 self.node.get_logger().warn(f"[MPC DIAG] EE pose log failed: {e}")
-            self.node.get_logger().info(
+            self.node.get_logger().debug(
                 f"[MPC DIAG] setup: goal_xyz={[round(v, 4) for v in raw[0:3]]} "
                 f"goal_quat(wxyz)={[round(v, 4) for v in raw[3:7]]} "
                 f"tool_frame={self.solver.tool_frames[0]} "
@@ -290,24 +289,25 @@ class MPCController(ReactiveController):
     # ---- Debug CSV ----
 
     def _csv_init(self):
-        """Opens a diagnostic CSV (one line per step). Gated by mpc_debug."""
-        self._csv = None
+        """Opens a diagnostic CSV (one line per step). Gated by mpc_debug.
+
+        Closes any CSV left open by a previous goal first (setup() is called
+        once per goal — without this, each new goal leaked the previous
+        file's descriptor).
+        """
+        self._csv_close()
         if not self._debug_enabled():
             return
-        try:
-            d = "/home/ros2_ws/src/curobo_ros/config"
-            os.makedirs(d, exist_ok=True)
-            path = os.path.join(d, f"mpc_diag_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-            self._csv_file = open(path, "w", newline="")
-            self._csv = csv.writer(self._csv_file)
-            self._csv_header_written = False
+        self._csv = open_diag_csv(self.node, "mpc_diag")
+        if self._csv is not None:
             self._csv_t0 = time.monotonic()
             self._csv_t_prev = self._csv_t0
             self._csv_last_vlast = None
-            self.node.get_logger().info(f"[MPC DIAG] CSV -> {path}")
-        except Exception as e:
-            self._csv = None
-            self.node.get_logger().warn(f"[MPC DIAG] CSV init failed: {e}")
+
+    def _csv_close(self):
+        if getattr(self, '_csv', None) is not None:
+            self._csv.close()
+        self._csv = None
 
     def _csv_write(self, result, solve_ms, breakdown: dict):
         if getattr(self, '_csv', None) is None:
@@ -335,15 +335,13 @@ class MPCController(ReactiveController):
         rot_err = getattr(result, 'rotation_error', None)
         pose_pos_err = float(pos_err.reshape(-1)[0].item()) if pos_err is not None else float('nan')
         pose_rot_err = float(rot_err.reshape(-1)[0].item()) if rot_err is not None else float('nan')
-        if not self._csv_header_written:
-            self._csv.writerow(
-                ["t_s", "dt_step_ms", "solve_ms", "fk_err_m", "vfirst_max_dps", "vlast_max_dps",
-                 "accel_win_max_dps2", "accel_boundary_dps2", "vbc_max_dps",
-                 "pose_pos_err_m", "pose_rot_err_rad", "cost_tool_pose_pos", "cost_tool_pose_orient",
-                 "cost_cspace", "con_self_collision", "con_scene_collision", "con_cspace_bound"]
-                + [f"vfirst_j{i+1}_dps" for i in range(dof)]
-                + [f"vlast_j{i+1}_dps" for i in range(dof)])
-            self._csv_header_written = True
+        self._csv.write_header_once(
+            ["t_s", "dt_step_ms", "solve_ms", "fk_err_m", "vfirst_max_dps", "vlast_max_dps",
+             "accel_win_max_dps2", "accel_boundary_dps2", "vbc_max_dps",
+             "pose_pos_err_m", "pose_rot_err_rad", "cost_tool_pose_pos", "cost_tool_pose_orient",
+             "cost_cspace", "con_self_collision", "con_scene_collision", "con_cspace_bound"]
+            + [f"vfirst_j{i+1}_dps" for i in range(dof)]
+            + [f"vlast_j{i+1}_dps" for i in range(dof)])
         self._csv.writerow(
             [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
              f"{self._last_position_error:.5f}", f"{deg(max(abs(v) for v in vfirst)):.2f}",
@@ -357,7 +355,6 @@ class MPCController(ReactiveController):
              f"{breakdown.get('con_scene_collision', float('nan')):.4f}",
              f"{breakdown.get('con_cspace_bound', float('nan')):.4f}"]
             + [f"{deg(v):.2f}" for v in vfirst] + [f"{deg(v):.2f}" for v in vlast])
-        self._csv_file.flush()
 
     def _publish_predicted_path(self, result):
         """Publish the MPC's full predicted end-effector path for RViz.
@@ -507,7 +504,7 @@ class MPCController(ReactiveController):
                 v_first = float(vel[:, 0, :].abs().max()) if is_horizon else float(vel.abs().max())
                 v_last = float(vel[:, -1, :].abs().max()) if is_horizon else v_first
                 n_pts = action.position.shape[1] if action.position.dim() == 3 else 1
-                self.node.get_logger().info(
+                self.node.get_logger().debug(
                     f"[MPC DIAG] step: fk_err={self._last_position_error:.4f}m "
                     f"horizon_points={n_pts} |v|first={v_first:.3e} |v|last={v_last:.3e} rad/s",
                     throttle_duration_sec=1.0,
@@ -644,9 +641,16 @@ class MPCController(ReactiveController):
             return None
 
     def _debug_enabled(self) -> bool:
+        # Off by default: gates both the per-step diagnostic CSV (see
+        # diagnostics.open_diag_csv) and the [MPC DIAG] logging — neither is
+        # meant to run in production. Enable explicitly for tuning/debugging.
         if not self.node.has_parameter('mpc_debug'):
-            self.node.declare_parameter('mpc_debug', True)
+            self.node.declare_parameter('mpc_debug', False)
         return bool(self.node.get_parameter('mpc_debug').value)
+
+    def cancel(self):
+        self._csv_close()
+        super().cancel()
 
 
 # Backwards-compatible alias (old name still used by some imports / docs).
