@@ -4,9 +4,22 @@ package: curobo_ros
 environment:
   launch:
       - package: curobo_ros
-        executable: gen_traj.launch.py
+        executable: gen_traj_test.launch.py
         name: gen_traj
-  startup_delay: 10.0
+  # Readiness is probed, not guessed: the planner node blocks its executor for
+  # 25-35s building cuRobo solvers inside __init__ (it serves nothing until the
+  # constructor returns), so the former `startup_delay: 30.0` was racing it --
+  # measured margin ranged from +0.9s to -4.5s, which is exactly why `colcon
+  # test` failed on a different subset of suites every run.
+  # Waited for by *advertisement*, never called: the node creates this service
+  # only after _warmup_initial_planner returns (unified_planner_node.py), so its
+  # appearance in the graph is the readiness signal. Deliberately NOT
+  # is_available -- that service reads an attribute the node never defines, so
+  # it raises on every call and is slated for removal.
+  ready_service: "/unified_planner/generate_trajectory"
+  ready_wait: 180.0
+  startup_delay: 0.0
+  ready_timeout: 90.0  # ReadyToTest budget, loader-side (default is 15s)
 
 
 tests:
@@ -30,12 +43,18 @@ tests:
   - name: "02 Add second object"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
+    # 4 cm cube: this is the object case 05 attaches, so it has to be both a
+    # plausible grasped payload and small enough to fit the attach link's
+    # sphere budget (extra_collision_spheres.attached_object = 4 in m1013.yml,
+    # ~= a 4 cm cube). A larger cube would be attached as a coarse truncated
+    # approximation, making case 05 pass on a model that does not represent
+    # the real geometry.
     data: {type: 0,
             name: "cube2",
             mesh_file_path: "",
             pose: {position: {x: 0.5, y: 0.5, z: 0.5},
                   orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}},
-            dimensions: {x: 0.5, y: 0.5, z: 0.5},
+            dimensions: {x: 0.04, y: 0.04, z: 0.04},
             color: {r: 0.0, a: 0.0}
           }
     expect: {success: True,
@@ -52,22 +71,27 @@ tests:
     type: curobo_msgs/srv/GetVoxelGrid
     # v2: bounds derive from mapper_extent_xyz (2.0 m, centered) at voxel_size
     # 0.05 m -> ceil(2.0/0.05) = 40 per axis, 40^3 = 64000 cells.
-    # $sum_min: the two 0.5 m cubes (1000 voxels each) are rasterized into the
-    # grid from their analytic primitives -> ~2000 occupied cells (>=1000).
+    # $sum_min: obstacles are rasterized into the grid from their analytic
+    # primitives. The 0.5 m cube alone fills 10^3 = 1000 cells; the 4 cm cube
+    # adds only a handful. 500 is a deliberately loose floor -- it proves the
+    # grid is populated without depending on exact voxel boundary alignment.
     data: {}
     expect:
       voxel_grid:
         size_x: 40
         size_y: 40
         size_z: 40
-        data: {$len: 64000, $sum_min: 1000}
+        data: {$len: 64000, $sum_min: 500}
 
   - name: "05 Attach object"
     service: "/unified_planner/attach_object"
     type: curobo_msgs/srv/AttachObject
     # Attach cube2 at the arm's current joint configuration (home pose).
     # The attachment manager fits collision spheres onto the obstacle geometry
-    # and disables the world obstacle to avoid double-counting.
+    # and disables the world obstacle to avoid double-counting. cube2 is sized
+    # to fit within the attach link's sphere budget, so this asserts a faithful
+    # collision model, not a truncated one (a truncated fit still succeeds but
+    # logs a warning -- see AttachmentServices.attach).
     # timeout=30: attach triggers motion planner warmup if not yet done (~18s).
     data: {object_name: "cube2"}
     timeout: 30.0

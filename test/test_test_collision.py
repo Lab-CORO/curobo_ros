@@ -6,6 +6,7 @@ DO NOT EDIT - Changes will be overwritten
 """
 
 import unittest
+import pytest
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -26,13 +27,15 @@ from curobo_msgs.srv import SetCollisionCache
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import SetLinkCollision
 
+@launch_testing.ready_to_test_action_timeout(90.0)
+@pytest.mark.launch_test
 def generate_test_description():
     """Generate launch description for test."""
     
     launch_file_0_path = PathJoinSubstitution([
         FindPackageShare('curobo_ros'),
         'launch',
-        'gen_traj.launch.py'
+        'gen_traj_test.launch.py'
     ])
 
     launch_file_0 = IncludeLaunchDescription(
@@ -42,11 +45,7 @@ def generate_test_description():
     return LaunchDescription([
         launch_file_0,
         launch_testing.util.KeepAliveProc(),
-        # Wait 10.0s for nodes to stabilize
-        TimerAction(
-            period=10.0,
-            actions=[launch_testing.actions.ReadyToTest()]
-        ),
+        launch_testing.actions.ReadyToTest(),
     ]), locals()
 
 
@@ -57,6 +56,42 @@ class GeneratedTestSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         rclpy.init()
+        cls._wait_until_ready()
+
+    @classmethod
+    def _wait_until_ready(cls):
+        """Block until '/unified_planner/generate_trajectory' is advertised, or fail the suite.
+
+        Graph introspection, never a call. A node that builds heavy
+        state in its constructor advertises nothing until that work
+        is done, so the service appearing in the graph *is* the
+        readiness signal -- and because nothing is invoked, a service
+        whose callback is broken cannot make this hang. Pick a
+        service the node creates late in its startup.
+
+        This replaces guessing with `startup_delay`, which raced
+        machine load and failed on whichever suite happened to be
+        slowest that run.
+        """
+        node = rclpy.create_node('readiness_probe')
+        try:
+            deadline = time.monotonic() + 180.0
+            while time.monotonic() < deadline:
+                advertised = [
+                    name for name, _
+                    in node.get_service_names_and_types()
+                ]
+                if '/unified_planner/generate_trajectory' in advertised:
+                    return
+                time.sleep(0.5)
+            raise AssertionError(
+                "System under test never became ready: "
+                "'/unified_planner/generate_trajectory' was not advertised within 180.0s. "
+                "Raise 'ready_wait' if startup is legitimately "
+                "slower, otherwise the node failed to start -- "
+                "check the launch output above.")
+        finally:
+            node.destroy_node()
 
     @classmethod
     def tearDownClass(cls):
@@ -105,7 +140,7 @@ class GeneratedTestSuite(unittest.TestCase):
         client = self.node.create_client(SetCollisionCache, '/unified_planner/set_collision_cache')
 
         # Wait for service to be available
-        timeout = 10.0
+        timeout = 30.0
         if not client.wait_for_service(timeout_sec=timeout):
             self.fail(f"Service '/unified_planner/set_collision_cache' not available after {timeout}s")
 
@@ -139,6 +174,94 @@ class GeneratedTestSuite(unittest.TestCase):
             f"Field 'obb_cache' doesn't match expected value"
         )
 
+        self.assertEqual(
+            response.blox_cache,
+            1,
+            f"Field 'blox_cache' doesn't match expected value"
+        )
+
+    def test_02b_disable_collision_cache_voxel(self):
+        """02b Disable collision cache voxel"""
+
+        # Create service client
+        client = self.node.create_client(SetCollisionCache, '/unified_planner/set_collision_cache')
+
+        # Wait for service to be available
+        timeout = 30.0
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.fail(f"Service '/unified_planner/set_collision_cache' not available after {timeout}s")
+
+        # Create request
+        request = SetCollisionCache.Request()
+        set_message_fields(request, {'obb': -1, 'mesh': -1, 'blox': 0})
+
+        # Call service
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout)
+
+        # Check if call completed
+        if not future.done():
+            self.fail("Service call to '/unified_planner/set_collision_cache' timed out")
+
+        # Get response
+        response = future.result()
+        if response is None:
+            self.fail("Service call to '/unified_planner/set_collision_cache' failed")
+
+
+        self.assertEqual(
+            response.success,
+            True,
+            f"Field 'success' doesn't match expected value"
+        )
+
+        self.assertEqual(
+            response.blox_cache,
+            0,
+            f"Field 'blox_cache' doesn't match expected value"
+        )
+
+    def test_02c_re_enable_collision_cache_voxel(self):
+        """02c Re-enable collision cache voxel"""
+
+        # Create service client
+        client = self.node.create_client(SetCollisionCache, '/unified_planner/set_collision_cache')
+
+        # Wait for service to be available
+        timeout = 30.0
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.fail(f"Service '/unified_planner/set_collision_cache' not available after {timeout}s")
+
+        # Create request
+        request = SetCollisionCache.Request()
+        set_message_fields(request, {'obb': -1, 'mesh': -1, 'blox': 1})
+
+        # Call service
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout)
+
+        # Check if call completed
+        if not future.done():
+            self.fail("Service call to '/unified_planner/set_collision_cache' timed out")
+
+        # Get response
+        response = future.result()
+        if response is None:
+            self.fail("Service call to '/unified_planner/set_collision_cache' failed")
+
+
+        self.assertEqual(
+            response.success,
+            True,
+            f"Field 'success' doesn't match expected value"
+        )
+
+        self.assertEqual(
+            response.blox_cache,
+            1,
+            f"Field 'blox_cache' doesn't match expected value"
+        )
+
     def test_03_update_motion_gen_config(self):
         """03 Update motion gen config"""
 
@@ -146,7 +269,7 @@ class GeneratedTestSuite(unittest.TestCase):
         client = self.node.create_client(Trigger, '/unified_planner/update_motion_gen_config')
 
         # Wait for service to be available
-        timeout = 10.0
+        timeout = 30.0
         if not client.wait_for_service(timeout_sec=timeout):
             self.fail(f"Service '/unified_planner/update_motion_gen_config' not available after {timeout}s")
 
@@ -187,7 +310,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = SetLinkCollision.Request()
-        set_message_fields(request, {'link_names': ['link6'], 'enabled': False})
+        set_message_fields(request, {'link_names': ['dsr01/link6'], 'enabled': False})
 
         # Call service
         future = client.call_async(request)
@@ -222,7 +345,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = SetLinkCollision.Request()
-        set_message_fields(request, {'link_names': ['link6'], 'enabled': True})
+        set_message_fields(request, {'link_names': ['dsr01/link6'], 'enabled': True})
 
         # Call service
         future = client.call_async(request)
@@ -250,8 +373,5 @@ class PostShutdownTests(unittest.TestCase):
 
     def test_exit_codes(self, proc_info):
         """Test that all processes exited without critical errors"""
-        launch_testing.asserts.assertExitCodes(
-            proc_info,
-            allowable_exit_codes=[0, 1, -2, -6, -9, -11, -15]  # 0: clean, 1: shutdown error, -2: SIGINT, -6/-11: rviz2 SIGABRT/SIGSEGV, -9/-15: rviz2 SIGKILL/SIGTERM on forced shutdown
-        )
+        launch_testing.asserts.assertExitCodes(proc_info)
 

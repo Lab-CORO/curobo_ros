@@ -6,6 +6,7 @@ DO NOT EDIT - Changes will be overwritten
 """
 
 import unittest
+import pytest
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -27,13 +28,15 @@ from curobo_msgs.srv import GetVoxelGrid
 from curobo_msgs.srv import AttachObject
 from curobo_msgs.srv import RemoveObject
 
+@launch_testing.ready_to_test_action_timeout(90.0)
+@pytest.mark.launch_test
 def generate_test_description():
     """Generate launch description for test."""
     
     launch_file_0_path = PathJoinSubstitution([
         FindPackageShare('curobo_ros'),
         'launch',
-        'gen_traj.launch.py'
+        'gen_traj_test.launch.py'
     ])
 
     launch_file_0 = IncludeLaunchDescription(
@@ -43,11 +46,7 @@ def generate_test_description():
     return LaunchDescription([
         launch_file_0,
         launch_testing.util.KeepAliveProc(),
-        # Wait 10.0s for nodes to stabilize
-        TimerAction(
-            period=10.0,
-            actions=[launch_testing.actions.ReadyToTest()]
-        ),
+        launch_testing.actions.ReadyToTest(),
     ]), locals()
 
 
@@ -58,6 +57,42 @@ class GeneratedTestSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         rclpy.init()
+        cls._wait_until_ready()
+
+    @classmethod
+    def _wait_until_ready(cls):
+        """Block until '/unified_planner/generate_trajectory' is advertised, or fail the suite.
+
+        Graph introspection, never a call. A node that builds heavy
+        state in its constructor advertises nothing until that work
+        is done, so the service appearing in the graph *is* the
+        readiness signal -- and because nothing is invoked, a service
+        whose callback is broken cannot make this hang. Pick a
+        service the node creates late in its startup.
+
+        This replaces guessing with `startup_delay`, which raced
+        machine load and failed on whichever suite happened to be
+        slowest that run.
+        """
+        node = rclpy.create_node('readiness_probe')
+        try:
+            deadline = time.monotonic() + 180.0
+            while time.monotonic() < deadline:
+                advertised = [
+                    name for name, _
+                    in node.get_service_names_and_types()
+                ]
+                if '/unified_planner/generate_trajectory' in advertised:
+                    return
+                time.sleep(0.5)
+            raise AssertionError(
+                "System under test never became ready: "
+                "'/unified_planner/generate_trajectory' was not advertised within 180.0s. "
+                "Raise 'ready_wait' if startup is legitimately "
+                "slower, otherwise the node failed to start -- "
+                "check the launch output above.")
+        finally:
+            node.destroy_node()
 
     @classmethod
     def tearDownClass(cls):
@@ -124,7 +159,7 @@ class GeneratedTestSuite(unittest.TestCase):
 
         # Create request
         request = AddObject.Request()
-        set_message_fields(request, {'type': 0, 'name': 'cube2', 'mesh_file_path': '', 'pose': {'position': {'x': 0.5, 'y': 0.5, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 0.0}}, 'dimensions': {'x': 0.5, 'y': 0.5, 'z': 0.5}, 'color': {'r': 0.0, 'a': 0.0}})
+        set_message_fields(request, {'type': 0, 'name': 'cube2', 'mesh_file_path': '', 'pose': {'position': {'x': 0.5, 'y': 0.5, 'z': 0.5}, 'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 0.0}}, 'dimensions': {'x': 0.04, 'y': 0.04, 'z': 0.04}, 'color': {'r': 0.0, 'a': 0.0}})
 
         # Call service
         future = client.call_async(request)
@@ -242,8 +277,8 @@ class GeneratedTestSuite(unittest.TestCase):
 
         self.assertGreaterEqual(
             sum(list(response.voxel_grid.data)),
-            1000,
-            f"Field 'data' sum {sum(list(response.voxel_grid.data))} is below expected minimum 1000"
+            500,
+            f"Field 'data' sum {sum(list(response.voxel_grid.data))} is below expected minimum 500"
         )
 
     def test_05_attach_object(self):
@@ -416,8 +451,5 @@ class PostShutdownTests(unittest.TestCase):
 
     def test_exit_codes(self, proc_info):
         """Test that all processes exited without critical errors"""
-        launch_testing.asserts.assertExitCodes(
-            proc_info,
-            allowable_exit_codes=[0, 1, -2, -6, -9, -11, -15]  # 0: clean, 1: shutdown error, -2: SIGINT, -6/-11: rviz2 SIGABRT/SIGSEGV, -9/-15: rviz2 SIGKILL/SIGTERM on forced shutdown
-        )
+        launch_testing.asserts.assertExitCodes(proc_info)
 

@@ -18,20 +18,8 @@ FAILED_TESTS=0
 FAILED_TEST_LIST=()
 
 
-echo "Running test_test_robot_strategy..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_robot_strategy.py" > /dev/null 2>&1; then
-    echo "  ✓ test_test_robot_strategy PASSED"
-    ((PASSED_TESTS++)) || true
-else
-    echo "  ✗ test_test_robot_strategy FAILED"
-    ((FAILED_TESTS++)) || true
-    FAILED_TEST_LIST+=("test_test_robot_strategy")
-fi
-((TOTAL_TESTS++)) || true
-echo ""
-
 echo "Running test_test_trajectory..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_trajectory.py" > /dev/null 2>&1; then
+if timeout 350 launch_test "${TEST_DIR}/test_test_trajectory.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_trajectory PASSED"
     ((PASSED_TESTS++)) || true
 else
@@ -42,44 +30,8 @@ fi
 ((TOTAL_TESTS++)) || true
 echo ""
 
-echo "Running test_test_kinematics..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_kinematics.py" > /dev/null 2>&1; then
-    echo "  ✓ test_test_kinematics PASSED"
-    ((PASSED_TESTS++)) || true
-else
-    echo "  ✗ test_test_kinematics FAILED"
-    ((FAILED_TESTS++)) || true
-    FAILED_TEST_LIST+=("test_test_kinematics")
-fi
-((TOTAL_TESTS++)) || true
-echo ""
-
-echo "Running test_test_planners..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_planners.py" > /dev/null 2>&1; then
-    echo "  ✓ test_test_planners PASSED"
-    ((PASSED_TESTS++)) || true
-else
-    echo "  ✗ test_test_planners FAILED"
-    ((FAILED_TESTS++)) || true
-    FAILED_TEST_LIST+=("test_test_planners")
-fi
-((TOTAL_TESTS++)) || true
-echo ""
-
-echo "Running test_test_mesh_obstacle..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_mesh_obstacle.py" > /dev/null 2>&1; then
-    echo "  ✓ test_test_mesh_obstacle PASSED"
-    ((PASSED_TESTS++)) || true
-else
-    echo "  ✗ test_test_mesh_obstacle FAILED"
-    ((FAILED_TESTS++)) || true
-    FAILED_TEST_LIST+=("test_test_mesh_obstacle")
-fi
-((TOTAL_TESTS++)) || true
-echo ""
-
 echo "Running test_test_collision..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_collision.py" > /dev/null 2>&1; then
+if timeout 450 launch_test "${TEST_DIR}/test_test_collision.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_collision PASSED"
     ((PASSED_TESTS++)) || true
 else
@@ -91,13 +43,61 @@ fi
 echo ""
 
 echo "Running test_test_object..."
-if timeout 60 launch_test "${TEST_DIR}/test_test_object.py" > /dev/null 2>&1; then
+if timeout 420 launch_test "${TEST_DIR}/test_test_object.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_object PASSED"
     ((PASSED_TESTS++)) || true
 else
     echo "  ✗ test_test_object FAILED"
     ((FAILED_TESTS++)) || true
     FAILED_TEST_LIST+=("test_test_object")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_planners..."
+if timeout 680 launch_test "${TEST_DIR}/test_test_planners.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_planners PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_planners FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_planners")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_robot_strategy..."
+if timeout 330 launch_test "${TEST_DIR}/test_test_robot_strategy.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_robot_strategy PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_robot_strategy FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_robot_strategy")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_kinematics..."
+if timeout 350 launch_test "${TEST_DIR}/test_test_kinematics.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_kinematics PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_kinematics FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_kinematics")
+fi
+((TOTAL_TESTS++)) || true
+echo ""
+
+echo "Running test_test_mesh_obstacle..."
+if timeout 420 launch_test "${TEST_DIR}/test_test_mesh_obstacle.py" > /dev/null 2>&1; then
+    echo "  ✓ test_test_mesh_obstacle PASSED"
+    ((PASSED_TESTS++)) || true
+else
+    echo "  ✗ test_test_mesh_obstacle FAILED"
+    ((FAILED_TESTS++)) || true
+    FAILED_TEST_LIST+=("test_test_mesh_obstacle")
 fi
 ((TOTAL_TESTS++)) || true
 echo ""

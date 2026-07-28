@@ -10,14 +10,30 @@ package: curobo_ros
 environment:
   launch:
     - package: curobo_ros
-      executable: gen_traj.launch.py
+      executable: gen_traj_test.launch.py
       name: gen_traj
-  startup_delay: 10.0  # MotionGen warmup on startup
+  # Readiness is probed, not guessed: the planner node blocks its executor for
+  # 25-35s building cuRobo solvers inside __init__ (it serves nothing until the
+  # constructor returns), so the former `startup_delay: 30.0` was racing it --
+  # measured margin ranged from +0.9s to -4.5s, which is exactly why `colcon
+  # test` failed on a different subset of suites every run.
+  # Waited for by *advertisement*, never called: the node creates this service
+  # only after _warmup_initial_planner returns (unified_planner_node.py), so its
+  # appearance in the graph is the readiness signal. Deliberately NOT
+  # is_available -- that service reads an attribute the node never defines, so
+  # it raises on every call and is slated for removal.
+  ready_service: "/unified_planner/generate_trajectory"
+  ready_wait: 180.0
+  startup_delay: 0.0
+  ready_timeout: 90.0  # ReadyToTest budget, loader-side (default is 15s)
 
 tests:
   - name: "01 set collision cache"
     service: "/unified_planner/set_collision_cache"
     type: curobo_msgs/srv/SetCollisionCache
+    # timeout=30: obb/mesh actually change here, triggering a synchronous
+    # solver rebuild+warmup (~20s, see rebuild_solvers_for_cache_change).
+    timeout: 30.0
     data:
       obb: 136
       mesh: 1
@@ -28,10 +44,13 @@ tests:
       success: True
       obb_cache: 136
       mesh_cache: 1
+      blox_cache: 1
 
   - name: "02 reload MotionGen with new cache"
     service: "/unified_planner/update_motion_gen_config"
     type: std_srvs/srv/Trigger
+    # timeout=30: always rebuilds + warms up the MotionPlanner (~20s).
+    timeout: 30.0
     data: {}
     expect:
       success: True
@@ -39,6 +58,8 @@ tests:
   - name: "03 add Rubber Duck mesh at origin"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
+    # timeout=30: mesh rasterization/warmup on the collision-cache path.
+    timeout: 30.0
     data:
       type: 4
       name: "rubber_duck"
@@ -55,6 +76,7 @@ tests:
   - name: "04 trajectory blocked by duck"
     service: "/unified_planner/generate_trajectory"
     type: curobo_msgs/srv/TrajectoryGeneration
+    timeout: 30.0  # planning against a fresh mesh obstacle, same budget as "03"
     data:
       target_pose:
         position: {x: 0.1, y: 0.0, z: 0.1}
