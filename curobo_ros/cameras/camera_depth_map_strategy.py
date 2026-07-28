@@ -150,7 +150,7 @@ class DepthMapCameraStrategy(CameraStrategy):
             mapper = getattr(self.node, 'mapper', None)
             if mapper is None:
                 self.node.get_logger().warn(
-                    "No mapper on node — depth frame ignored. "
+                    "No mapper on node - depth frame ignored. "
                     "Unified planner should expose `node.mapper` (curobo.perception.Mapper).",
                     throttle_duration_sec=5.0)
                 return

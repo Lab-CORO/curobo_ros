@@ -61,7 +61,7 @@ class FKServices:
         node.create_service(WarmupFK, f'{name}/warmup_fk', self._warmup_fk_callback)
         node.create_service(Fk,       f'{name}/fk',        self._fk_callback)
 
-        node.get_logger().info("FKServices registered (not yet initialized — call warmup_fk)")
+        node.get_logger().info("FKServices registered (not yet initialized - call warmup_fk)")
 
     # ------------------------------------------------------------------
     # Warmup

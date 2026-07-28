@@ -90,6 +90,13 @@ class SinglePlanner(TrajectoryPlanner):
         self.planned_trajectory = None
         self.start_state = None
         self.goal_pose = None
+        # Buffer epoch returned by the preview set_command() in plan(), paired
+        # with send_trajectrory(expect_epoch=...) in execute() — see M2 in the
+        # pre-publication audit: plan() and execute() are separate calls (a
+        # service call, then later an action), so another set_command() could
+        # otherwise land in between and execute() would send someone else's
+        # trajectory.
+        self._command_epoch = None
 
         # Cancellation flag
         self._cancelled = False
@@ -157,7 +164,7 @@ class SinglePlanner(TrajectoryPlanner):
         if len(constraints) != 6:
             self.node.get_logger().warn(
                 f"{self.get_planner_name()}: trajectory_constraints must have 6 entries "
-                f"[theta_x, theta_y, theta_z, x, y, z], got {len(constraints)} — ignoring."
+                f"[theta_x, theta_y, theta_z, x, y, z], got {len(constraints)} - ignoring."
             )
             return False
 
@@ -231,6 +238,10 @@ class SinglePlanner(TrajectoryPlanner):
         # Store for execution
         self.start_state = start_state
         self.goal_pose = goal_request  # Store request, child classes interpret it
+        # Reset: only set below if this call actually binds a fresh
+        # set_command() (robot_context is not None). A stale epoch from a
+        # PREVIOUS plan() call must not silently guard this one's execute().
+        self._command_epoch = None
 
         try:
             # Let child class generate the trajectory using MotionGen
@@ -287,7 +298,7 @@ class SinglePlanner(TrajectoryPlanner):
                     return t.detach().cpu().tolist()
 
                 self.node.get_logger().debug(
-                    f"Trajectory shapes — pos: {tuple(traj.position.shape)}, "
+                    f"Trajectory shapes - pos: {tuple(traj.position.shape)}, "
                     f"vel: {tuple(traj.velocity.shape) if traj.velocity is not None else None}, "
                     f"acc: {tuple(traj.acceleration.shape) if traj.acceleration is not None else None}"
                 )
@@ -303,7 +314,7 @@ class SinglePlanner(TrajectoryPlanner):
                 if acc_list is None:
                     acc_list = [[0.0] * len(pos_list[0]) for _ in pos_list]
 
-                robot_context.set_command(
+                self._command_epoch = robot_context.set_command(
                     traj.joint_names,
                     vel_list,
                     acc_list,
@@ -415,8 +426,16 @@ class SinglePlanner(TrajectoryPlanner):
             # Reset cancellation flag at the start of execution
             self._cancelled = False
 
-            # Start trajectory execution
-            robot_context.send_trajectrory()
+            # Start trajectory execution. expect_epoch guards against another
+            # set_command() landing between plan() (which set _command_epoch)
+            # and this call — see JointCommandStrategy.buffer_epoch / M2.
+            if not robot_context.send_trajectrory(expect_epoch=self._command_epoch):
+                self.node.get_logger().error(
+                    f"{self.get_planner_name()}: refusing to execute - the "
+                    f"planned trajectory was superseded by a newer command "
+                    f"before execution started."
+                )
+                return False
 
             self.node.get_logger().info(
                 f"{self.get_planner_name()}: Trajectory execution started"

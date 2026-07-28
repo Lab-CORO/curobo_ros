@@ -53,7 +53,6 @@ class ConfigWrapperMotion(ConfigWrapper):
         # CUROBO_USE_CUDA_GRAPH env var. Disabling avoids the MPC->Classic
         # captured-graph replay segfault at the cost of per-plan latency.
         self.use_cuda_graph = resolve_use_cuda_graph(node)
-        self.interpolation_dt = 0.03
         self.self_collision_check = True
         self.position_tolerance = 0.005
         self.orientation_tolerance = 0.05

@@ -19,7 +19,9 @@ class JointPoseStrategy(JointCommandStrategy):
 
     def __init__(self, node, dt, description=None):
         super().__init__(node, dt, description)
-        self.dt = 0.02
+        # self.dt (base class) is already the resolved interpolation_dt —
+        # curobo_ros is the single authority on trajectory pacing (see
+        # resolve_interpolation_dt).
 
         command_topic = self.params.get('command_topic', '/execute_trajectory')
         self.pub_trajectory = node.create_publisher(JointTrajectory, command_topic, 10)
@@ -39,49 +41,56 @@ class JointPoseStrategy(JointCommandStrategy):
         self.joint_pose = [0.0] * self.dof
 
     def send_trajectrory(self):
-        self.robot_state = RobotState.RUNNING
-        msg = JointTrajectory()
-        msg.joint_names = self.joint_names
+        with self.buffer_lock:
+            self.robot_state = RobotState.RUNNING
+            msg = JointTrajectory()
+            msg.joint_names = self.joint_names
 
-        if len(self.position_command) == 0:
-            self.trajectory_progression = 1.0
+            if len(self.position_command) == 0:
+                self.trajectory_progression = 1.0
 
-        for i in range(len(self.position_command)):
-            point = JointTrajectoryPoint()
-            point.positions = self.position_command[i]   # positions only
-            point.time_from_start = Duration(
-                sec=int(self.dt * i), nanosec=int((self.dt * i % 1) * 1e9))
-            msg.points.append(point)
+            for i in range(len(self.position_command)):
+                point = JointTrajectoryPoint()
+                point.positions = self.position_command[i]   # positions only
+                point.time_from_start = Duration(
+                    sec=int(self.dt * i), nanosec=int((self.dt * i % 1) * 1e9))
+                msg.points.append(point)
 
-        self.position_command = []
-        self.vel_command = []
-        self.accel_command = []
-        self.trajectory_progression = 0.0
+            self.position_command = []
+            self.vel_command = []
+            self.accel_command = []
+            self.trajectory_progression = 0.0
+
         self.pub_trajectory.publish(msg)
 
     def get_joint_pose(self):
-        return self.joint_pose
+        with self.buffer_lock:
+            return list(self.joint_pose)
 
     def stop_robot(self):
-        self.vel_command = []
-        self.position_command = []
-        self.accel_command = []
-        self.command_index = 0
-        self.trajectory_progression = 0.0
-        self.robot_state = RobotState.STOPPED
+        with self.buffer_lock:
+            self.vel_command = []
+            self.position_command = []
+            self.accel_command = []
+            self.command_index = 0
+            self.trajectory_progression = 0.0
+            self.robot_state = RobotState.STOPPED
         self.pub_trajectory.publish(JointTrajectory())
 
     def callback_trajectory_state(self, msg):
-        self.trajectory_progression = msg.data
+        with self.buffer_lock:
+            self.trajectory_progression = msg.data
 
     def callback_joint_pose(self, msg):
         # Positional read in the driver's publication order (DOF-agnostic) — see
         # JointSpeedStrategy.callback_joint_pose: driver names may not match the
         # curobo cspace names, so a by-name remap would drop every joint.
         n = self.dof or len(msg.position)
-        self.joint_pose = list(msg.position[:n])
-        if msg.name:
-            self.joint_names = list(msg.name[:n])
+        with self.buffer_lock:
+            self.joint_pose = list(msg.position[:n])
+            if msg.name:
+                self.joint_names = list(msg.name[:n])
 
     def get_progression(self):
-        return self.trajectory_progression
+        with self.buffer_lock:
+            return self.trajectory_progression

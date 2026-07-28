@@ -59,7 +59,11 @@ class ReactiveController(TrajectoryPlanner):
 
         # Raw [x, y, z, qw, qx, qy, qz] written from the ROS thread (topic) and
         # consumed on the control-loop thread to avoid racing CUDA graph capture.
-        self.latest_goal = None
+        # The lock only guards the pointer swap (see set_live_goal/_take_live_goal)
+        # — apply_live_goal() itself runs outside it, since it does CUDA work.
+        self._live_goal_lock = threading.Lock()
+        self._latest_goal = None
+        self._latest_goal_fresh = False
 
         # Tunables (overwritten from the per-call config in plan()).
         self.convergence_threshold = 0.01      # meters
@@ -219,6 +223,32 @@ class ReactiveController(TrajectoryPlanner):
         """Latest scalar position error (meters)."""
         return self._last_position_error
 
+    def set_live_goal(self, raw_goal) -> None:
+        """Deposit a live goal update. Called from the ROS topic thread.
+
+        Only swaps a pointer under the lock — the expensive retargeting
+        (apply_live_goal, CUDA work) happens on the control-loop thread after
+        _take_live_goal() hands it off, never here.
+        """
+        with self._live_goal_lock:
+            self._latest_goal = list(raw_goal)
+            self._latest_goal_fresh = True
+
+    def _take_live_goal(self):
+        """Atomically take-and-clear the pending live goal, or None if stale.
+
+        Replaces the previous test-read-clear sequence (latest_goal is not
+        None -> read -> set to None), which raced: a goal written by the ROS
+        thread between the read and the clear was silently dropped.
+        """
+        with self._live_goal_lock:
+            if not self._latest_goal_fresh:
+                return None
+            raw = self._latest_goal
+            self._latest_goal = None
+            self._latest_goal_fresh = False
+            return raw
+
     # ------------------------------------------------------------------
     # Planning: set up the reactive goal (no full trajectory is produced).
     # ------------------------------------------------------------------
@@ -241,6 +271,10 @@ class ReactiveController(TrajectoryPlanner):
                 setup_ok = self.setup(start_state, goal_request)
             if not setup_ok:
                 return PlannerResult(success=False, message="Failed to set reactive goal")
+            # Discard any live goal left over from a previous session — it must
+            # not be silently applied to this new one. A goal arriving AFTER
+            # this point (i.e. after setup) is still honoured normally.
+            self._take_live_goal()
             self.is_goal_active = True
 
             if robot_context is not None:
@@ -316,9 +350,8 @@ class ReactiveController(TrajectoryPlanner):
                     self.node.refresh_perception_world()
 
                 # Consume a pending live goal on the loop thread only.
-                if self.latest_goal is not None:
-                    raw = self.latest_goal
-                    self.latest_goal = None
+                raw = self._take_live_goal()
+                if raw is not None:
                     self.apply_live_goal(raw)
 
                 st_time = time.time()
@@ -419,9 +452,8 @@ class ReactiveController(TrajectoryPlanner):
                             and hasattr(self.node, 'refresh_perception_world')):
                         self.node.refresh_perception_world()
 
-                    if self.latest_goal is not None:
-                        raw = self.latest_goal
-                        self.latest_goal = None
+                    raw = self._take_live_goal()
+                    if raw is not None:
                         self.apply_live_goal(raw)
 
                     st_time = time.time()
@@ -485,7 +517,7 @@ class ReactiveController(TrajectoryPlanner):
 
             if action is None:
                 self.node.get_logger().warn(
-                    f"{self.get_planner_name()}: command tick out of time — nothing sent",
+                    f"{self.get_planner_name()}: command tick out of time - nothing sent",
                     throttle_duration_sec=1.0,
                 )
                 return
@@ -607,12 +639,12 @@ class ReactiveController(TrajectoryPlanner):
     def _init_robot_at_start(self, robot_context, start_state: JointState):
         """Seed the robot/visualization at the start configuration."""
         start_position = start_state.position[0].cpu().tolist()
-        if robot_context.robot_strategy is not None:
-            joint_names = robot_context.robot_strategy.get_joint_name()
-        else:
-            joint_names = self.solver.kinematics.joint_names
         n = len(start_position)
-        robot_context.set_command(joint_names, [[0.0] * n], [[0.0] * n], [start_position])
+        # joint_names=None -> RobotContext resolves them itself, inside the
+        # same critical section as the command (see set_command's docstring:
+        # reading robot_strategy.get_joint_name() here first would race a
+        # concurrent strategy switch).
+        robot_context.set_command(None, [[0.0] * n], [[0.0] * n], [start_position])
         self.node.get_logger().info(
             f"{self.get_planner_name()}: robot init'd at "
             f"{[f'{x:.3f}' for x in start_position]}"
@@ -647,6 +679,7 @@ class ReactiveController(TrajectoryPlanner):
             a = acc_t[0] if (acc_t is not None and acc_t.dim() > 1) else acc_t
             acceleration = [a.cpu().tolist() if a is not None else [0.0] * len(position[0])]
 
-        joint_names = robot_context.get_joint_name()
-        robot_context.set_command(joint_names, velocity, acceleration, position)
-        robot_context.send_trajectrory()
+        # Atomic: no gap between load and send where a concurrent producer
+        # (another call site touching the same RobotContext) could overwrite
+        # the buffers first — see RobotContext.set_and_send_command.
+        robot_context.set_and_send_command(None, velocity, acceleration, position)

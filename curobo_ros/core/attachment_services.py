@@ -19,6 +19,7 @@ following the same self-registering pattern as ``IKServices`` / ``FKServices``.
 
 from std_srvs.srv import Trigger
 from curobo.types import JointState
+from curobo.sphere_fit import estimate_sphere_count
 
 from curobo_msgs.srv import AttachObject
 
@@ -108,15 +109,54 @@ class AttachmentServices:
         if obstacle is None:
             raise ValueError(f"Obstacle '{object_name}' not found in the scene")
         with self.node.gpu_lock:
-            self._attachment_manager().attach(
+            am = self._attachment_manager()
+            # cuRobo's automatic fit (num_spheres=None) sizes itself to the
+            # obstacle's geometry, not to what the robot YAML allocated for
+            # ATTACH_LINK, and aborts the attach when it overruns. Capping the
+            # fit at the slot count makes attach always succeed -- but a cap
+            # that truncates silently hands back a collision model far coarser
+            # than the payload's real shape, and the caller is about to plan
+            # motions against exactly that model. So cap, and say so.
+            n_slots = am.kinematics_params.get_sphere_index_from_link_name(
+                ATTACH_LINK).shape[0]
+            n_needed = self._estimate_sphere_need(obstacle)
+            if n_needed > n_slots:
+                self.node.get_logger().warn(
+                    f"Attached object '{object_name}' needs about {n_needed} "
+                    f"collision spheres but link '{ATTACH_LINK}' allocates only "
+                    f"{n_slots}: its collision model is a coarse approximation "
+                    f"that may not cover corners or protrusions. Raise "
+                    f"'extra_collision_spheres.{ATTACH_LINK}' in the robot YAML "
+                    f"before planning with this payload on real hardware."
+                )
+            # Only cap when the estimate exceeds the budget; below it, let the
+            # estimate stand so a small object isn't padded to the full slot
+            # count. n_needed == 0 means the estimate failed -> fall back.
+            n_fit = min(n_needed, n_slots) if n_needed > 0 else n_slots
+            am.attach(
                 joint_states=grasp_end_state,
                 obstacles=[obstacle],
                 link_name=ATTACH_LINK,
+                num_spheres=n_fit,
                 disable_obstacle_names=[object_name],
             )
         self._attached_name = object_name
         self.node.get_logger().info(
             f"Attached '{object_name}' to link '{ATTACH_LINK}'")
+
+    @staticmethod
+    def _estimate_sphere_need(obstacle) -> int:
+        """cuRobo's own estimate of how many spheres this geometry needs.
+
+        Same heuristic the AttachmentManager applies when ``num_spheres=None``
+        (bounding-box volume, 1 sphere per 15 cm3, capped at 100). Returns 0 if
+        it can't be computed, so a failure here never blocks an attach.
+        """
+        try:
+            return estimate_sphere_count(
+                obstacle.get_trimesh_mesh(transform_with_pose=True))
+        except Exception:
+            return 0
 
     @staticmethod
     def _find_obstacle(scene, name: str):

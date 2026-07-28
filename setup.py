@@ -7,7 +7,7 @@ package_name = 'curobo_ros'
 setup(
     name=package_name,
     version='1.0.0',
-    packages=find_packages(exclude=['test', 'test.*', 'tests', 'tests.*']),
+    packages=find_packages(exclude=['test', 'test.*']),
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -27,7 +27,12 @@ setup(
     maintainer_email='will@todo.todo',
     description='GPU-accelerated motion planning for ROS 2, powered by cuRobo.',
     license='Apache-2.0',
-    tests_require=['pytest'],
+    # setuptools 81 dropped `tests_require`; it now warns "Unknown distribution
+    # option" and the key never reaches colcon. colcon's has_test_dependency()
+    # then reports no pytest dependency, PytestPythonTestingStep.match() fails,
+    # and `colcon test` silently falls back to `python -m unittest` -> "NO TESTS
+    # RAN". extras_require is the supported spelling and colcon reads it.
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [
             'curobo_trajectory_planner = curobo_ros.core.unified_planner_node:main',

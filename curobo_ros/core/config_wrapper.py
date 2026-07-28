@@ -28,6 +28,22 @@ def resolve_use_cuda_graph(node, default: bool = True) -> bool:
     return default
 
 
+def resolve_interpolation_dt(node, default: float = 0.025) -> float:
+    """Resolve the trajectory sampling step (s) — single source of truth for dt.
+
+    curobo_ros is the authority on dt: this value is what MotionPlanner/MPC
+    sample their interpolated trajectory at, and it is what every
+    JointCommandStrategy stamps into time_from_start on the outgoing
+    JointTrajectory. Declares the ``interpolation_dt`` ROS parameter if the
+    node hasn't declared it yet (nodes other than the unified planner, e.g.
+    generate_trajectory / robot_segmentation / examples, that don't declare it
+    themselves), so this is always safe to call first.
+    """
+    if not node.has_parameter('interpolation_dt'):
+        node.declare_parameter('interpolation_dt', default)
+    return float(node.get_parameter('interpolation_dt').get_parameter_value().double_value)
+
+
 class ConfigWrapper(ABC):
     """
     Orchestrator class that wraps configuration and management for trajectory generation.

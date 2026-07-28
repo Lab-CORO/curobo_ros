@@ -200,7 +200,7 @@ class ObstacleManager:
             # sans fin et le nombre de voxels occupés croît de façon monotone même
             # sur une scène statique (bruit de bord franchissant peu à peu le seuil).
             # <1.0 fait décroître les vieilles observations → carte stationnaire.
-            decay_factor=0.1,
+            decay_factor=0.9,
             num_cameras=1,
         ))
         self.node.mapper = self.mapper
@@ -261,7 +261,7 @@ class ObstacleManager:
             if n_bad > 0:
                 self.node.get_logger().error(
                     f"Perception ESDF has {n_bad}/{n} non-finite (NaN/Inf) values "
-                    f"— rejecting to avoid a collision-kernel segfault "
+                    f"- rejecting to avoid a collision-kernel segfault "
                     f"(dims={getattr(vg, 'dims', '?')}).",
                     throttle_duration_sec=2.0)
                 return False
@@ -276,7 +276,7 @@ class ObstacleManager:
                 # kernel. Reject — letting it through would segfault the node.
                 self.node.get_logger().error(
                     f"Perception ESDF voxel count {n} exceeds expected {expected} "
-                    f"(voxel_size={vsize}, extent={self._mapper_extent_xyz}) — "
+                    f"(voxel_size={vsize}, extent={self._mapper_extent_xyz}) - "
                     f"rejecting to avoid a collision-kernel overflow.",
                     throttle_duration_sec=2.0)
                 return False
@@ -290,7 +290,7 @@ class ObstacleManager:
                 self.node.get_logger().warn(
                     f"Perception ESDF looks saturated: ~{occ*100:.1f}% of "
                     f"{n} voxels have SDF<=0. Planning will likely report "
-                    f"'Start or End state in collision' — check the mapper/TSDF "
+                    f"'Start or End state in collision' - check the mapper/TSDF "
                     f"input (stale depth, bad extrinsics, empty cloud).",
                     throttle_duration_sec=2.0)
             else:
@@ -503,17 +503,7 @@ class ObstacleManager:
         n_obs = sum(len(getattr(self.scene, b) or [])
                     for b in ('cuboid', 'sphere', 'capsule', 'cylinder', 'mesh'))
         if n_obs > 0:
-            try:
-                n_prim = self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
-            except Exception as e:
-                node.get_logger().warn(f'GPU primitive voxelization failed ({e}), falling back to CPU')
-                try:
-                    n_prim = self._rasterize_primitives_cpu(node, voxel_grid, grid_min, voxel_size, size)
-                    if n_prim:
-                        node.get_logger().debug(
-                            f'Filled voxel grid from analytic primitives (CPU, {n_prim} cells)')
-                except Exception as e2:
-                    node.get_logger().warn(f'CPU primitive voxelization also failed: {e2}')
+            n_prim = self._rasterize_primitives_gpu(node, voxel_grid, grid_min, voxel_size, size)
 
         # Attributes each occupied cell to its source: n_occ is the Mapper's
         # observed-and-inside voxels, n_prim is what _rasterize_primitives_gpu
@@ -531,12 +521,26 @@ class ObstacleManager:
         """Return occupied voxels for the full scene (Mapper ESDF + analytic primitives).
 
         Analytic primitives are rasterized via a pre-allocated GPU SceneCollision
-        query (batch of point-spheres with r=0) — ~29× faster than CPU trimesh
-        and uses the same collision checker as the planner (exact consistency).
-        Falls back to CPU trimesh if the GPU path is unavailable.
+        query (batch of point-spheres with r=0), using the same collision checker
+        as the planner (exact consistency). No CPU fallback: on a GPU
+        rasterization failure, this returns a size 0x0x0 grid rather than
+        raising — the service still responds (an uncaught exception here would
+        leave the caller blocked until its own client-side timeout, since a
+        service callback that raises never sends a reply).
         """
         voxel_size = self._resolve_voxel_size(node)
-        voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
+        try:
+            voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
+        except Exception as e:
+            node.get_logger().error(f'get_voxel_grid: computation failed ({e})')
+            response.voxel_grid.resolutions = rnp.msgify(
+                Vector3, np.array([voxel_size, voxel_size, voxel_size])
+            )
+            response.voxel_grid.size_x = 0
+            response.voxel_grid.size_y = 0
+            response.voxel_grid.size_z = 0
+            response.voxel_grid.data = []
+            return response
 
         response.voxel_grid.resolutions = rnp.msgify(
             Vector3, np.array([voxel_size, voxel_size, voxel_size])
@@ -557,9 +561,21 @@ class ObstacleManager:
         (linear = x * size_y * size_z + y * size_z + z), which is typically
         1–2 orders of magnitude smaller on the wire than the dense grid.
         Driven by the periodic timer in RosServiceManager.
+
+        On a GPU rasterization failure, this cycle is skipped entirely — no
+        partial grid (missing the analytic primitives) is published. A silent
+        topic is an unambiguous signal of a stalled publisher; a grid quietly
+        missing obstacles is not distinguishable from "no obstacles there".
         """
         voxel_size = self._resolve_voxel_size(node)
-        voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
+        try:
+            voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
+        except Exception as e:
+            node.get_logger().warn(
+                f'Voxel grid computation failed ({e}) - skipping this publish '
+                f'cycle rather than publish a grid without analytic primitives',
+                throttle_duration_sec=5.0)
+            return
 
         # C-order flatten matches the message convention exactly.
         occupied = np.flatnonzero(voxel_grid).astype(np.int32)
@@ -622,7 +638,7 @@ class ObstacleManager:
         The scene handed to this query is ANALYTIC PRIMITIVES ONLY — see
         primitives_only_scene() for why the perception voxel layer must stay out.
         """
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = f'cuda:{torch.cuda.current_device()}' if torch.cuda.is_available() else 'cpu'
         dtype = torch.float32
         primitives_scene = self.primitives_only_scene()
 
@@ -637,15 +653,9 @@ class ObstacleManager:
 
             dev_cfg = DeviceCfg(device=device)
             # SceneCollision is built fresh — it will be synced with the scene below.
-            # Pré-allouer le cache VOXEL: la scène gagne une couche VoxelGrid (ESDF
-            # nvblox) APRÈS la construction de ce checker, et load_collision_model
-            # échoue alors avec "Voxel cache not initialized" → fallback CPU (~10s,
-            # pur CPU, bloque la boucle MPC — cf. debug 2026-07-15, GPU idle). On
-            # ne touche PAS cuboid/mesh (défaut = dimensionné sur la scène).
             cfg = SceneCollisionCfg(
                 device_cfg=dev_cfg,
                 scene_model=primitives_scene,
-                cache={"voxel": self.collision_cache["voxel"]},
             )
             self._voxel_sc = SceneCollision.from_config(cfg)
 
@@ -717,37 +727,6 @@ class ObstacleManager:
             mesh=self.scene.mesh,
         )
 
-    def _rasterize_primitives_cpu(self, node, voxel_grid, grid_min, voxel_size, size) -> int:
-        """CPU trimesh fallback for analytic primitive rasterization."""
-        grid_min = np.asarray(grid_min, dtype=np.float64)
-        size = np.asarray(size, dtype=np.int64)
-        total = 0
-        for bucket in ('cuboid', 'sphere', 'capsule', 'cylinder', 'mesh'):
-            for obs in (getattr(self.scene, bucket, None) or []):
-                try:
-                    mesh = obs.get_trimesh_mesh(transform_with_pose=True)
-                    lo = np.asarray(mesh.bounds[0], dtype=np.float64)
-                    hi = np.asarray(mesh.bounds[1], dtype=np.float64)
-                    i0 = np.maximum(np.floor((lo - grid_min) / voxel_size).astype(np.int64), 0)
-                    i1 = np.minimum(np.ceil((hi - grid_min) / voxel_size).astype(np.int64), size)
-                    if np.any(i1 <= i0):
-                        continue
-                    ax = np.arange(i0[0], i1[0])
-                    ay = np.arange(i0[1], i1[1])
-                    az = np.arange(i0[2], i1[2])
-                    gx, gy, gz = np.meshgrid(ax, ay, az, indexing='ij')
-                    idx = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
-                    centers = grid_min + (idx + 0.5) * voxel_size
-                    inside = mesh.contains(centers)
-                    sel = idx[inside]
-                    if len(sel):
-                        voxel_grid[sel[:, 0], sel[:, 1], sel[:, 2]] = 1
-                    total += int(inside.sum())
-                except Exception as e:
-                    node.get_logger().warn(
-                        f"voxelize (CPU): skipped '{getattr(obs, 'name', '?')}' ({e})")
-        return total
-
     def set_collision_cache(
         self,
         node,
@@ -755,25 +734,28 @@ class ObstacleManager:
         response: SetCollisionCache.Response,
     ) -> SetCollisionCache.Response:
         """
-        v2: a single `collision_cache` integer replaces the v1 obb/mesh/blox
-        triple. We accept the maximum of the requested values for back-compat
-        with clients still populating all three fields.
+        v2: a single `collision_cache` dict replaces the v1 obb/mesh/blox
+        triple. Contract (see SetCollisionCache.srv): -1 = leave this field
+        unchanged, 0 = disable/empty this cache, >0 = new size.
         """
         # v1 SetCollisionCache carries an obb/mesh/blox triple; v2 expects a
         # dict {"cuboid": N, "mesh": N, "voxel": N}. We map obb→cuboid,
-        # mesh→mesh, blox→voxel. Negative values are ignored (keep current).
+        # mesh→mesh, blox→voxel.
         if request.obb >= 0:
             self.collision_cache["cuboid"] = int(request.obb)
         if request.mesh >= 0:
             self.collision_cache["mesh"] = int(request.mesh)
-        if request.blox >= 0:
+        if request.blox == 0:
+            # Explicit disable: no voxel storage pre-allocated in the solvers
+            # -> camera-based (ESDF) collision avoidance will not work.
+            self.collision_cache["voxel"] = None
+        elif request.blox > 0:
             self.collision_cache["voxel"] = {
                 "layers": int(request.blox),
                 "dims": list(self._mapper_extent_xyz),
                 "voxel_size": self._esdf_voxel_size,
             }
-        elif request.blox == -1:
-            self.collision_cache["voxel"] = None
+        # request.blox < 0 -> leave voxel cache unchanged (contract: -1 = no change)
 
         node.get_logger().info(f'collision_cache set to {self.collision_cache}')
         # The cache size is fixed at solver creation, so a world update is not
@@ -785,7 +767,7 @@ class ObstacleManager:
         response.obb_cache = self.collision_cache["cuboid"]
         response.mesh_cache = self.collision_cache["mesh"]
         voxel = self.collision_cache["voxel"]
-        response.blox_cache = voxel["layers"] if isinstance(voxel, dict) else -1
+        response.blox_cache = voxel["layers"] if isinstance(voxel, dict) else 0
         return response
 
     # ---- Getters ----

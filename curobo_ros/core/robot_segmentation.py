@@ -7,7 +7,6 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from std_msgs.msg import Header
-from ament_index_python.packages import get_package_share_directory
 from visualization_msgs.msg import Marker, MarkerArray
 from cv_bridge import CvBridge, CvBridgeError
 import tf2_ros
@@ -22,6 +21,7 @@ from curobo_msgs.srv import SetMask, RemoveObject
 from scipy.spatial.transform import Rotation
 
 from curobo_ros.robot.robot_context import RobotContext
+from curobo_ros.robot.robot_description import resolve_curobo_config
 
 
 class DepthMapRobotSegmentation(Node):
@@ -36,27 +36,63 @@ class DepthMapRobotSegmentation(Node):
         """
         super().__init__('curobo_depth_map_robot_segmentation')
 
-        # Get the path to your curobo_ros package
-        package_share_directory = get_package_share_directory('curobo_ros')
-        self.declare_parameter('robot_config_file', os.path.join(
-            package_share_directory, 'curobo_doosan', 'src', 'm1013', 'm1013.yml'))
+        # ---- Node params first (no robot/kinematics dependency) ----
+        self.declare_parameter('depth_image_topic', '/depth_to_rgb/image_raw')
+        self.declare_parameter('camera_info_topic', '/depth_to_rgb/camera_info')
+        self.declare_parameter('robot_base_frame', 'base_0')
+        # Inflation added to every mask shape's half-extents / radius, separate
+        # from distance_threshold below.
+        self.declare_parameter('mask_margin', 0.0)
+        # Minimum distance (m) to a robot collision sphere for a depth point to
+        # be kept (i.e. considered NOT part of the robot). Was a constructor-only
+        # kwarg, unreachable from a launch file — now a runtime-settable param.
+        self.declare_parameter('distance_threshold', distance_threshold)
+        self.mask_margin = self.get_parameter('mask_margin').get_parameter_value().double_value
+        self.distance_threshold = self.get_parameter(
+            'distance_threshold').get_parameter_value().double_value
+
+        depth_image_topic = self.get_parameter('depth_image_topic').get_parameter_value().string_value
+        camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
+
+        self._ops_dtype = ops_dtype
+        self._device = torch.device('cuda')
+
+        # ---- Robot: single descriptor-driven source (was: a hardcoded m1013
+        # path here, independent of RobotContext's own robot resolution — two
+        # sources of truth that could silently disagree). RobotContext declares
+        # the 'robot' param and loads the descriptor; robot_config_file below
+        # defaults to that SAME descriptor instead of a hardcoded path.
+        self.robot_context = RobotContext(self)
+
+        default_robot_config = self.robot_context.description.curobo_config_path
+        if not self.has_parameter('robot_config_file'):
+            self.declare_parameter('robot_config_file', default_robot_config)
         robot_config_file = self.get_parameter('robot_config_file').get_parameter_value().string_value
+        if not robot_config_file:
+            robot_config_file = default_robot_config
+
+        # An explicit robot_config_file override bypasses load_robot_description's
+        # own path resolution — resolve urdf_path/asset_root_path here too, or a
+        # package://-relative/custom-relative path silently falls back to cuRobo's
+        # bundled-assets resolution instead. See resolve_curobo_config.
+        robot_config_file = resolve_curobo_config(robot_config_file)
 
         # v2: Kinematics replaces CudaRobotModel; from_robot_yaml_file loads the
         # robot YAML directly — no manual load_yaml/RobotConfig.from_dict dance.
         kin_model = Kinematics(KinematicsCfg.from_robot_yaml_file(robot_config_file))
+        self._kin_model = kin_model
+        # Adopt the canonical joint order/DOF into the shared descriptor, same as
+        # unified_planner_node does — makes RobotContext.get_joint_pose()/
+        # get_joint_name() DOF-consistent with this node's own kinematics.
+        self.robot_context.bind_kinematics(kin_model)
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self._kin_model = kin_model
-        self.distance_threshold = distance_threshold
-        self._ops_dtype = ops_dtype
-        self._device = torch.device('cuda')
-
+        # DOF-agnostic (was a hardcoded 6-zero vector + empty joint_names).
         self.q_js = JointState(
-            position=torch.tensor([0, 0, 0, 0, 0, 0], dtype=self._ops_dtype, device=self._device),
-            joint_names=[])
+            position=torch.zeros(len(kin_model.joint_names), dtype=self._ops_dtype, device=self._device),
+            joint_names=list(kin_model.joint_names))
 
         self.depth_image = None
         self.camera_info = None
@@ -67,22 +103,6 @@ class DepthMapRobotSegmentation(Node):
         # in addition to the robot. Keyed by name; each entry rides a TF frame so
         # it follows the arm. See SetMask.srv / _shape_inside_mask.
         self._masks = {}
-
-        # Robot context for joint states
-        self.robot_context = RobotContext(self, 0.03)  # dt is not important here
-
-        # Declare parameters
-        self.declare_parameter('joint_states_topic', '/dsr01/joint_states')
-        self.declare_parameter('depth_image_topic', '/depth_to_rgb/image_raw')
-        self.declare_parameter('camera_info_topic', '/depth_to_rgb/camera_info')
-        self.declare_parameter('robot_base_frame', 'base_0')
-        # Inflation added to every mask shape's half-extents / radius, separate
-        # from the robot distance_threshold above.
-        self.declare_parameter('mask_margin', 0.0)
-        self.mask_margin = self.get_parameter('mask_margin').get_parameter_value().double_value
-
-        depth_image_topic = self.get_parameter('depth_image_topic').get_parameter_value().string_value
-        camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
 
         # Publisher for the masked depth image
         self.publisher_ = self.create_publisher(Image, "masked_depth_image", 10)
@@ -208,10 +228,19 @@ class DepthMapRobotSegmentation(Node):
         # ré-intégrait ~6x la même donnée depth (surcharge GPU inutile,
         # concurrence avec le solve MPPI). cf. debug 2026-07-15.
         if self.camera_info is not None:
+            joint_pose = self.robot_context.get_joint_pose()
+            expected_dof = len(self._kin_model.joint_names)
+            if len(joint_pose) != expected_dof:
+                # A mismatched vector would otherwise build a silently
+                # mis-shaped tensor here, and the failure would only surface
+                # deep inside compute_kinematics — hard to trace back to this.
+                self.get_logger().warn(
+                    f"Joint pose has {len(joint_pose)} values, expected "
+                    f"{expected_dof} (model DOF) - skipping this frame",
+                    throttle_duration_sec=5.0)
+                return
             self.q_js.position = torch.tensor(
-                self.robot_context.get_joint_pose(),
-                dtype=self._ops_dtype,
-                device=self._device)
+                joint_pose, dtype=self._ops_dtype, device=self._device)
             self.q_js.joint_names = self.robot_context.get_joint_name()
             self.segment_and_publish()
 
@@ -552,7 +581,7 @@ class DepthMapRobotSegmentation(Node):
 
         if typ == 4:
             self.get_logger().warn(
-                "MESH mask not supported analytically yet — skipped. "
+                "MESH mask not supported analytically yet - skipped. "
                 "(future: curobo WorldMeshCollision zero-radius point SDF)",
                 throttle_duration_sec=5.0)
             return None
@@ -663,9 +692,15 @@ def main(args=None):
     """
     rclpy.init(args=args)
     node = DepthMapRobotSegmentation()
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     node.destroy_node()
-    rclpy.shutdown()
+    # See unified_planner_node.main: rclpy's SIGINT handler has already shut the
+    # context down, so an unguarded shutdown() exits 1 on a clean Ctrl-C.
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

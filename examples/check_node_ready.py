@@ -8,7 +8,7 @@ This test:
 3. Calls the is_available service to check warmup status
 
 Usage:
-    python3 tests/test_basic.py
+    python3 examples/check_node_ready.py
 """
 
 import rclpy
@@ -21,24 +21,24 @@ import time
 class BasicTest(Node):
     def __init__(self):
         super().__init__('basic_test_node')
-        self.get_logger().info("🧪 Starting basic curobo_ros test...")
+        self.get_logger().info("Starting basic curobo_ros test...")
 
     def test_node_running(self):
         """Check if curobo_gen_traj node is running"""
-        self.get_logger().info("📋 Test 1: Checking if curobo_gen_traj node is running...")
+        self.get_logger().info("Test 1: Checking if curobo_gen_traj node is running...")
 
         node_names = self.get_node_names()
         if '/curobo_gen_traj' in node_names:
-            self.get_logger().info("✅ curobo_gen_traj node is running")
+            self.get_logger().info("curobo_gen_traj node is running")
             return True
         else:
-            self.get_logger().error("❌ curobo_gen_traj node is NOT running")
+            self.get_logger().error("curobo_gen_traj node is NOT running")
             self.get_logger().error("   Please start it with: ros2 launch curobo_ros gen_traj.launch.py")
             return False
 
     def test_services_available(self):
         """Check if required services are available"""
-        self.get_logger().info("📋 Test 2: Checking if required services are available...")
+        self.get_logger().info("Test 2: Checking if required services are available...")
 
         required_services = [
             '/curobo_gen_traj/is_available',
@@ -55,27 +55,27 @@ class BasicTest(Node):
             )
 
             if service_available:
-                self.get_logger().info(f"  ✅ {service_name}")
+                self.get_logger().info(f"  {service_name}")
             else:
-                self.get_logger().error(f"  ❌ {service_name} NOT FOUND")
+                self.get_logger().error(f"  {service_name} NOT FOUND")
                 all_available = False
 
         if all_available:
-            self.get_logger().info("✅ All required services are available")
+            self.get_logger().info("All required services are available")
         else:
-            self.get_logger().error("❌ Some services are missing")
+            self.get_logger().error("Some services are missing")
 
         return all_available
 
     def test_node_ready(self):
         """Check if node is ready (warmup complete)"""
-        self.get_logger().info("📋 Test 3: Checking if node completed warmup...")
+        self.get_logger().info("Test 3: Checking if node completed warmup...")
 
         # Create service client
         client = self.create_client(Trigger, '/curobo_gen_traj/is_available')
 
         if not client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error("❌ /curobo_gen_traj/is_available service not available")
+            self.get_logger().error("/curobo_gen_traj/is_available service not available")
             return False
 
         # Call the service
@@ -88,16 +88,16 @@ class BasicTest(Node):
         if future.result() is not None:
             response = future.result()
             if response.success:
-                self.get_logger().info("✅ Node is ready! Warmup complete.")
+                self.get_logger().info("Node is ready! Warmup complete.")
                 self.get_logger().info(f"   Message: {response.message}")
                 return True
             else:
-                self.get_logger().warn("⚠️  Node is still warming up...")
+                self.get_logger().warn("Node is still warming up...")
                 self.get_logger().warn(f"   Message: {response.message}")
                 self.get_logger().warn("   Please wait a few seconds and try again.")
                 return False
         else:
-            self.get_logger().error("❌ Service call failed or timed out")
+            self.get_logger().error("Service call failed or timed out")
             return False
 
 

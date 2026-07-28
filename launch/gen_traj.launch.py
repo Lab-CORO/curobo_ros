@@ -8,6 +8,7 @@ from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
 from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
+import ast
 import os
 import yaml
 
@@ -109,6 +110,8 @@ def launch_setup(context, *args, **kwargs):
     from launch.actions import DeclareLaunchArgument
 
     gui_enabled = LaunchConfiguration('gui', default='true')
+    mapper_extent_xyz = ast.literal_eval(
+        LaunchConfiguration('mapper_extent_xyz').perform(context))
 
     nodes = [
         IncludeLaunchDescription(
@@ -158,7 +161,7 @@ def launch_setup(context, *args, **kwargs):
                 'voxel_size': LaunchConfiguration('voxel_size'),
                 # Output voxel grid geometry for the U-Net consumer:
                 # 128^3 @ 0.02 m centred on the robot base (extent = 128 * 0.02).
-                'mapper_extent_xyz': [2.56, 2.56, 2.56],
+                'mapper_extent_xyz': mapper_extent_xyz,
                 'mapper_grid_center': [0.0, 0.0, 0.0],
                 # Mapper depth-projection resolution. The Mapper allocates its
                 # GPU projection kernel ONCE for this exact (H, W), so every
@@ -298,6 +301,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'voxel_size', default_value='1.0', description='Taille des voxels'
+        ),
+        DeclareLaunchArgument(
+            'mapper_extent_xyz', default_value='[2.56, 2.56, 2.56]',
+            description="Étendue (m) de la grille voxel du Mapper, en repr Python d'une liste [x, y, z]"
         ),
         DeclareLaunchArgument(
             'collision_activation_distance', default_value='0.5', description='Distance d\'activation de la collision'

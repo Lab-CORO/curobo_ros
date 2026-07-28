@@ -5,10 +5,43 @@ from rclpy.parameter import Parameter
 from std_srvs.srv import Trigger
 from curobo_msgs.srv import SetRobotStrategy
 
+from curobo_ros.core.config_wrapper import resolve_interpolation_dt
 from curobo_ros.robot.ghost_strategy import GhostStrategy
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from curobo_ros.robot.robot_registry import create_strategy, available_strategies
 from curobo_ros.robot.robot_description import load_robot_description
+
+# ---------------------------------------------------------------------------
+# Lock order (strict, total), robot command path:
+#
+#   gpu_lock (node, RLock)  >  strategy_lock (RobotContext)  >  buffer_lock
+#   (per-strategy, RLock, see JointCommandStrategy)
+#
+#   _pending_lock / _live_goal_lock / _goal_lock (reactive_controller.py /
+#   unified_planner_node.py) are leaves: never held while acquiring another
+#   lock.
+#
+# gpu_lock -> strategy_lock already exists today (unified_planner_node.py
+# `with self.gpu_lock: planner.plan(...)` -> single_planner.py
+# `robot_context.set_command(...)`); the reverse never occurs anywhere under
+# curobo_ros/robot/. This module only adds a rank BELOW strategy_lock.
+#
+# No-deadlock argument:
+#  1. Leaves are never held while acquiring another lock (verified: the
+#     pending-action locks only guard plain assignments).
+#  2. buffer_lock is terminal: strategy modules under curobo_ros/robot/ never
+#     reference strategy_lock or gpu_lock, and every outgoing call made while
+#     holding buffer_lock (e.g. a topic publish) is done via a snapshot taken
+#     under the lock, then used after it is released.
+#  3. strategy_lock never acquires gpu_lock.
+#  4. gpu_lock -> strategy_lock is strictly descending, hence consistent.
+#  5. The emulator's playback thread only ever acquires buffer_lock (rank 1),
+#     holding nothing else.
+#  6. Every lock-then-join sequence (e.g. replacing the playback thread) joins
+#     OUTSIDE the lock, so the thread being joined can always still acquire
+#     buffer_lock to exit.
+# All acquisitions are strictly descending -> the wait-for graph is acyclic.
+# ---------------------------------------------------------------------------
 
 
 class RobotContext:
@@ -26,9 +59,14 @@ class RobotContext:
     '''
     robot_strategy: JointCommandStrategy
 
-    def __init__(self, node, dt):
+    def __init__(self, node, dt=0.025):
         self.node = node
-        self.dt = dt
+        # curobo_ros is the authority on dt (see resolve_interpolation_dt):
+        # this reads the interpolation_dt ROS param, falling back to `dt` only
+        # if the node hasn't declared it. `dt` itself defaults to the same
+        # value as the param's own default so a bare RobotContext(node) is
+        # correct even for callers that never touch interpolation_dt.
+        self.dt = resolve_interpolation_dt(node, dt)
         self.strategy_lock = threading.Lock()
 
         # Which robot (model + driver topics + default strategy).
@@ -42,8 +80,8 @@ class RobotContext:
             node.declare_parameter('control_strategy', self.description.strategy_key)
         self.current_strategy_name = node.get_parameter('control_strategy').get_parameter_value().string_value
 
-        self.robot_strategy = self.select_strategy(node, dt)
-        self.ghost_strategy = GhostStrategy(node, dt, self.description)
+        self.robot_strategy = self.select_strategy(node, self.dt)
+        self.ghost_strategy = GhostStrategy(node, self.dt, self.description)
 
         self.set_strategy_srv = node.create_service(
             SetRobotStrategy,
@@ -64,10 +102,17 @@ class RobotContext:
         '''Adopt canonical joint names/DOF from the built kinematics into the descriptor.'''
         self.description.bind_kinematics(kin)
 
-    def select_strategy(self, node, time_dilation_factor):
-        '''Instantiate the control strategy named by the ``control_strategy`` param.'''
+    def select_strategy(self, node, dt):
+        '''Instantiate the control strategy named by the ``control_strategy`` param.
+
+        ``dt`` here is the trajectory sampling step (interpolation_dt) — it has
+        nothing to do with the ``time_dilation_factor`` ROS param, which only
+        drives open-loop feedback publish cadence. The parameter used to be
+        named after that unrelated param, which was misleading at every call
+        site.
+        '''
         key = node.get_parameter('control_strategy').get_parameter_value().string_value
-        strategy = create_strategy(key, node, time_dilation_factor, self.description)
+        strategy = create_strategy(key, node, dt, self.description)
         if strategy is None:
             node.get_logger().warn(
                 f"Unknown control strategy: '{key}'. Available: {available_strategies()}")
@@ -105,6 +150,10 @@ class RobotContext:
 
                 node.set_parameters([
                     Parameter('control_strategy', Parameter.Type.STRING, new_strategy_name)])
+                # Re-read interpolation_dt so a `ros2 param set` done before this
+                # switch takes effect on the new strategy (self.dt would
+                # otherwise stay pinned to whatever was resolved at construction).
+                self.dt = resolve_interpolation_dt(node, self.dt)
                 new_strategy = self.select_strategy(node, self.dt)
 
                 if new_strategy is None:
@@ -122,7 +171,7 @@ class RobotContext:
                 response.message = (
                     f"Strategy switched from '{response.previous_robot_strategy}' "
                     f"to '{new_strategy_name}'")
-                node.get_logger().info(f"✅ {response.message}")
+                node.get_logger().info(f"{response.message}")
 
         except Exception as e:
             response.success = False
@@ -154,12 +203,74 @@ class RobotContext:
         self.ghost_strategy = GhostStrategy(node, dt, self.description)
 
     def set_command(self, joint_names, vel_command, accel_command, position_command):
-        '''Forward a command to the active strategy and the RViz ghost. Thread-safe.'''
+        '''Forward a command to the active strategy and the RViz ghost. Thread-safe.
+
+        joint_names=None => resolved INSIDE this critical section instead of
+        by the caller — reading robot_context.robot_strategy.get_joint_name()
+        before calling this races a concurrent strategy switch (robot_strategy
+        can be reassigned, or become a different DOF, between that read and
+        this call).
+
+        Returns the new buffer epoch (see JointCommandStrategy.buffer_epoch),
+        or None if there is no active strategy. Pair with send_trajectrory(
+        expect_epoch=...) when set and send happen in separate calls/threads —
+        see set_and_send_command() for the atomic alternative.
+        '''
         with self.strategy_lock:
+            if joint_names is None:
+                joint_names = (self.robot_strategy.get_joint_name()
+                                if self.robot_strategy is not None
+                                else list(self.description.joint_names))
+            epoch = None
             if self.robot_strategy is not None:
-                self.robot_strategy.set_command(joint_names, vel_command, accel_command, position_command)
+                epoch = self.robot_strategy.set_command(
+                    joint_names, vel_command, accel_command, position_command)
             self.ghost_strategy.set_command(joint_names, vel_command, accel_command, position_command)
             self.ghost_strategy.send_trajectrory()
+            return epoch
+
+    def set_and_send_command(self, joint_names, vel_command, accel_command, position_command) -> bool:
+        '''Load the command buffers AND send them, in one transaction.
+
+        RACE FIX: set_command() and send_trajectrory() used to take
+        strategy_lock SEPARATELY, so a second producer could overwrite the
+        buffers between the two calls and the robot would execute a
+        trajectory that was never meant for it.
+
+        joint_names=None => resolved INSIDE this critical section (the caller
+        must NOT call get_joint_name() beforehand — that read would itself
+        race against a concurrent set_and_send_command/strategy switch).
+
+        Argument order matches set_command() to avoid a call-site trap.
+        Lock order: strategy_lock -> buffer_lock (see module docstring).
+
+        Returns True if a strategy was active and the command was sent, False
+        if there was no active strategy. NOTE: no JointCommandStrategy's
+        send_trajectrory() currently returns a meaningful value on its own
+        (fire-and-forget), so this cannot report a downstream failure — only
+        "was there a strategy to send to".
+        '''
+        with self.strategy_lock:
+            if joint_names is None:
+                joint_names = (self.robot_strategy.get_joint_name()
+                                if self.robot_strategy is not None
+                                else list(self.description.joint_names))
+            self.ghost_strategy.set_command(joint_names, vel_command, accel_command, position_command)
+            self.ghost_strategy.send_trajectrory()
+            if self.robot_strategy is None:
+                return False
+            # set_command()/send_trajectrory() each take-and-release buffer_lock
+            # internally — without also holding it HERE across both calls, the
+            # driver's callback_joint_pose (which only takes buffer_lock) could
+            # overwrite joint_names in the gap between them, and
+            # send_trajectrory() would then publish those names against THESE
+            # positions/velocities. buffer_lock is an RLock precisely so this
+            # nesting (outer hold + set_command()'s own internal acquire) works.
+            with self.robot_strategy.buffer_lock:
+                self.robot_strategy.set_command(
+                    joint_names, vel_command, accel_command, position_command)
+                self.robot_strategy.send_trajectrory()
+            return True
 
     def get_joint_pose(self):
         with self.strategy_lock:
@@ -193,17 +304,37 @@ class RobotContext:
                 return 0.0
             return self.robot_strategy.get_progression()
 
-    def send_trajectrory(self):
-        with self.strategy_lock:
-            if self.robot_strategy is None:
-                return None
-            return self.robot_strategy.send_trajectrory()
+    def send_trajectrory(self, expect_epoch=None) -> bool:
+        '''Send the currently loaded command buffers.
 
-    def get_send_to_robot(self):
+        expect_epoch: for producers that call set_command() and
+        send_trajectrory() as two SEPARATE calls (e.g. plan() then execute(),
+        in different callbacks) — pass the epoch returned by that
+        set_command() call. If another set_command() has since superseded the
+        buffers (epoch mismatch), this refuses to execute a mismatched
+        trajectory and returns False instead of silently sending whatever is
+        now in the buffers. Omit (None) for fire-and-forget senders that don't
+        need this check (e.g. reactive control's own tight set+send loop).
+
+        Returns True if the command was actually sent, False if refused (no
+        active strategy, or an epoch mismatch). NOTE: this is NOT a downstream
+        success/failure report — no JointCommandStrategy's send_trajectrory()
+        currently returns a meaningful value of its own (fire-and-forget); True
+        only means "this call was not refused by the guard above".
+        '''
         with self.strategy_lock:
             if self.robot_strategy is None:
                 return False
-            return self.robot_strategy.get_send_to_robot()
+            if expect_epoch is not None and self.robot_strategy.buffer_epoch != expect_epoch:
+                self.node.get_logger().error(
+                    f"send_trajectrory: buffer epoch mismatch (expected "
+                    f"{expect_epoch}, current {self.robot_strategy.buffer_epoch}) "
+                    f"- a newer set_command() superseded this one; refusing to "
+                    f"execute a mismatched trajectory."
+                )
+                return False
+            self.robot_strategy.send_trajectrory()
+            return True
 
     def get_robot_state(self):
         with self.strategy_lock:

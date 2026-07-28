@@ -55,7 +55,7 @@ class IKServices:
         node.create_service(Ik,       f'{name}/ik',        self._ik_callback)
         node.create_service(IkBatch,  f'{name}/ik_batch',  self._ik_batch_callback)
 
-        node.get_logger().info("IKServices registered (not yet initialized — call warmup_ik)")
+        node.get_logger().info("IKServices registered (not yet initialized - call warmup_ik)")
 
     # ------------------------------------------------------------------
     # Warmup

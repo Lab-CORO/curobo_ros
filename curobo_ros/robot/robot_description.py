@@ -22,6 +22,7 @@ Canonical vs descriptor data:
 Adding a robot = drop a ``robots/<name>.yaml`` + its cuRobo config; no core edit.
 """
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -44,6 +45,60 @@ def _resolve_uri(path: Optional[str], base_dir: str) -> Optional[str]:
     if os.path.isabs(path):
         return path
     return os.path.normpath(os.path.join(base_dir, path))
+
+
+def resolve_curobo_config(curobo_path: str) -> str:
+    """Resolve a cuRobo robot-config YAML's ``urdf_path``/``asset_root_path``
+    to absolute paths, writing a resolved copy if anything changed.
+
+    Any consumer that loads a cuRobo robot-config YAML DIRECTLY — bypassing
+    ``load_robot_description``'s descriptor wrapper, e.g. an explicit
+    ``robot_config_file`` override — must call this first. Without it, a
+    ``package://``-style or custom-relative ``urdf_path``/``asset_root_path``
+    silently fails to resolve, and cuRobo's OWN relative-path resolution
+    (relative to its bundled assets dir) kicks in instead — wrong for a path
+    that was meant to be relative to the yml file itself.
+
+    Returns the resolved path, or ``curobo_path`` unchanged if nothing needed
+    resolving.
+    """
+    cfg = load_yaml(curobo_path)
+    robot_cfg = cfg.get('robot_cfg', cfg)
+    kin = robot_cfg.get('kinematics', {})
+    yml_dir = os.path.dirname(curobo_path)
+    # Keyed on the full source path (not just the yml basename) so that two
+    # descriptors referencing identically-named yml files in different
+    # directories never resolve to the same /tmp path and overwrite each other.
+    digest = hashlib.sha1(os.path.abspath(curobo_path).encode()).hexdigest()[:10]
+
+    # - package://    -> always resolve (explicit, portable).
+    # - absolute      -> leave as-is.
+    # - bare relative -> only rewrite if it exists relative to the yml dir (a
+    #   custom robot shipping its own assets). Otherwise leave it for cuRobo's
+    #   native resolution (its bundled configs are relative to get_assets_path).
+    changed = False
+    for key in ('urdf_path', 'asset_root_path'):
+        original = kin.get(key)
+        if not original:
+            continue
+        if original.startswith('package://'):
+            kin[key] = _resolve_uri(original, yml_dir)
+            changed = True
+        elif not os.path.isabs(original):
+            candidate = os.path.normpath(os.path.join(yml_dir, original))
+            if os.path.exists(candidate):
+                kin[key] = candidate
+                changed = True
+
+    if not changed:
+        return curobo_path
+
+    name = os.path.splitext(os.path.basename(curobo_path))[0]
+    os.makedirs(_RESOLVED_DIR, exist_ok=True)
+    resolved_path = os.path.join(_RESOLVED_DIR, f'{name}-{digest}.yml')
+    with open(resolved_path, 'w') as f:
+        _yaml.safe_dump(cfg, f, default_flow_style=None, sort_keys=False)
+    return resolved_path
 
 
 @dataclass
@@ -99,38 +154,17 @@ def load_robot_description(name_or_path: str) -> RobotDescription:
         raise ValueError(f"Descriptor {desc_path} is missing required 'curobo_config'")
     curobo_path = _resolve_uri(curobo_uri, os.path.dirname(desc_path))
 
-    cfg = load_yaml(curobo_path)
+    # Resolve the two portability-sensitive paths (urdf_path/asset_root_path)
+    # FIRST, emitting a resolved copy if either needed rewriting — see
+    # resolve_curobo_config for why this must happen before anything builds
+    # kinematics from this path. robot_cfg_dict is then loaded from the
+    # resolved copy so it matches curobo_config_path (both absolute paths),
+    # instead of from the original possibly-package://-or-relative source.
+    resolved_path = resolve_curobo_config(curobo_path)
+
+    cfg = load_yaml(resolved_path)
     robot_cfg = cfg.get('robot_cfg', cfg)
     kin = robot_cfg.get('kinematics', {})
-    yml_dir = os.path.dirname(curobo_path)
-
-    # Resolve the two portability-sensitive paths; track whether any changed.
-    # - package://    -> always resolve (explicit, portable).
-    # - absolute      -> leave as-is.
-    # - bare relative -> only rewrite if it exists relative to the yml dir (a
-    #   custom robot shipping its own assets). Otherwise leave it for cuRobo's
-    #   native resolution (its bundled configs are relative to get_assets_path).
-    changed = False
-    for key in ('urdf_path', 'asset_root_path'):
-        original = kin.get(key)
-        if not original:
-            continue
-        if original.startswith('package://'):
-            kin[key] = _resolve_uri(original, yml_dir)
-            changed = True
-        elif not os.path.isabs(original):
-            candidate = os.path.normpath(os.path.join(yml_dir, original))
-            if os.path.exists(candidate):
-                kin[key] = candidate
-                changed = True
-
-    # If we rewrote paths, emit a resolved copy so downstream keeps passing a path.
-    resolved_path = curobo_path
-    if changed:
-        os.makedirs(_RESOLVED_DIR, exist_ok=True)
-        resolved_path = os.path.join(_RESOLVED_DIR, f'{name}.yml')
-        with open(resolved_path, 'w') as f:
-            _yaml.safe_dump(cfg, f, default_flow_style=None, sort_keys=False)
 
     base_link = desc.get('base_link') or kin.get('base_link')
 

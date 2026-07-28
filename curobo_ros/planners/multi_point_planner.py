@@ -63,7 +63,7 @@ class MultiPointPlanner(SinglePlanner):
                 and any(c == 1 for c in goal_request.trajectories_contraints)):
             self.node.get_logger().warn(
                 "MultiPointPlanner: per-waypoint `trajectories_contraints` are not "
-                "supported in cuRobo v2 — use `trajectory_constraints` (whole path)."
+                "supported in cuRobo v2 - use `trajectory_constraints` (whole path)."
             )
 
         # Hold the requested Cartesian axes along every segment; reset after

@@ -181,6 +181,10 @@ class RosServiceManager:
         """
         gpu_lock = getattr(node, 'gpu_lock', None)
         if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
+            node.get_logger().warn(
+                "gpu_lock busy (CUDA graph capture in progress) - skipping this "
+                "voxel grid publish cycle",
+                throttle_duration_sec=5.0)
             return  # planner is capturing a CUDA graph — skip this cycle
         try:
             self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
@@ -282,8 +286,32 @@ class RosServiceManager:
         return self.config_wrapper.callback_get_collision_distance(node, request, response)
 
     def _callback_set_collision_cache(self, node, request: SetCollisionCache, response):
-        """Delegate set_collision_cache service to ObstacleManager"""
-        return self.obstacle_manager.set_collision_cache(node, request, response)
+        """Delegate set_collision_cache service to ObstacleManager.
+
+        Refused while an execution goal is active: a cache change forces a full
+        solver rebuild (~20s, see rebuild_solvers_for_cache_change), which is not
+        safe to run concurrently with an in-progress trajectory. Same guard/lock
+        pattern as set_planner_callback.
+        """
+        goal_lock = getattr(node, '_goal_lock', None)
+        if goal_lock is not None:
+            with goal_lock:
+                if getattr(node, '_goal_active', False):
+                    response.success = False
+                    response.message = (
+                        "Cannot change collision cache while an execution goal is "
+                        "active — cancel it first."
+                    )
+                    response.obb_cache = self.obstacle_manager.collision_cache["cuboid"]
+                    response.mesh_cache = self.obstacle_manager.collision_cache["mesh"]
+                    voxel = self.obstacle_manager.collision_cache["voxel"]
+                    response.blox_cache = voxel["layers"] if isinstance(voxel, dict) else 0
+                    self.node.get_logger().error(response.message)
+                    return response
+        response = self.obstacle_manager.set_collision_cache(node, request, response)
+        if response.success:
+            response.message += " - solvers rebuilt (blocking, ~20s)"
+        return response
 
     def _callback_get_robot_strategies(self, node, request: GetRobotStrategies.Request, response: GetRobotStrategies.Response):
         """Delegate get_robot_strategies service to RobotContext"""

@@ -45,21 +45,44 @@ class JointCommandStrategy(ABC):
         self.trajectory_progression = 0.0
         self.robot_state = RobotState.IDLE
 
-        self.send_to_robot = False
-        self.buffer_lock = threading.Lock()
+        # Guards position_command/vel_command/accel_command/command_index/
+        # joint_names/trajectory_progression/robot_state, plus any feedback
+        # fields a subclass adds (joint_pose/joint_velocity/
+        # current_joint_positions) — same callback that rewrites joint_names
+        # usually rewrites those together. RLock: the atomic
+        # RobotContext.set_and_send_command() holds it across a nested
+        # set_command()+send_trajectrory() pair. Rank: below strategy_lock,
+        # above nothing (leaf) — see robot_context.py's lock-order docstring.
+        self.buffer_lock = threading.RLock()
+        # Bumped by every set_command()/stop_robot() call. Lets a producer
+        # detect that its buffers were superseded/cleared before it gets to
+        # send them (RobotContext.set_and_send_command's expect_epoch), and
+        # lets the emulator's playback thread detect preemption mid-playback.
+        self._buffer_epoch = 0
 
-    def set_command(self, joint_names, vel_command, accel_command, position_command):
-        self.position_command = position_command
-        self.vel_command = vel_command
-        self.accel_command = accel_command
-        self.joint_names = joint_names
+    @property
+    def buffer_epoch(self) -> int:
+        with self.buffer_lock:
+            return self._buffer_epoch
+
+    def set_command(self, joint_names, vel_command, accel_command, position_command) -> int:
+        """Load new command buffers. Returns the new buffer epoch.
+
+        Stores defensive copies — the caller's lists must not be aliased into
+        the strategy (a caller mutating its own list after this call must not
+        also mutate what the strategy/robot will execute).
+        """
+        with self.buffer_lock:
+            self.position_command = [list(p) for p in position_command]
+            self.vel_command = [list(v) for v in vel_command]
+            self.accel_command = [list(a) for a in accel_command]
+            self.joint_names = list(joint_names)
+            self._buffer_epoch += 1
+            return self._buffer_epoch
 
     def get_joint_name(self):
-        return self.joint_names
-
-    def get_send_to_robot(self):
         with self.buffer_lock:
-            return self.send_to_robot
+            return list(self.joint_names)
 
     def get_joint_velocity(self):
         """Real, measured joint velocity, if this strategy's driver provides

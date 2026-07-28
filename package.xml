@@ -11,6 +11,12 @@
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <!-- test/*.py is generated from config/config_test/*.yaml by
+       ros2_test_compose; regenerate with:
+       ros2 run ros2_test_compose test_generator --ros-args -p package_name:=curobo_ros -->
+  <test_depend>ros2_test_compose</test_depend>
+  <test_depend>launch_testing</test_depend>
+  <test_depend>rosidl_runtime_py</test_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>

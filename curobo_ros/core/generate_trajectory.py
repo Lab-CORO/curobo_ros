@@ -38,8 +38,14 @@ class CuRoboTrajectoryMaker(Node):
     def __init__(self):
         super().__init__('curobo_gen_traj')
 
-        self.robot_context = RobotContext(self, 0.03)
+        self.robot_context = RobotContext(self)
         self.config_wrapper = ConfigWrapperMotion(self, self.robot_context)
+        # Buffer epoch returned by set_command() in generate_trajectrory_callback,
+        # paired with send_trajectrory(expect_epoch=...) in execute_callback —
+        # they are separate calls (service, then later an action), so another
+        # set_command() could otherwise land in between. See M2 in the
+        # pre-publication audit.
+        self._command_epoch = None
 
         self.declare_parameter('max_attempts', 1)
         self.declare_parameter('timeout', 5.0)
@@ -111,7 +117,7 @@ class CuRoboTrajectoryMaker(Node):
             pos, vel, acc = traj.position, traj.velocity, traj.acceleration
             if pos.ndim == 3:
                 pos, vel, acc = pos[0], vel[0], acc[0]
-            self.robot_context.set_command(
+            self._command_epoch = self.robot_context.set_command(
                 traj.joint_names,
                 vel.tolist(),
                 acc.tolist(),
@@ -127,7 +133,20 @@ class CuRoboTrajectoryMaker(Node):
 
     def execute_callback(self, goal_handle):
         """Send the planned trajectory to the robot and publish progress feedback."""
-        self.robot_context.send_trajectrory()
+        # expect_epoch guards against another set_command() landing between
+        # generate_trajectrory_callback (which set _command_epoch) and this
+        # call — see JointCommandStrategy.buffer_epoch / M2.
+        if not self.robot_context.send_trajectrory(expect_epoch=self._command_epoch):
+            self.get_logger().error(
+                "Refusing to execute - the planned trajectory was superseded "
+                "by a newer command before execution started."
+            )
+            self.is_goal_up = False
+            result_msg = SendTrajectory.Result()
+            result_msg.success = False
+            result_msg.message = "Trajectory superseded before execution"
+            goal_handle.abort()
+            return result_msg
 
         start_time = time.time()
         progression = self.robot_context.get_progression()

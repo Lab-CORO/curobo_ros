@@ -78,7 +78,14 @@ class UnifiedPlannerNode(Node):
         self._goal_lock = threading.Lock()
         self._goal_active = False
 
-        self.robot_context = RobotContext(self, 0.03)
+        # Output sampling step (s) of the interpolated trajectory (trajopt) —
+        # curobo_ros is the authority on this value (see resolve_interpolation_dt);
+        # it is what every JointCommandStrategy stamps into time_from_start.
+        # MUST be declared before RobotContext is constructed below: RobotContext
+        # reads it (via resolve_interpolation_dt) to build its strategies.
+        self.declare_parameter('interpolation_dt', 0.025)
+
+        self.robot_context = RobotContext(self)
 
         self.declare_parameter('planner_type', 'classic')
         self.declare_parameter('max_attempts', 1)
@@ -91,8 +98,6 @@ class UnifiedPlannerNode(Node):
         # Publish rate (Hz) of the sparse voxel grid topic. <= 0 disables it.
         self.declare_parameter('sparse_voxel_publish_rate', 7.0)
         self.declare_parameter('collision_activation_distance', 0.025)
-        # Output sampling step (s) of the interpolated trajectory (trajopt).
-        self.declare_parameter('interpolation_dt', 0.025)
         self.declare_parameter('convergence_threshold', 0.01)
         self.declare_parameter('max_mpc_iterations', 1000)
         # Capture/replay CUDA graphs in the solvers (faster, but a captured
@@ -118,7 +123,7 @@ class UnifiedPlannerNode(Node):
         # (vs ~74ms/call at 200/300) and converges FASTER in wall-clock terms
         # despite fewer iterations per call (more, cheaper corrections beat
         # fewer, expensive ones for a receding-horizon controller).
-        self.declare_parameter('mpc_warm_start_iters', 1) #25
+        self.declare_parameter('mpc_warm_start_iters', 5) #25
         self.declare_parameter('mpc_cold_start_iters', 10) #100
         # MPC solver selection. 'lbfgs_bspline' (défaut) = comportement actuel.
         # 'mppi_acceleration' = recette validée sur m1013 réel (MPPI + espace
@@ -323,6 +328,7 @@ class UnifiedPlannerNode(Node):
     def update_all_solvers_world(self, scene=None):
         """Propagate scene updates to all initialized solvers."""
         scene = scene if scene is not None else self.shared_scene
+        obstacle_manager = self.config_wrapper_motion.obstacle_manager
 
         # DIAGNOSTIC (default off => normal behaviour). Withholds the perception
         # ESDF voxel layer from the solvers so only analytic primitives remain,
@@ -330,10 +336,20 @@ class UnifiedPlannerNode(Node):
         # sentinel value. SAFETY: with this enabled the solvers do NOT see
         # camera-observed obstacles, so run it only with a clear workspace.
         if not self.get_parameter('push_esdf_to_solvers').get_parameter_value().bool_value:
-            scene = self.config_wrapper_motion.obstacle_manager.primitives_only_scene()
+            scene = obstacle_manager.primitives_only_scene()
             self.get_logger().warn(
                 "push_esdf_to_solvers=false: solvers see analytic primitives ONLY "
-                "(no camera obstacles) — diagnostic mode",
+                "(no camera obstacles) - diagnostic mode",
+                throttle_duration_sec=5.0)
+        elif obstacle_manager.collision_cache["voxel"] is None:
+            # No voxel cache pre-allocated in the solvers (SetCollisionCache
+            # blox=0) — a scene carrying an ESDF layer would raise "Voxel cache
+            # not initialized" inside update_world. Degrade gracefully: no
+            # camera-based collision avoidance instead of a hard planning failure.
+            scene = obstacle_manager.primitives_only_scene()
+            self.get_logger().warn(
+                "Voxel collision cache disabled (SetCollisionCache blox=0): "
+                "solvers see analytic primitives ONLY, no camera obstacles",
                 throttle_duration_sec=5.0)
 
         if self.motion_planner is not None:
@@ -368,24 +384,32 @@ class UnifiedPlannerNode(Node):
         The collision cache is allocated at solver creation, so a change
         requires recreating the solvers (a world update is not sufficient).
         Registered as ObstacleManager's cache-change observer.
+
+        Held under gpu_lock: this (re)captures CUDA graphs, same invariant as
+        every other graph-capturing path in this node (see gpu_lock's other
+        acquisitions) — without it, a concurrent camera integrate()/perception
+        refresh could invalidate the graph being captured here
+        (cudaErrorStreamCaptureInvalidated).
         """
-        self.get_logger().info("Collision cache changed — rebuilding solvers...")
+        self.get_logger().info(
+            "Collision cache changed - rebuilding solvers (blocking, ~20s)...")
 
-        # Motion planner (present after the initial warmup).
-        if self.motion_planner is not None:
-            self.config_wrapper_motion.set_motion_gen_config(self, None, None)
-            SinglePlanner.set_motion_planner(self.motion_planner)
+        with self.gpu_lock:
+            # Motion planner (present after the initial warmup).
+            if self.motion_planner is not None:
+                self.config_wrapper_motion.set_motion_gen_config(self, None, None)
+                SinglePlanner.set_motion_planner(self.motion_planner)
 
-        # IK (only if it was initialized). IKServices reads the canonical
-        # (motion) cache directly, so no sync is needed.
-        self.ik_services.rebuild()
+            # IK (only if it was initialized). IKServices reads the canonical
+            # (motion) cache directly, so no sync is needed.
+            self.ik_services.rebuild()
 
-        # Reactive controllers (only if initialized). Built from the SAME shared
-        # cache, so just rebuild their solvers — no manual cache copy needed.
-        if self.mpc is not None:
-            self.planner_manager.get_planner('mpc').rebuild_solver()
-        if self.retargeter is not None:
-            self.planner_manager.get_planner('retarget').rebuild_solver()
+            # Reactive controllers (only if initialized). Built from the SAME
+            # shared cache, so just rebuild their solvers — no manual cache copy.
+            if self.mpc is not None:
+                self.planner_manager.get_planner('mpc').rebuild_solver()
+            if self.retargeter is not None:
+                self.planner_manager.get_planner('retarget').rebuild_solver()
 
         self.get_logger().info("Solvers rebuilt after cache change")
 
@@ -434,8 +458,10 @@ class UnifiedPlannerNode(Node):
 
                 # v2: MotionPlanner no longer exposes `interpolation_dt` directly —
                 # it lives on the trajopt solver config. Fall back to the node's
-                # configured default if we can't reach it.
-                response.dt = 0.03
+                # configured interpolation_dt param (curobo_ros's own authority
+                # on dt) if we can't reach it, rather than an unrelated literal.
+                response.dt = self.get_parameter(
+                    'interpolation_dt').get_parameter_value().double_value
                 mp = getattr(planner, 'motion_planner', None)
                 trajopt = getattr(mp, 'trajopt_solver', None) if mp is not None else None
                 trajopt_cfg = getattr(trajopt, 'config', None)
@@ -632,18 +658,19 @@ class UnifiedPlannerNode(Node):
         """
         planner = self.planner_manager.get_current_planner()
         if isinstance(planner, ReactiveController):
-            planner.latest_goal = [
+            planner.set_live_goal([
                 msg.position.x, msg.position.y, msg.position.z,
                 msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z,
-            ]
+            ])
             self.get_logger().debug(
                 f"Reactive goal updated from topic: "
                 f"[{msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}]"
             )
         else:
+            name = planner.get_planner_name() if planner is not None else "none"
             self.get_logger().warn(
-                f"Received reactive goal but current planner is {planner.get_planner_name()}"
-            )
+                f"Received reactive goal but current planner is {name} - goal ignored",
+                throttle_duration_sec=5.0)
 
     def get_planners_callback(self, request: GetPlanners.Request, response: GetPlanners.Response):
         current_type = self.planner_manager.get_current_planner_type()
@@ -920,7 +947,7 @@ class UnifiedPlannerNode(Node):
             if self._goal_active:
                 self.get_logger().warn(
                     "Rejecting execution goal: another goal is already active "
-                    "— cancel it first."
+                    "- cancel it first."
                 )
                 return rclpy.action.GoalResponse.REJECT
             self._goal_active = True
@@ -957,7 +984,12 @@ def main(args=None):
         node.get_logger().info('Keyboard interrupt, shutting down.\n')
 
     node.destroy_node()
-    rclpy.shutdown()
+    # rclpy's own SIGINT handler already shuts the context down, so calling
+    # shutdown() unconditionally raises "rcl_shutdown already called" and the
+    # process exits 1 on every clean Ctrl-C — which made a normal stop
+    # indistinguishable from a crash in the test suites' exit-code checks.
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

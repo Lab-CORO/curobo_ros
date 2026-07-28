@@ -27,7 +27,7 @@ class PlannerExampleNode(Node):
 
         # Setup
         self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
-        self.robot_context = RobotContext(self, 0.03)
+        self.robot_context = RobotContext(self)
 
         # Examples
         self.example_1_direct_usage()

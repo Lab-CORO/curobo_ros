@@ -570,7 +570,7 @@ class MPCController(ReactiveController):
             return True
 
         self.solver.update_goal_tool_poses(goal, run_ik=False)
-        self.node.get_logger().warn("MPC: IK failed for goal pose — pose-only tracking (arm may not move)")
+        self.node.get_logger().warn("MPC: IK failed for goal pose - pose-only tracking (arm may not move)")
         return False
 
 

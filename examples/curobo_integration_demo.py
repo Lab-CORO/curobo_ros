@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Integration smoke test for curobo_ros — v2.
+End-to-end demo for curobo_ros — v2.
+
+Not a pytest suite: it needs a live RealSense camera, a running planner and a
+CUDA device, and it spins forever. Run it by hand. The automated suites live
+in ``test/``.
 
 Rewritten for cuRobo v0.8.0:
 - `WorldConfig` -> `Scene`
@@ -38,8 +42,8 @@ from curobo.types import CameraObservation, DeviceCfg, GoalToolPose, JointState,
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
 
 from curobo_msgs.srv import Fk
-from ..curobo_ros.interfaces.wait_for_message import wait_for_message
-from ..curobo_ros.interfaces.marker_publisher import MarkerPublisher
+from rclpy.wait_for_message import wait_for_message
+from curobo_ros.core.marker_publisher import MarkerPublisher
 
 
 class CuRoboTrajectoryMaker(Node):

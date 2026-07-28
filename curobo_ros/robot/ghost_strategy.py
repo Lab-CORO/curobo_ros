@@ -11,9 +11,12 @@ class GhostStrategy(JointCommandStrategy):
         super().__init__(node, dt, description)
         # create a publisher
         self.pub_command = node.create_publisher(JointTrajectory, 'trajectory', 10)
-        self.dt = 0.02  # value defined by interpolation_dt can't be changed (esealy), need to rebuild curobo.
+        # self.dt (base class) is already the resolved interpolation_dt —
+        # curobo_ros is the single authority on trajectory pacing (see
+        # resolve_interpolation_dt). The RViz preview now plays back at the
+        # actual configured rate instead of a fixed 0.02s.
 
- 
+
 
     def send_trajectrory(self):
         """
@@ -26,31 +29,31 @@ class GhostStrategy(JointCommandStrategy):
         Returns:
             JointTrajectory: A ROS2 JointTrajectory message.
         """
-        self.robot_state = RobotState.RUNNING
-        joint_trajectory_msg = JointTrajectory()
+        with self.buffer_lock:
+            self.robot_state = RobotState.RUNNING
+            joint_trajectory_msg = JointTrajectory()
 
-        # Set joint names
-        joint_trajectory_msg.joint_names = self.joint_names
+            # Set joint names
+            joint_trajectory_msg.joint_names = self.joint_names
 
             # Create a list of JointTrajectoryPoints for every position in the JointState
-        for i in range(len(self.position_command)):
-            joint_trajectory_point = JointTrajectoryPoint()
+            for i in range(len(self.position_command)):
+                joint_trajectory_point = JointTrajectoryPoint()
 
-            # Extract the i-th positions, velocities, and accelerations
-            joint_trajectory_point.positions = self.position_command[i]
-            joint_trajectory_point.velocities = self.vel_command[i]
-            joint_trajectory_point.accelerations = self.accel_command[i]
+                # Extract the i-th positions, velocities, and accelerations
+                joint_trajectory_point.positions = self.position_command[i]
+                joint_trajectory_point.velocities = self.vel_command[i]
+                joint_trajectory_point.accelerations = self.accel_command[i]
 
-            # Set efforts to an empty list (can be customized later)
-            joint_trajectory_point.effort = []
+                # Set efforts to an empty list (can be customized later)
+                joint_trajectory_point.effort = []
 
-            # Set the time_from_start for this point (incremented by time_step for each point)
-            joint_trajectory_point.time_from_start = Duration(sec=int(self.dt * i),
-                                                            nanosec=int((self.dt * i % 1) * 1e9))
+                # Set the time_from_start for this point (incremented by time_step for each point)
+                joint_trajectory_point.time_from_start = Duration(sec=int(self.dt * i),
+                                                                nanosec=int((self.dt * i % 1) * 1e9))
 
-            # Add the point to the trajectory message
-            joint_trajectory_msg.points.append(joint_trajectory_point)
-
+                # Add the point to the trajectory message
+                joint_trajectory_msg.points.append(joint_trajectory_point)
 
         self.pub_command.publish(joint_trajectory_msg)
 

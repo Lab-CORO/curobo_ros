@@ -33,7 +33,7 @@ class VoxelBenchmark(Node):
         param_client = self.create_client(
             SetParameters, f'{TARGET_NODE}/set_parameters')
         if not param_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error('set_parameters service not available — is the node running?')
+            self.get_logger().error('set_parameters service not available - is the node running?')
             return
 
         pval = ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=float(voxel_size))
@@ -51,7 +51,7 @@ class VoxelBenchmark(Node):
         n_side = math.ceil(extent / voxel_size)
         n_total = n_side ** 3
         self.get_logger().info(
-            f'Expected grid: {n_side}³ = {n_total:,} voxels '
+            f'Expected grid: {n_side}^3 = {n_total:,} voxels '
             f'({n_total * 4 / 1024**2:.1f} MB as uint32)')
 
         # Get voxel grid client
@@ -91,8 +91,8 @@ class VoxelBenchmark(Node):
         max_ms  = max(times) * 1000
         self.get_logger().info(
             f'\n'
-            f'=== Benchmark results — voxel_size={voxel_size} m ===\n'
-            f'  Grid size : {actual_size[0]}×{actual_size[1]}×{actual_size[2]}'
+            f'=== Benchmark results - voxel_size={voxel_size} m ===\n'
+            f'  Grid size : {actual_size[0]}x{actual_size[1]}x{actual_size[2]}'
             f' = {actual_size[0]*actual_size[1]*actual_size[2]:,} voxels\n'
             f'  Occupied  : {n_occ:,}\n'
             f'  Warmup    : {t_warmup*1000:.1f} ms  (GPU buffer allocation)\n'
