@@ -267,7 +267,7 @@ class MPCController(ReactiveController):
         self.solver.setup(start_state)
         applied = self._apply_goal(goal, raw, start_state)
         self.goal = goal
-        self._publish_goal_marker(raw)
+        self._publish_goal_marker(raw, applied)
 
         if self._debug_enabled():
             ee_pos, ee_quat = None, None
@@ -518,11 +518,19 @@ class MPCController(ReactiveController):
         goal = self._set_target(raw_goal)
         applied = self._apply_goal(goal, raw_goal)
         self.goal = goal
-        self._publish_goal_marker(raw_goal)
+        self._publish_goal_marker(raw_goal, applied)
         return applied
 
-    def _publish_goal_marker(self, raw):
-        """Publish a sphere Marker at the current Cartesian goal, for RViz."""
+    def _publish_goal_marker(self, raw, applied: bool = True):
+        """Publish a sphere Marker at the current Cartesian goal, for RViz.
+
+        Color reflects whether the solver actually accepted the goal: red when
+        applied (tracking normally), orange when IK failed and the arm is only
+        pose-tracking (may not move) — see _apply_goal's warn path. Without
+        this, the marker showed a goal as "set" even when the controller
+        wasn't really tracking it, which is a bad debugging trap. cf. debug
+        2026-07-28.
+        """
         if getattr(self, '_goal_marker_pub', None) is None:
             return
         marker = Marker()
@@ -542,7 +550,7 @@ class MPCController(ReactiveController):
         marker.scale.x = marker.scale.y = marker.scale.z = 0.03
         marker.color.a = 1.0
         marker.color.r = 1.0
-        marker.color.g = 0.0
+        marker.color.g = 0.0 if applied else 0.5  # red = tracking, orange = IK failed
         marker.color.b = 0.0
         self._goal_marker_pub.publish(marker)
 
@@ -558,7 +566,7 @@ class MPCController(ReactiveController):
 
     def _apply_goal(self, goal: GoalToolPose, raw, current_js=None) -> bool:
 
-        if self.solver.update_goal_tool_poses(goal, run_ik=True):
+        if self.solver.update_goal_tool_poses(goal, run_ik=False):
             return True
 
         goal_js = self._solve_goal_state(raw, current_js)
