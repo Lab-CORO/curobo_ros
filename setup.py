@@ -23,8 +23,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='will',
-    maintainer_email='will@todo.todo',
+    maintainer='Guillaume Dupoiron',
+    maintainer_email='guillaume.dupoiron@protonmail.com',
     description='GPU-accelerated motion planning for ROS 2, powered by cuRobo.',
     license='Apache-2.0',
     # setuptools 81 dropped `tests_require`; it now warns "Unknown distribution
@@ -37,6 +37,10 @@ setup(
         'console_scripts': [
             'curobo_trajectory_planner = curobo_ros.core.unified_planner_node:main',
             'robot_segmentation = curobo_ros.core.robot_segmentation:main',
+            # Outils. `ros2 run` ne cherche que dans lib/<pkg>/, où seuls les
+            # console_scripts atterrissent : un fichier posé via data_files va
+            # dans share/ et reste introuvable pour `ros2 run`.
+            'benchmark_voxel_grid = curobo_ros.tools.benchmark_voxel_grid:main',
         ],
     },
 )

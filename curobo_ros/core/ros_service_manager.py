@@ -37,7 +37,6 @@ class RosServiceManager:
         self.add_object_srv = None
         self.remove_object_srv = None
         self.get_obstacles_srv = None
-        self.node_available_srv = None
         self.remove_all_objects_srv = None
         self.get_voxel_map_srv = None
         self.get_collision_distance_srv = None
@@ -73,11 +72,9 @@ class RosServiceManager:
             partial(self._callback_get_obstacles, self.node)
         )
 
-        self.node_available_srv = self.node.create_service(
-            Trigger,
-            self.node.get_name() + '/is_available',
-            partial(self._callback_is_available, self.node)
-        )
+        # Readiness is exposed as the `node_is_available` ROS parameter
+        # (declared in ConfigWrapper, flipped around warmup in
+        # ConfigWrapperMotion). There is deliberately no /is_available service.
 
         self.remove_all_objects_srv = self.node.create_service(
             Trigger,
@@ -267,11 +264,6 @@ class RosServiceManager:
     def _callback_get_obstacles(self, node, request: Trigger, response):
         """Delegate get_obstacles service to ObstacleManager"""
         return self.obstacle_manager.get_obstacles(node, request, response)
-
-    def _callback_is_available(self, node, request: Trigger, response):
-        """Return node availability status"""
-        response.success = self.node.node_is_available
-        return response
 
     def _callback_remove_all_objects(self, node, request: Trigger, response):
         """Delegate remove_all_objects to ObstacleManager (observer propagates)."""

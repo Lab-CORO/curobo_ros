@@ -218,8 +218,6 @@ class SinglePlanner(TrajectoryPlanner):
             config: Dictionary with planner-specific parameters
                    Common parameters:
                    - max_attempts: Number of planning attempts
-                   - timeout: Planning timeout in seconds
-                   - time_dilation_factor: Trajectory time scaling
             robot_context: Optional RobotContext for trajectory visualization
 
         Returns:
@@ -377,8 +375,6 @@ class SinglePlanner(TrajectoryPlanner):
             >>> return self.motion_planner.plan_pose(
             ...     start_state, goal,
             ...     max_attempts=config['max_attempts'],
-            ...     timeout=config['timeout'],
-            ...     time_dilation_factor=config['time_dilation_factor'],
             ... )
         """
         pass
@@ -513,7 +509,6 @@ class SinglePlanner(TrajectoryPlanner):
         """
         return [
             'max_attempts',
-            'timeout',
             'time_dilation_factor',
             'voxel_size',
             'collision_activation_distance',

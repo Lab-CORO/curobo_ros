@@ -33,6 +33,7 @@ import threading
 import time
 import traceback
 from abc import abstractmethod
+from contextlib import nullcontext
 from typing import Any, Optional
 
 import torch
@@ -249,6 +250,22 @@ class ReactiveController(TrajectoryPlanner):
             self._latest_goal_fresh = False
             return raw
 
+    def _step_guard(self):
+        """gpu_lock for a step() that may capture a CUDA graph, else no lock.
+
+        The node flags exactly the step(s) that follow a graph release/rebuild
+        (see take_graph_capture_pending) as capture-pending; every other step
+        only replays an already-captured graph and doesn't need exclusivity.
+        Locking every step would starve the perception thread (its depth
+        callback does a non-blocking gpu_lock acquire and drops the frame —
+        see camera_depth_map_strategy.py), undoing perception_refresh_period.
+        cf. debug 2026-07-28.
+        """
+        take = getattr(self.node, 'take_graph_capture_pending', None)
+        if take is not None and take():
+            return self.node.gpu_lock
+        return nullcontext()
+
     # ------------------------------------------------------------------
     # Planning: set up the reactive goal (no full trajectory is produced).
     # ------------------------------------------------------------------
@@ -349,13 +366,31 @@ class ReactiveController(TrajectoryPlanner):
                         and hasattr(self.node, 'refresh_perception_world')):
                     self.node.refresh_perception_world()
 
-                # Consume a pending live goal on the loop thread only.
+                # Consume a pending live goal on the loop thread only, under
+                # gpu_lock: retargeting runs the solver's IK, which can capture
+                # a CUDA graph, and capture is process-global (any CUDA op on
+                # any thread during it raises cudaErrorStreamCaptureUnsupported
+                # and poisons the context). The lock is how the perception
+                # thread knows to skip its frame — same invariant as plan()'s
+                # setup() call. A raising apply_live_goal (bad pose, IK error)
+                # is narrowed to the goal itself — it must not kill the whole
+                # session, since the arm should keep servoing the previous
+                # goal instead. cf. debug 2026-07-28.
                 raw = self._take_live_goal()
                 if raw is not None:
-                    self.apply_live_goal(raw)
+                    try:
+                        with self.node.gpu_lock:
+                            self.apply_live_goal(raw)
+                    except Exception as e:
+                        self.node.get_logger().error(
+                            f"{self.get_planner_name()}: live goal rejected "
+                            f"({e}) - keeping previous goal",
+                            throttle_duration_sec=1.0,
+                        )
 
                 st_time = time.time()
-                action = self.step(current_state)  # step() already syncs (FK .item())
+                with self._step_guard():
+                    action = self.step(current_state)  # step() already syncs (FK .item())
                 if tstep > 5:
                     self._step_times.append(time.time() - st_time)
 
@@ -452,12 +487,23 @@ class ReactiveController(TrajectoryPlanner):
                             and hasattr(self.node, 'refresh_perception_world')):
                         self.node.refresh_perception_world()
 
+                    # Under gpu_lock, failure narrowed to the goal — see
+                    # _execute_immediate for why.
                     raw = self._take_live_goal()
                     if raw is not None:
-                        self.apply_live_goal(raw)
+                        try:
+                            with self.node.gpu_lock:
+                                self.apply_live_goal(raw)
+                        except Exception as e:
+                            self.node.get_logger().error(
+                                f"{self.get_planner_name()}: live goal rejected "
+                                f"({e}) - keeping previous goal",
+                                throttle_duration_sec=1.0,
+                            )
 
                     st_time = time.time()
-                    action = self.step(current_state)
+                    with self._step_guard():
+                        action = self.step(current_state)
                     if tstep > 5:
                         self._step_times.append(time.time() - st_time)
 

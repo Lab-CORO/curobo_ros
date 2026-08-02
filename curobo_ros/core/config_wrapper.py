@@ -36,8 +36,8 @@ def resolve_interpolation_dt(node, default: float = 0.025) -> float:
     JointCommandStrategy stamps into time_from_start on the outgoing
     JointTrajectory. Declares the ``interpolation_dt`` ROS parameter if the
     node hasn't declared it yet (nodes other than the unified planner, e.g.
-    generate_trajectory / robot_segmentation / examples, that don't declare it
-    themselves), so this is always safe to call first.
+    robot_segmentation, that don't declare it themselves), so this is always
+    safe to call first.
     """
     if not node.has_parameter('interpolation_dt'):
         node.declare_parameter('interpolation_dt', default)
@@ -55,9 +55,9 @@ class ConfigWrapper(ABC):
     - CameraSystemManager: Manages camera configuration and setup
     - RosServiceManager: Manages ROS services, publishers, and timers
 
-    This class serves as the base class for:
-    - ConfigWrapperMotion
-    - ConfigWrapperIK
+    ConfigWrapperMotion is its only concrete subclass. IK is NOT a
+    ConfigWrapper either: it lives in core/ik_services.py, built from the same
+    shared context.
 
     The reactive (MPC) solver is NOT a ConfigWrapper: it is built by
     MPCController directly from the shared ConfigWrapperMotion context, so all
@@ -126,10 +126,17 @@ class ConfigWrapper(ABC):
         # collision. The observers ensure every scene/cache mutation reaches
         # the solvers regardless of the caller (ROS service OR direct Python).
         num_cameras = 0
+        total_frame_rate_hz = 0.0
         camera_context = self.camera_system_manager.camera_context
         if camera_context is not None:
             num_cameras = len(camera_context.cameras)
-        self.obstacle_manager.setup_perception(num_cameras=num_cameras)
+            # Combined integrate() rate: the TSDF decay fires once per call, so
+            # this is what turns `decay_half_life_s` into a per-call factor.
+            total_frame_rate_hz = camera_context.get_total_frame_rate_hz()
+        self.obstacle_manager.setup_perception(
+            num_cameras=num_cameras,
+            total_frame_rate_hz=total_frame_rate_hz,
+        )
 
         self._register_world_observers(node)
 
