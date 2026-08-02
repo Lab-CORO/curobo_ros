@@ -122,6 +122,31 @@ class ObstacleManager:
         self._mapper_depth_max = self._declare_param('mapper_depth_max', 5.0)
         # ESDF voxel size shares the pre-existing `voxel_size` param.
         self._esdf_voxel_size = self._declare_param('voxel_size', 0.05)
+        # Time (s) for an unobserved voxel to lose half its TSDF weight. Expressed
+        # in seconds rather than as a raw per-call factor so it stays meaningful
+        # when cameras are added/removed or their frame rate changes — see
+        # _resolve_time_decay. <= 0 disables the decay entirely.
+        self._decay_half_life_s = self._declare_param('decay_half_life_s', 0.7)
+        self._warn_removed_decay_factor()
+
+    def _warn_removed_decay_factor(self):
+        """Flag a leftover `decay_factor` override from a pre-normalisation launch.
+
+        rclpy silently keeps overrides for parameters that are never declared, so
+        a stale `decay_factor: 0.9` in a launch file would be dropped without a
+        word while the operator believes it is still tuning the decay.
+        """
+        try:
+            overrides = self.node.get_node_options().parameter_overrides
+        except Exception:
+            return
+        if any(p.name == 'decay_factor' for p in overrides):
+            self.node.get_logger().warn(
+                "Parameter 'decay_factor' is set but no longer exists: the TSDF "
+                "decay is now derived from 'decay_half_life_s' (seconds) and the "
+                "cameras' frame_rate_hz. The provided value is IGNORED - remove "
+                "it and set 'decay_half_life_s' instead."
+            )
 
     # ---- Observer wiring (propagation to solvers) ----
 
@@ -150,7 +175,52 @@ class ObstacleManager:
 
     # ---- Perception (Mapper / ESDF) ----
 
-    def setup_perception(self, num_cameras: int = 1):
+    def _resolve_time_decay(self, total_frame_rate_hz: float) -> float:
+        """Convert `decay_half_life_s` into cuRobo's per-integrate decay factor.
+
+        cuRobo multiplies the weight of EVERY TSDF voxel by `decay_factor` once
+        per `integrate()` call, and each camera integrates its own frames into the
+        shared TSDF. The real decay rate is therefore R = sum of the camera frame
+        rates, not one decay per "round" — so a raw factor silently changes
+        meaning whenever a camera is added or a frame rate is retuned.
+
+        Anchoring on a half-life removes that coupling:
+
+            d = 0.5 ** (1 / (R * half_life))   =>   d ** (R * half_life) = 0.5
+
+        Args:
+            total_frame_rate_hz: Combined integrate() rate R, in Hz.
+
+        Returns:
+            A decay factor in (0, 1]; 1.0 means "no decay".
+        """
+        half_life = float(self._decay_half_life_s)
+        if half_life <= 0.0:
+            self.node.get_logger().info(
+                "decay_half_life_s <= 0: TSDF decay disabled (voxels never fade)."
+            )
+            return 1.0
+        if total_frame_rate_hz <= 0.0:
+            self.node.get_logger().warn(
+                "No camera frame rate available: cannot convert "
+                f"decay_half_life_s={half_life}s into a per-integrate factor. "
+                "Falling back to no decay (the map will accumulate). Declare "
+                "'frame_rate_hz' on each camera in the cameras config."
+            )
+            return 1.0
+
+        # MapperCfg rejects anything outside (0, 1] (mapper_cfg.py validation).
+        decay = 0.5 ** (1.0 / (total_frame_rate_hz * half_life))
+        decay = min(max(decay, 1e-6), 1.0)
+        if decay > 0.9999:
+            self.node.get_logger().warn(
+                f"Resolved TSDF decay factor {decay:.6f} is numerically inert "
+                f"(half_life={half_life}s at {total_frame_rate_hz} Hz): occupancy "
+                "will accumulate without bound. Shorten decay_half_life_s."
+            )
+        return decay
+
+    def setup_perception(self, num_cameras: int = 1, total_frame_rate_hz: float = 0.0):
         """Create the v2 Mapper and expose it as `node.mapper`.
 
         Idempotent: if a Mapper already exists on the node (e.g. created by
@@ -160,6 +230,8 @@ class ObstacleManager:
         Args:
             num_cameras: number of cameras feeding the shared Mapper (sizes the
                 projective scratch buffer).
+            total_frame_rate_hz: combined integrate() rate of those cameras, used
+                to normalise the decay (see _resolve_time_decay).
         """
         if not self._use_mapper:
             self.mapper = None
@@ -184,6 +256,7 @@ class ObstacleManager:
         # single-camera frame; multiple cameras simply call integrate() in turn
         # and the shared TSDF fuses them. (All cameras must share image_height/
         # image_width since the projective buffer is sized once here.)
+        time_decay = self._resolve_time_decay(total_frame_rate_hz)
         self.mapper = Mapper(MapperCfg(
             extent_meters_xyz=tuple(self._mapper_extent_xyz),
             # Pin the ESDF extent to the TSDF extent so the produced ESDF grid
@@ -199,8 +272,11 @@ class ObstacleManager:
             # decay_factor défaut=1.0 = AUCUNE décroissance → l'occupancy accumule
             # sans fin et le nombre de voxels occupés croît de façon monotone même
             # sur une scène statique (bruit de bord franchissant peu à peu le seuil).
-            # <1.0 fait décroître les vieilles observations → carte stationnaire.
-            decay_factor=0.9,
+            # On ne le règle PAS à la main : il est dérivé de `decay_half_life_s`
+            # (secondes) et du débit combiné des caméras, parce que cuRobo applique
+            # la décroissance UNE FOIS PAR APPEL integrate() — ajouter une caméra
+            # ou changer un fps modifierait sinon l'horizon d'oubli en silence.
+            decay_factor=time_decay,
             num_cameras=1,
         ))
         self.node.mapper = self.mapper
@@ -208,7 +284,9 @@ class ObstacleManager:
             f"Mapper configured: extent={self._mapper_extent_xyz}m, "
             f"tsdf={self._mapper_voxel_size}m, esdf={self._esdf_voxel_size}m, "
             f"image={self._mapper_image_width}x{self._mapper_image_height} "
-            f"({int(num_cameras)} camera(s) feeding the shared TSDF)"
+            f"({int(num_cameras)} camera(s) feeding the shared TSDF), "
+            f"decay: half_life={self._decay_half_life_s}s @ R={total_frame_rate_hz}Hz "
+            f"-> time_decay={time_decay:.4f}"
         )
 
     def refresh_esdf(self) -> bool:

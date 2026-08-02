@@ -16,4 +16,10 @@ cameras:
     intrinsics: []  # Vide = utiliser camera_info topic
     # Extrinsics: [x, y, z, qw, qx, qy, qz] (format cuRobo)
     extrinsics: [0.161, -0.428, 1.585, -0.3409296, 0.6840516, -0.6215661, 0.1717437]
+    # Cadence REELLE de publication de `topic`. cuRobo decremente le poids de
+    # TOUS les voxels une fois par appel integrate(), donc le debit qui pilote
+    # l'oubli est la SOMME des cadences des cameras declarees ici. Le noeud en
+    # deduit `decay_factor` a partir de `decay_half_life_s` (obstacle_manager).
+    # Si le champ est absent, un defaut prudent est utilise + warning au demarrage.
+    frame_rate_hz: 30.0
  

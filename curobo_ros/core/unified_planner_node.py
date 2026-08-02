@@ -97,6 +97,11 @@ class UnifiedPlannerNode(Node):
         self.declare_parameter('voxel_size', 0.05)
         # Publish rate (Hz) of the sparse voxel grid topic. <= 0 disables it.
         self.declare_parameter('sparse_voxel_publish_rate', 7.0)
+        # NOTE: the TSDF decay knob is `decay_half_life_s` (seconds), declared by
+        # ObstacleManager._load_perception_params. The raw per-integrate
+        # `decay_factor` is no longer exposed: it is derived from the half-life
+        # and the cameras' combined frame rate.
+
         self.declare_parameter('collision_activation_distance', 0.025)
         self.declare_parameter('convergence_threshold', 0.01)
         self.declare_parameter('max_mpc_iterations', 1000)
@@ -178,6 +183,16 @@ class UnifiedPlannerNode(Node):
         # 'motion' for all open-loop planners (they share one MotionPlanner),
         # 'reactive:<name>' for each reactive controller. None = no owner yet.
         self._active_graph_owner = None
+
+        # True whenever the next call into a reactive solver may CAPTURE a CUDA
+        # graph (fresh solver, or right after a release) rather than just replay
+        # one. Capture is process-global — no other thread may issue ANY CUDA op
+        # while it's in progress — so callers use take_graph_capture_pending() to
+        # decide whether their next solver call needs gpu_lock. Guards only the
+        # step(s) that can actually capture; steps that only replay stay
+        # unguarded so the perception thread isn't starved. cf. debug 2026-07-28.
+        self._graph_capture_pending = True
+        self._graph_capture_pending_lock = threading.Lock()
 
         # Attach/detach a scene obstacle to the arm's attached_object link
         # (standalone feature — pre-positioned objects, simulation, tests).
@@ -410,6 +425,10 @@ class UnifiedPlannerNode(Node):
                 self.planner_manager.get_planner('mpc').rebuild_solver()
             if self.retargeter is not None:
                 self.planner_manager.get_planner('retarget').rebuild_solver()
+
+            # Rebuilt solvers hold no graph yet — their first step() will
+            # capture, so mark it pending (see take_graph_capture_pending).
+            self._set_graph_capture_pending()
 
         self.get_logger().info("Solvers rebuilt after cache change")
 
@@ -771,6 +790,26 @@ class UnifiedPlannerNode(Node):
                     self._safe_reset_graph(getattr(self.motion_planner, name, None))
             self._safe_reset_graph(self.mpc)
             self._safe_reset_graph(self.retargeter)
+            # Every solver now holds no graph — its next call captures.
+            self._set_graph_capture_pending()
+
+    def _set_graph_capture_pending(self):
+        """Mark that the next reactive solver call may capture a CUDA graph."""
+        with self._graph_capture_pending_lock:
+            self._graph_capture_pending = True
+
+    def take_graph_capture_pending(self) -> bool:
+        """Atomically take-and-clear: True if the next solver call may capture.
+
+        Callers (ReactiveController._step_guard) use this to decide whether
+        their next step() needs gpu_lock — capture is process-global (see
+        _graph_capture_pending's docstring), replay is not. Take-and-clear
+        mirrors _take_live_goal(): exactly one caller sees True per release.
+        """
+        with self._graph_capture_pending_lock:
+            pending = self._graph_capture_pending
+            self._graph_capture_pending = False
+            return pending
 
     def _safe_reset_graph(self, solver):
         """Release a solver's captured CUDA graph(s); never raise into callers.

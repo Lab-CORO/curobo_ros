@@ -24,9 +24,15 @@ class CameraContext:
         """
         self.node = node
         self.cameras: Dict[str, CameraStrategy] = {}
+        # Declared publication rate per camera, in Hz. Kept alongside (not inside)
+        # the strategies: the rate is never used by the depth callback, only to
+        # normalise the TSDF decay, which fires once per integrate() call and is
+        # therefore driven by the SUM of the camera rates.
+        self.camera_frame_rates: Dict[str, float] = {}
         self._device = torch.device('cuda')
 
-    def add_camera(self, camera_name, camera_type, topic, camera_info, frame_id, intrinsics=None, extrinsics=None, **kwargs):
+    def add_camera(self, camera_name, camera_type, topic, camera_info, frame_id,
+                   intrinsics=None, extrinsics=None, frame_rate_hz=None, **kwargs):
         """
         Add a camera strategy to the context.
 
@@ -38,6 +44,8 @@ class CameraContext:
             frame_id: Frame ID for the camera
             intrinsics: Optional camera intrinsics from config (list or dict)
             extrinsics: Optional camera extrinsics from config (list)
+            frame_rate_hz: Declared publication rate of `topic`, in Hz. Only used
+                to normalise the TSDF decay (see get_total_frame_rate_hz).
             **kwargs: Additional parameters for specific camera strategies
         """
         # v2 perception ingests depth+rgb images through the Mapper TSDF; raw
@@ -64,7 +72,11 @@ class CameraContext:
             return
 
         self.cameras[camera_name] = camera_strategy
-        self.node.get_logger().info(f"Added camera strategy '{camera_name}' of type '{camera_type}'")
+        if frame_rate_hz is not None:
+            self.camera_frame_rates[camera_name] = float(frame_rate_hz)
+        self.node.get_logger().info(
+            f"Added camera strategy '{camera_name}' of type '{camera_type}' "
+            f"({frame_rate_hz} Hz)")
 
     def set_camera_update_callback(self, callback):
         """
@@ -85,9 +97,24 @@ class CameraContext:
         """
         if name in self.cameras:
             del self.cameras[name]
+            self.camera_frame_rates.pop(name, None)
             self.node.get_logger().info(f"Removed camera strategy '{name}'")
         else:
             self.node.get_logger().warn(f"Camera '{name}' not found")
+
+    def get_total_frame_rate_hz(self) -> float:
+        """Combined integration rate of every camera, in Hz.
+
+        Each camera pushes its own frames into the shared Mapper, and cuRobo
+        applies the weight decay once per integrate() call — so this sum, not the
+        per-camera rate, is what actually drives how fast the TSDF forgets. Used
+        by ObstacleManager to turn a half-life in seconds into a per-integrate
+        decay factor.
+
+        Returns:
+            Sum of the declared camera rates (0.0 when none is known).
+        """
+        return float(sum(self.camera_frame_rates.values()))
 
     # NOTE: the pull-based observation API (get_camera_observation / is_ready /
     # ...) was removed — it was dead AND broken (no strategy implements is_ready()
