@@ -3,9 +3,8 @@ from launch.actions import LogInfo, OpaqueFunction
 from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, PathJoinSubstitution, LaunchConfiguration
-from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
-from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
 import ast
@@ -61,11 +60,16 @@ def launch_setup(context, *args, **kwargs):
     # Si un robot (descripteur) est fourni et que robot_config_file n'a pas été
     # surchargé explicitement, dériver le YAML curobo (+ base_link) du descripteur.
     descriptor_base_link = None
+    descriptor_joint_states_topic = None
     if robot_name:
         try:
             from curobo_ros.robot.robot_description import load_robot_description
             _desc = load_robot_description(robot_name)
             descriptor_base_link = _desc.base_link
+            # Topic sur lequel le robot publie ses JointState réels. C'est la
+            # seule source de vérité : l'émulateur publie /emulator/joint_states,
+            # un vrai robot son propre topic (M1013 : /dsr01/joint_states).
+            descriptor_joint_states_topic = _desc.strategy_params.get('joint_states_topic')
             if not robot_config_file:
                 robot_config_file = _desc.curobo_config_path
             print(f"[gen_traj.launch] robot='{robot_name}' -> config {robot_config_file}")
@@ -104,22 +108,12 @@ def launch_setup(context, *args, **kwargs):
     curobo_ros_launch_dir = os.path.join(
         get_package_share_directory('curobo_ros'), 'launch')
 
-    include_realsense_launch = LaunchConfiguration('include_realsense_launch', default='false')
-
     from launch_ros.actions import Node as RosNode
-    from launch.actions import DeclareLaunchArgument
 
-    gui_enabled = LaunchConfiguration('gui', default='true')
     mapper_extent_xyz = ast.literal_eval(
         LaunchConfiguration('mapper_extent_xyz').perform(context))
 
     nodes = [
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(curobo_ros_launch_dir, 'realsense.launch.py')),
-            condition=IfCondition(include_realsense_launch)
-        ),
-
         # Lancer les nœuds directement au lieu d'inclure launch_rviz2.launch.py
         # afin d'utiliser le bon URDF
         RosNode(
@@ -129,7 +123,6 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
             parameters=[{
                 'robot_description': urdf_content,
-                'base_link': base_link
             }]
         ),
 
@@ -139,9 +132,11 @@ def launch_setup(context, *args, **kwargs):
             name='joint_state_publisher',
             output='screen',
             parameters=[{
-                'use_gui': gui_enabled,
-                'source_list': ['/emulator/joint_states'],
-                'base_link': base_link
+                # Topic de feedback du robot sélectionné, lu dans son descripteur.
+                # Codé en dur sur l'émulateur auparavant : RViz affichait alors un
+                # robot figé à zéro dès qu'on lançait un vrai robot.
+                'source_list': [
+                    descriptor_joint_states_topic or '/emulator/joint_states'],
             }]
         ),
 
@@ -158,7 +153,21 @@ def launch_setup(context, *args, **kwargs):
                 'world_file': LaunchConfiguration('world_file'),
                 # ESDF/voxel resolution (shared by Mapper ESDF, collision cache
                 # and the published voxel grid). Forwarded from leeloo.
-                'voxel_size': LaunchConfiguration('voxel_size'),
+                # value_type is explicit on every forwarded scalar: without it
+                # launch_ros infers the type from the string, so `voxel_size:=1`
+                # would yield an int and fail the node's double declaration.
+                'voxel_size': ParameterValue(
+                    LaunchConfiguration('voxel_size'), value_type=float),
+                # Planning retries per request (MotionPlanner.plan_pose).
+                'max_attempts': ParameterValue(
+                    LaunchConfiguration('max_attempts'), value_type=int),
+                # Feedback publish period (s) during open-loop execution.
+                'time_dilation_factor': ParameterValue(
+                    LaunchConfiguration('time_dilation_factor'), value_type=float),
+                # Build-time: baked into the MotionPlanner at construction.
+                'collision_activation_distance': ParameterValue(
+                    LaunchConfiguration('collision_activation_distance'),
+                    value_type=float),
                 # Output voxel grid geometry for the U-Net consumer:
                 # 128^3 @ 0.02 m centred on the robot base (extent = 128 * 0.02).
                 'mapper_extent_xyz': mapper_extent_xyz,
@@ -177,14 +186,16 @@ def launch_setup(context, *args, **kwargs):
             }]
         ),
 
-        # Nodes pour la prévisualisation des trajectoires (remplace le fichier XML problématique)
+        # Nodes pour la prévisualisation des trajectoires (remplace le fichier XML problématique).
+        # /trajectory/joint_states n'est publié par aucun node de ce dépôt : il vient du
+        # panneau RViz trajectory_preview/TrajectoryPreviewPanel (rviz/rviz_curobo.rviz),
+        # qui rejoue le /trajectory publié par GhostStrategy. Ne pas « corriger ».
         RosNode(
             package='joint_state_publisher',
             executable='joint_state_publisher',
             namespace='preview',
             parameters=[{
                 'source_list': ['/trajectory/joint_states'],
-                'base_link': base_link
             }]
         ),
 
@@ -195,7 +206,6 @@ def launch_setup(context, *args, **kwargs):
             parameters=[{
                 'robot_description': urdf_content,
                 'frame_prefix': 'preview/',
-                'base_link': base_link
             }]
         ),
 
@@ -227,17 +237,6 @@ def launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    # Déclaration du répertoire de lancement de curobo_ros
-    curobo_ros_launch_dir = os.path.join(
-        get_package_share_directory('curobo_ros'), 'launch')
-
-    # Chemin par défaut pour robot_config_file
-    default_robot_config = os.path.join(
-        get_package_share_directory('curobo_ros'),
-        'curobo_doosan/src/m1013/',
-        'm1013.yml'
-    )
-
     # Déclaration de l'argument urdf_path (vide par défaut pour déclencher le chargement depuis YAML)
     declare_urdf_path = DeclareLaunchArgument(
         'urdf_path',
@@ -263,12 +262,6 @@ def generate_launch_description():
         description='Chemin vers le fichier de configuration YAML des cameras'
     )
 
-    declare_include_realsense_launch = DeclareLaunchArgument(
-        'include_realsense_launch',
-        default_value='false',
-        description='Inclure le fichier de lancement realsense.launch.py si défini à true'
-    )
-
     declare_gui = DeclareLaunchArgument(
         'gui',
         default_value='true',
@@ -287,27 +280,33 @@ def generate_launch_description():
         declare_urdf_path,
         declare_robot_config_file,
         declare_camera_config_file,
-        declare_include_realsense_launch,
         declare_gui,
         declare_world_file,
+        # Les défauts ci-dessous DOIVENT rester alignés sur les declare_parameter()
+        # de unified_planner_node.py : ils sont transmis au node et écrasent donc
+        # ses propres défauts.
         DeclareLaunchArgument(
-            'max_attempts', default_value='2', description='Premier paramètre'
+            'max_attempts', default_value='1',
+            description='Planning retries per request (MotionPlanner.plan_pose)'
         ),
         DeclareLaunchArgument(
-            'timeout', default_value='1', description='Deuxième paramètre (nombre)'
+            'time_dilation_factor', default_value='0.5',
+            description='Feedback publish period (s) during open-loop execution. '
+                        'Not a speed control: set velocity/acceleration limits in the robot YAML cspace'
         ),
         DeclareLaunchArgument(
-            'time_dilation_factor', default_value='0.5', description='Facteur de dilatation du temps'
-        ),
-        DeclareLaunchArgument(
-            'voxel_size', default_value='1.0', description='Taille des voxels'
+            'voxel_size', default_value='0.05',
+            description='Voxel size (m) shared by the perception ESDF, the collision cache '
+                        'and the published voxel grid. Smaller = finer, cubic VRAM cost'
         ),
         DeclareLaunchArgument(
             'mapper_extent_xyz', default_value='[2.56, 2.56, 2.56]',
             description="Étendue (m) de la grille voxel du Mapper, en repr Python d'une liste [x, y, z]"
         ),
         DeclareLaunchArgument(
-            'collision_activation_distance', default_value='0.5', description='Distance d\'activation de la collision'
+            'collision_activation_distance', default_value='0.025',
+            description='Distance (m) at which the collision cost activates. Build-time: '
+                        'baked into the MotionPlanner, changing it at runtime needs a rebuild'
         ),
 
         # Utiliser OpaqueFunction pour résoudre les LaunchConfiguration au moment de l'exécution
