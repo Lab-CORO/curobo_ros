@@ -22,7 +22,8 @@ TrajectoryPlanner (abstract Strategy)
 │   ├── MultiPointPlanner
 │   └── JointSpacePlanner
 └── ReactiveController       # closed-loop: a control loop, no precomputed traj
-    └── MPCController         # cuRobo ModelPredictiveControl
+    ├── MPCController         # cuRobo ModelPredictiveControl
+    └── RetargetController    # cuRobo MotionRetargeter (IK teleop follower)
 ```
 
 ## Single shared context
@@ -80,6 +81,57 @@ result = mpc.optimize_next_action(current_state) # result.next_action / .positio
 mpc.update_world(scene)                           # dynamic obstacles (driven by the node)
 ```
 
+### Two solver recipes
+
+`mpc_solver_type` selects how the underlying optimizer is configured:
+
+- **`mppi_acceleration`** (default) — a hand-tuned MPPI configuration in
+  ACCELERATION control space (`_build_mppi_optimizer_config`), validated on the
+  real Doosan M1013 (2026-07). Tuned companions: `mpc_warm_start_iters: 5`,
+  `mpc_cold_start_iters: 10`, `mpc_mppi_num_particles: 400`.
+- **`lbfgs_bspline`** — cuRobo's stock L-BFGS + B-spline MPC config. If you use
+  it, iteration counts must be multiples of 25 (e.g. 25/100).
+
+### Command pacing and stability
+
+Two mechanisms keep the real robot stable:
+
+- `mpc_command_interval` (default `0.24` s) paces the loop in fixed windows:
+  each command window fully executes on the robot before the next solve, and the
+  robot state is read *after* execution (fresh and velocity-consistent). `0`
+  reverts to free-running solves.
+- A velocity boundary-continuity cap (`_VBC_CAP_DPS = 5.0` deg/s in
+  `mpc_planner.py`) limits the velocity discontinuity at window boundaries to
+  avoid ratcheting/runaway.
+
+### Goal state
+
+The Cartesian goal is converted to a joint-space goal with a lazy,
+self-collision-only IK solve (`_solve_goal_state`), seeded from the current
+configuration; on IK failure the controller falls back to a Cartesian-only goal.
+
+## Monitoring and diagnostics
+
+While MPC (or retarget) is active the node publishes:
+
+| Topic | Type | Content |
+|---|---|---|
+| `/mpc_predicted_path` | `nav_msgs/Path` | Near-term predicted end-effector path |
+| `/mpc_goal_marker` | `visualization_msgs/Marker` | Current goal (color indicates whether it was applied) |
+| `/mpc_costs` | `curobo_msgs/msg/MpcCosts` | FK error, solver pose error, per-term cost and constraint breakdown |
+
+Set `mpc_debug: true` to also write per-step CSVs to the ROS log directory
+(analyze offline with `scripts/plot_mpc_diag.py`).
+
+## `RetargetController` — teleoperation
+
+`curobo_ros/planners/retarget_controller.py` wraps cuRobo's `MotionRetargeter`:
+a pose-stream follower for teleoperation. The first frame runs a global IK
+(64 seeds); subsequent frames run warm-started local IK for low latency. Weights:
+`retarget_position_weight` / `retarget_orientation_weight`; `retarget_use_mpc`
+routes commands through the MPC solver instead. Select it with `set_planner`
+enum `6` and stream poses to `/unified_planner/mpc_goal`.
+
 ## ROS interface
 
 Reactive control reuses the **unified** interface — no dedicated action:
@@ -95,10 +147,17 @@ Reactive control reuses the **unified** interface — no dedicated action:
 
 | Parameter | Default | Use |
 |---|---|---|
-| `convergence_threshold` | `0.01` | stop when position error (m) is below this |
+| `convergence_threshold` | `0.01` | stop servoing to "on target" when position error (m) is below this |
 | `max_mpc_iterations` | `1000` | safety cap on loop iterations |
+| `mpc_solver_type` | `'mppi_acceleration'` | solver recipe (see above) |
 | `mpc_step_dt` | `0.03` | cuRobo `optimization_dt` |
 | `mpc_horizon_steps` | `30` | cuRobo `num_control_points` |
+| `mpc_command_interval` | `0.24` | fixed command-window pacing (s); `0` = free-running |
+
+The full family (`mpc_warm_start_iters`, `mpc_mppi_num_particles`,
+`mpc_vel_feedback_alpha`, `retarget_*`, …) is listed in
+[Parameters](parameters.md). MPC parameters are read when the solver is built —
+set them before the first switch to `mpc`.
 
 ## Adding another reactive control
 

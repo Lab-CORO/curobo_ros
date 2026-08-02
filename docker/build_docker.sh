@@ -95,14 +95,14 @@ fi
 case $mode_choice in
     1)
         BUILD_MODE="dev"
-        DOCKERFILE="x86.dockerfile"
+        DOCKERFILE="x86_jazzy.dockerfile"
         IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
         echo "Selected: DEV mode"
         echo "Building development image with full tools..."
         ;;
     2)
         BUILD_MODE="prod"
-        DOCKERFILE="x86.optimize-v2-ultra.dockerfile"
+        DOCKERFILE="x86_jazzy_prod.dockerfile"
         IMAGE_TAG="curobo_ros:${GPU_NAME}-prod"
         echo "Selected: PROD mode"
         echo "Building optimized production image..."
@@ -110,7 +110,7 @@ case $mode_choice in
     *)
         echo "Invalid choice, defaulting to DEV mode"
         BUILD_MODE="dev"
-        DOCKERFILE="x86.dockerfile"
+        DOCKERFILE="x86_jazzy.dockerfile"
         IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
         ;;
 esac
@@ -162,5 +162,5 @@ else
     echo "     (You'll be asked for your workspace path)"
     echo ""
 fi
-echo "See doc/concepts/docker_workflow.md for more details."
+echo "See docs/getting-started/installation.md for more details."
 echo "======================================"

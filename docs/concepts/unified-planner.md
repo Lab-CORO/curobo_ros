@@ -1,238 +1,88 @@
-# Unified Planner Architecture
+# Unified Planner
 
-The **Unified Planner** is the central node of curobo_ros. It exposes a single ROS 2 node (`unified_planner`) that supports multiple planning algorithms, kinematics services, and obstacle management through a unified interface.
+The **unified planner** is the central node of `curobo_ros` (node name `unified_planner`, executable `curobo_trajectory_planner`). One node hosts every planning algorithm, the IK/FK services, obstacle management, and robot execution, behind a single set of interfaces. Clients never talk to a specific algorithm — they call `generate_trajectory` / `execute_trajectory`, and the *active planner* decides how the motion is computed.
 
-> **cuRobo v2 terminology.** References to `MotionGen`, `MpcSolver`, `CudaRobotModel`, and `IkSolver` in this document describe the **architecture** — the actual v0.8.0 code uses `MotionPlanner`, `ModelPredictiveControl`, `Kinematics`, and `InverseKinematics`. See [docs/MIGRATION_V2.md](../MIGRATION_V2.md). `world_cfg` / `world_coll_checker` mentions map to `Scene` and `Mapper` respectively.
+## Available planners
 
----
+| Key | Enum ID | Mode | What it does |
+|---|---|---|---|
+| `classic` | 0 | Open-loop | Single Cartesian goal → collision-free trajectory (default) |
+| `mpc` | 1 | Closed-loop | Model Predictive Control: continuous re-optimization while executing |
+| `multi_point` | 4 | Open-loop | Sequence of Cartesian waypoints, planned segment by segment |
+| `joint_space` | 5 | Open-loop | Goal expressed directly in joint space |
+| `retarget` | 6 | Closed-loop | IK-based pose-stream follower for teleoperation |
 
-## Overview
+Enum IDs 2 (`BATCH`) and 3 (`CONSTRAINED`) exist in `SetPlanner.srv` but are **not implemented** — switching to them fails. Orientation/position constraints are available on the classic planner through the `trajectory_constraints` request field instead.
 
-The unified planner uses the **Strategy Pattern** to encapsulate different trajectory planning algorithms, making it easy to switch between planning methods at runtime without modifying client code.
-
-### Available Planners
-
-| Planner | Enum ID | Mode | Description | Use Case |
-|---------|---------|------|-------------|----------|
-| **Classic** | 0 | Open-loop | Single-shot trajectory generation | Static environments, pre-computed paths |
-| **MPC** | 1 | Closed-loop | Real-time replanning at each step | Dynamic environments, moving obstacles |
-| **Multi-Point** | 4 | Open-loop | Waypoint-based trajectory generation | Pick-and-place, inspection paths |
-| **Joint Space** | 5 | Open-loop | Planning in joint space | Direct joint configuration targets |
-
-> **Note**: Constrained planning (hold orientation, lock axes) is available in Classic and Multi-Point planners via the `trajectory_constraints` field — it does not require a separate planner type.
-
----
-
-## Architecture
-
-### Node Structure
-
-```
-UnifiedPlannerNode  (/unified_planner)
-│
-├── Trajectory Planners (Strategy Pattern)
-│   ├── ClassicPlanner       — MotionGen, open-loop
-│   ├── MPCPlanner           — MpcSolver, closed-loop
-│   ├── MultiPointPlanner    — MotionGen, waypoints
-│   └── JointSpacePlanner    — MotionGen, joint targets
-│
-├── Kinematics Services (lazy warmup)
-│   ├── IKServices           — IkSolver, shares obstacles
-│   └── FKServices           — CudaRobotModel, geometry only
-│
-└── Shared Infrastructure
-    ├── ObstacleManager      — single source of truth for world
-    ├── RobotContext         — robot strategy (real/emulator/ghost)
-    └── ConfigWrapperMotion  — robot config, camera, parameters
-```
-
-### Planner Class Hierarchy
-
-```
-TrajectoryPlanner (abstract)
-│
-├── SinglePlanner (shared MotionGen instance)
-│   ├── ClassicPlanner
-│   ├── MultiPointPlanner
-│   └── JointSpacePlanner
-│
-└── MPCPlanner (independent MpcSolver)
-```
-
-**SinglePlanner** is an intermediate abstract class for all planners that use cuRobo's MotionGen. All `SinglePlanner` children share a **single** MotionGen instance — warmup is performed only once, and switching between them is instantaneous with no re-warmup cost.
-
-**MPCPlanner** uses a separate `MpcSolver` instance. It can optionally share the world collision checker with MotionGen to avoid duplicating obstacle data in VRAM.
-
----
-
-## Planner Details
-
-### Classic Planner
-
-Generates a complete collision-free trajectory from start to goal in one shot, then executes it open-loop.
-
-**Strengths:** Predictable, reproducible, low GPU overhead during execution.
-**Limitations:** No reaction to environment changes mid-execution.
-**Best for:** Static, well-defined environments.
-
-Supports optional trajectory constraints (hold orientation, lock axes) via the `trajectory_constraints` field.
-
----
-
-### MPC Planner
-
-Continuously replans in a closed-loop at high frequency using cuRobo's Model Predictive Control solver.
-
-**Strengths:** Reactive to perturbations and dynamic obstacles, high-precision tracking.
-**Limitations:** Sustained GPU usage, less predictable completion time.
-**Best for:** Dynamic environments, moving targets, disturbance rejection.
-
-Convergence is declared when the end-effector reaches within `convergence_threshold` (default 0.01m) of the target.
-
----
-
-### Multi-Point Planner
-
-Plans a trajectory through a sequence of Cartesian waypoints in a single optimized pass.
-
-**Strengths:** Efficient multi-waypoint tasks without chaining multiple service calls.
-**Limitations:** All waypoints must be reachable; failure at one invalidates the whole plan.
-**Best for:** Pick-and-place sequences, inspection paths, structured workflows.
-
----
-
-### Joint Space Planner
-
-Plans a trajectory to a target joint configuration instead of a Cartesian pose.
-
-**Strengths:** Precise joint-level control, avoids IK ambiguity.
-**Best for:** Moving to a known home configuration, calibration poses.
-
----
-
-## IK and FK Services
-
-IK and FK are **services on the same node** as the trajectory planner. They are **not initialized at startup** — each solver is created only when the corresponding warmup service is called (lazy initialization).
-
-### Design Rationale
-
-| | IKServices | FKServices |
-|---|---|---|
-| Solver | `IkSolver` (cuRobo) | `CudaRobotModel` (cuRobo) |
-| Obstacle dependency | **Yes** — shares `ObstacleManager` | **No** — geometry only |
-| World updates | Receives obstacle changes automatically | Not needed |
-| Warmup service | `warmup_ik` (with `batch_size`) | `warmup_fk` (with `batch_size`) |
-
-Because IK uses collision avoidance, it shares the same obstacle world as the trajectory planners. When obstacles are added or removed, the IK solver is updated automatically — no manual synchronization needed.
-
-FK is purely geometric (forward kinematics has no collision component), so it depends only on the robot's kinematic model.
-
-### Warmup and Batch Size
-
-The IK solver pre-allocates GPU memory for a fixed batch size. If you call `ik_batch` with a different number of poses than the warmup batch size, the solver reinitializes automatically (the first call will be slower). For best performance, warmup with the batch size you intend to use.
-
-FK warmup primes the CUDA kernels with the expected batch size but does not require reinitialization when the batch size changes.
-
-See [ROS Interfaces — Kinematics Services](ros-interfaces.md#kinematics-services) for full service specifications and CLI examples.
-
----
-
-## Runtime Planner Switching
-
-Planners can be switched at runtime without restarting the node:
+The catalog lives in one place, `PlannerFactory._PLANNER_CATALOG` (`curobo_ros/planners/planner_factory.py`); `GetPlanners` reflects it at runtime, so the service is always authoritative:
 
 ```bash
-# Switch to MPC
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
-
-# Switch back to Classic
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 0}"
-
-# Query available planners and their enum IDs
 ros2 service call /unified_planner/get_planners curobo_msgs/srv/GetPlanners
 ```
 
-Switching between Classic / Multi-Point / Joint Space is **instantaneous** (shared MotionGen). Switching to or from MPC requires its solver to be initialized (lazy warmup on first switch, ~5–15s).
+## Open-loop vs closed-loop
 
----
+Every planner declares an `ExecutionMode` that changes the behavior of the `execute_trajectory` action:
 
-## Execution Modes
+- **`OPEN_LOOP`** (`classic`, `multi_point`, `joint_space`): plan once, stream the interpolated trajectory to the robot, succeed when it ends. Feedback carries `step_progression` (0→1).
+- **`CLOSED_LOOP`** (`mpc`, `retarget`): the action starts a servo loop that re-solves continuously, tracks `position_error`, and **keeps running after reaching the goal** (feedback `on_target: true`, state `ON_TARGET`). Retarget the goal live by publishing to `/unified_planner/mpc_goal`; stop by cancelling the goal. See [MPC Implementation](mpc-implementation.md).
 
-**Open-loop** (Classic, Multi-Point, Joint Space):
-- Full trajectory computed during `generate_trajectory`, then sent to robot via `execute_trajectory`
-- Predictable and reproducible
-- Requires replanning if environment changes mid-execution
+## Two base classes
 
-**Closed-loop** (MPC):
-- No pre-computed trajectory — the solver computes the next command at each control cycle
-- Reactive to real-time changes
-- Execution continues until convergence or cancellation via the `execute_trajectory` action
+Open-loop planners subclass `SinglePlanner`, which owns a **single, class-level cuRobo `MotionPlanner`** — all three open-loop planners share the same solver instance and its warmup.
 
----
+Closed-loop planners subclass `ReactiveController`, which owns the whole servo loop (goal admission, live-goal plumbing, periodic perception refresh, command pacing); a concrete controller only implements five hooks: `build_solver()`, `setup()`, `step()`, `apply_live_goal()`, `is_converged()`.
 
-## Services and Actions Summary
+Adding a planner means subclassing one of the two bases and adding one line to the factory catalog — the `set_planner`/`get_planners` services, the action, and the shared context all work unchanged.
 
-| Service / Action | Type | Description |
-|-----------------|------|-------------|
-| `generate_trajectory` | `TrajectoryGeneration` | Plan with current planner |
-| `execute_trajectory` (action) | `SendTrajectory` | Execute planned trajectory |
-| `set_planner` | `SetPlanner` | Switch active planner |
-| `get_planners` | `GetPlanners` | List available planners with enum IDs |
-| `warmup_ik` | `WarmupIK` | Initialize IK solver |
-| `warmup_fk` | `WarmupFK` | Initialize FK model |
-| `ik` | `Ik` | Single IK query |
-| `ik_batch` | `IkBatch` | Batch IK query |
-| `fk` | `Fk` | Batch FK query |
+## Switching planners at runtime
 
----
-
-## File Structure
-
-```
-curobo_ros/
-├── core/
-│   ├── unified_planner_node.py   # Main node
-│   ├── ik_services.py            # IK lazy services
-│   ├── fk_services.py            # FK lazy services
-│   ├── config_wrapper_motion.py  # MotionGen config
-│   └── obstacle_manager.py       # World state
-│
-└── planners/
-    ├── trajectory_planner.py     # Abstract base class
-    ├── single_planner.py         # Shared MotionGen base
-    ├── classic_planner.py
-    ├── mpc_planner.py
-    ├── multi_point_planner.py
-    ├── joint_space_planner.py
-    └── planner_factory.py        # Factory and Manager
+```bash
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 ```
 
----
+What happens on a switch:
 
-## Performance
+- Planner instances are **cached**: the first switch to a planner builds and warms up its solver (for MPC this takes several seconds); subsequent switches are fast.
+- The switch is refused while an execution goal is active.
+- With `use_cuda_graph: true` the node keeps **at most one live CUDA graph**: switching between solver families releases the previous graph and re-captures on the next solve. This is why the first plan after a switch can be slower.
 
-| Planner | Planning time | GPU during execution | Notes |
-|---------|--------------|---------------------|-------|
-| Classic | 10–100ms | Idle | Best for static environments |
-| Multi-Point | 20–200ms | Idle | Scales with number of waypoints |
-| Joint Space | 10–100ms | Idle | Fastest when goal is in joint space |
-| MPC | 1–10ms/iter | Sustained | Continuous replanning loop |
+The startup planner is set by the `planner_type` parameter (default `classic`).
 
----
+## One shared GPU context
 
-## Design Patterns
+All solvers — `MotionPlanner`, `ModelPredictiveControl`, `InverseKinematics` — are built from the same `ConfigWrapperMotion` context: same robot model, same `Scene`, same collision caches, same perception ESDF. Consequences:
 
-- **Strategy Pattern** — planning algorithms are interchangeable at runtime
-- **Factory Pattern** — `PlannerFactory` centralizes planner creation and registration
-- **Template Method** — `SinglePlanner` defines the execution skeleton; children implement only the planning logic
-- **Lazy Initialization** — IK, FK, and MPC solvers are created only when first needed
+- An obstacle added via `add_object` is immediately seen by planning, MPC, and IK alike.
+- `set_link_collision` affects every solver in one call.
+- There is no separate "MPC world" to keep in sync.
 
----
+## IK and FK services
 
-## Related Documentation
+IK and FK are hosted by the same node but initialized **lazily**: call `warmup_ik` / `warmup_fk` (with a batch size) before the first `ik` / `fk` call. IK is collision-aware and shares the scene; FK is purely kinematic. Details and examples: [Tutorial 6](../tutorials/06-ik-fk-services.md), field reference: [ROS Interfaces](ros-interfaces.md).
 
-- [ROS Interfaces](ros-interfaces.md) — complete service and action reference
-- [Tutorial 1: First Trajectory](../tutorials/01-first-trajectory.md)
-- [Tutorial 5: MPC Planner](../tutorials/05-mpc-planner.md)
-- [Tutorial 6: IK/FK Services](../tutorials/06-ik-fk-services.md)
-- [Manager Architecture](manager-architecture.md)
+## Trajectory caching
+
+`generate_trajectory` caches its result for `trajectory_cache_ttl` seconds (default 30). A subsequent `execute_trajectory` goal with `allow_cached: true` (the default) and a matching target reuses it instead of re-planning — this is what makes the RViz "Generate" then "Send" workflow cheap. `clear_trajectory` empties the cache and the preview.
+
+## Source files
+
+```
+curobo_ros/planners/
+├── trajectory_planner.py    # TrajectoryPlanner ABC, ExecutionMode, PlannerResult
+├── single_planner.py        # open-loop base (shared MotionPlanner)
+├── classic_planner.py
+├── multi_point_planner.py
+├── joint_space_planner.py
+├── reactive_controller.py   # closed-loop base (servo loop)
+├── mpc_planner.py           # MPCController
+├── retarget_controller.py   # RetargetController
+└── planner_factory.py       # catalog + PlannerManager
+```
+
+## Related pages
+
+- [Architecture](architecture.md) — how the planner layer fits the whole node
+- [MPC Implementation](mpc-implementation.md) — the closed-loop path in depth
+- [Parameters](parameters.md) — `planner_type`, `mpc_*`, `retarget_*`, `trajectory_cache_ttl`
+- [Tutorial 5](../tutorials/05-mpc-planner.md) — hands-on MPC

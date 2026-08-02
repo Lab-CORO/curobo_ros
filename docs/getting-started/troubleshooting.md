@@ -208,7 +208,7 @@ sudo systemctl restart docker
 ### 6. Docker Build is Extremely Slow
 
 **Symptom**
-`build_docker.sh` takes hours instead of 20-30 minutes.
+The image build takes hours instead of 20-30 minutes.
 
 **Possible Causes & Solutions**
 
@@ -253,14 +253,16 @@ the deprecated `DictValue` symbol.
 
 **Fix**
 
-1. Open the offending file **inside the container**:
+1. Locate and open the offending file **inside the container** (the Python
+   version depends on the image — 3.12 for the Jazzy images):
 
 ```bash
-nano /usr/local/lib/python3.10/dist-packages/cv2/typing/__init__.py
+python3 -c "import cv2.typing, inspect; print(inspect.getfile(cv2.typing))"
+nano <the printed path>
 ```
 
-2. Comment out **line 171** (the import of `DictValue`) or remove the entire
-   line.
+2. Comment out the line importing/referencing `DictValue` or remove it
+   entirely.
 
 3. Save, exit, and re-run your command.
 
@@ -330,3 +332,14 @@ Linux GUI apps inside the container need an X-server running on the host.
 
 4. Start the container and run RViz as usual; the window should pop up on your
    desktop.
+
+---
+
+### 11. Depth Camera Frames Are Never Integrated
+
+There is no launch file that starts a depth camera for you: `gen_traj.launch.py`
+launches the planner, not your sensor. Start your camera driver yourself, then
+point a `cameras.yaml` entry at its depth topic and pass it with
+`cameras_config_file:=`. See [Tutorial 7](../tutorials/07-pointcloud-detection.md)
+for the full configuration, including the intrinsics/extrinsics choices and the
+startup log lines that confirm frames are arriving.

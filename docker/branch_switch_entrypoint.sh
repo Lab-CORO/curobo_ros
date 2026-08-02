@@ -3,14 +3,16 @@
 
 # Check if the branch argument is empty
 if [ -z "$1" ]; then
-    echo "Branch argument empty, keeping default branch: main and update"
+    # No branch requested: stay where the image left us and just update.
+    # This used to run `git checkout ${1}` with $1 empty -- i.e. `git checkout ""`,
+    # which fails -- despite the message promising to keep the current branch.
+    echo "Branch argument empty, keeping current branch and updating"
     cd /home/ros2_ws/src/curobo_ros
     git fetch
-    git checkout ${1}
     git pull
     cd /home/ros2_ws/
     colcon build
-    
+
 elif [ "$1" == "main" ]; then
     echo "Keeping default branch: main"
 else
@@ -25,8 +27,8 @@ else
     colcon build
 fi
 
-echo "source /opt/ros/humble/setup.bash" >>/root/.bashrc
-echo "source /opt/ros/humble/share/ros2cli/environment/ros2-argcomplete.bash" >>/root/.bashrc
+echo "source /opt/ros/jazzy/setup.bash" >>/root/.bashrc
+echo "source /opt/ros/jazzy/share/ros2cli/environment/ros2-argcomplete.bash" >>/root/.bashrc
 
 # Fix missing "ucm_set_global_opts"
 apt-get update && apt-get install --reinstall -y \

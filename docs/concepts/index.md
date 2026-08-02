@@ -1,21 +1,22 @@
 # Concepts
 
-Deep dive into curobo_ros architecture, design patterns, and technical concepts.
+Design-level documentation: how `curobo_ros` is structured, how its control loops work, and the normative reference for every interface and parameter.
 
-## Core Concepts
+## Architecture
 
-### Architecture
-- **[System Architecture](architecture.md)** - Overall system design, components, and data flow
-- **[Manager Architecture](manager-architecture.md)** - Core managers design patterns and data flows
-- **[Unified Planner Architecture](unified-planner.md)** - Flexible planning framework supporting multiple algorithms
+- **[Package Architecture](architecture.md)** — the three strategy families (planners, robot control, cameras) and how they compose
+- **[Manager Architecture](manager-architecture.md)** — the configuration layer, concurrency invariants, and observer wiring (contributor-oriented)
+- **[Unified Planner](unified-planner.md)** — the planner catalog, open-loop vs closed-loop execution, runtime switching
 
-### Planning & Control
-- **[Parameters Guide](parameters.md)** - Understand and tune all planning parameters
-- **[MPC Implementation](mpc-implementation.md)** - Model Predictive Control implementation guide
+## Planning & control
 
-### Interfaces
-- **[ROS 2 Interfaces](ros-interfaces.md)** - Complete reference of services, topics, actions, and messages
-- **[RViz Plugin](rviz-plugin.md)** - Interactive trajectory preview and visualization
+- **[MPC Implementation](mpc-implementation.md)** — the closed-loop reactive control path (MPC and retargeting)
+- **[Parameters Guide](parameters.md)** — every parameter with its real default and when changes take effect
+
+## Interfaces
+
+- **[ROS 2 Interfaces](ros-interfaces.md)** — the complete reference of services, action, and topics
+- **[RViz Plugin](rviz-plugin.md)** — the graphical interface and what it calls underneath
 
 ```{toctree}
 :maxdepth: 2
@@ -24,8 +25,8 @@ Deep dive into curobo_ros architecture, design patterns, and technical concepts.
 architecture
 manager-architecture
 unified-planner
-parameters
 mpc-implementation
+parameters
 ros-interfaces
 rviz-plugin
 ```

@@ -37,7 +37,7 @@ Think of it as a "smart motion planner" that uses your GPU to compute safe paths
 |---------|-------------|---------|
 | **Node** | An executable program that does one job | `unified_planner` (plans trajectories) |
 | **Topic** | A named data stream (publish/subscribe) | `/joint_states` (robot joint positions) |
-| **Service** | Request/response communication | `/generate_trajectory` (ask for a path) |
+| **Service** | Request/response communication | `/unified_planner/generate_trajectory` (ask for a path) |
 | **Action** | Long-running task with feedback | `/unified_planner/execute_trajectory` (execute a trajectory) |
 | **Message** | Data structure sent between nodes | `geometry_msgs/Pose` (position + orientation) |
 
@@ -67,10 +67,10 @@ ros2 param list
 #### Why Docker for this project?
 
 Installing curobo_ros requires:
-- ROS 2 Humble
-- CUDA 12 (NVIDIA GPU libraries)
+- ROS 2 Jazzy
+- CUDA 12+ (NVIDIA GPU libraries)
 - PyTorch with CUDA support
-- cuRobo library
+- cuRobo v0.8.0 (v2)
 - Many Python dependencies
 
 Setting this up manually can take hours and often breaks. Docker gives you a **pre-built environment** where everything already works!
@@ -95,7 +95,7 @@ For setup details, DEV vs PROD workflows, and daily usage, see the [Installation
 Traditional motion planning can take seconds. cuRobo uses your NVIDIA GPU to:
 - Solve inverse kinematics in **milliseconds**
 - Check thousands of collision scenarios **in parallel**
-- Optimize trajectories **100x faster** than CPU-only methods
+- Optimize trajectories orders of magnitude faster than CPU-only methods
 
 #### What cuRobo Does
 
@@ -119,7 +119,7 @@ Traditional motion planning can take seconds. cuRobo uses your NVIDIA GPU to:
 
 Before starting, make sure you have:
 
-- **Ubuntu 20.04 or 22.04** (or Windows 11 with WSL2)
+- **Ubuntu 22.04 or 24.04** (or Windows 11 with WSL2), or a **Jetson** with JetPack 6+
 - **NVIDIA GPU** with drivers installed (check with `nvidia-smi`)
 - **~30 GB free disk space** (Docker image is large!)
 - **Docker** and **NVIDIA Container Toolkit** installed
@@ -140,7 +140,7 @@ Ready to get started?
 ## Getting Help
 
 - **Troubleshooting**: See [troubleshooting.md](troubleshooting.md) for common issues
-- **ROS 2 Documentation**: [docs.ros.org](https://docs.ros.org/en/humble/)
+- **ROS 2 Documentation**: [docs.ros.org](https://docs.ros.org/en/jazzy/)
 - **cuRobo Documentation**: [curobo.org](https://curobo.org)
 - **Docker Documentation**: [docs.docker.com](https://docs.docker.com/)
 

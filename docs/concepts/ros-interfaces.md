@@ -1,825 +1,294 @@
-# ROS 2 Interfaces - Complete API Reference
+# ROS 2 Interfaces Reference
 
-Complete reference for all topics, services, actions, and parameters in curobo_ros.
+This page is the normative reference for every topic, service, and action exposed by `curobo_ros`. All interface types come from the companion package [`curobo_msgs`](https://github.com/Lab-CORO/curobo_msgs) unless stated otherwise.
 
-## Table of Contents
+The package installs two executables:
 
-- [Topics](#topics)
-- [Services](#services)
-  - [Motion Planning](#motion-planning-services)
-  - [Collision Management](#collision-management-services)
-  - [Kinematics](#kinematics-services)
-  - [Configuration](#configuration-services)
-- [Actions](#actions)
-- [Parameters](#parameters)
+| Executable | Node name | Role |
+|---|---|---|
+| `curobo_trajectory_planner` | `unified_planner` | Motion planning, obstacle management, IK/FK, robot execution |
+| `robot_segmentation` | `curobo_depth_map_robot_segmentation` | Removes the robot from depth images before perception |
 
----
+All planner interfaces are namespaced under the node name: `/unified_planner/<name>`.
+
+## Services — planning
+
+### `/unified_planner/generate_trajectory`
+
+Type: `curobo_msgs/srv/TrajectoryGeneration`. Plans a trajectory with the currently active planner, without executing it.
+
+Request:
+
+| Field | Type | Used by |
+|---|---|---|
+| `start_pose` | `sensor_msgs/JointState` | All planners. Empty = current robot state |
+| `target_pose` | `geometry_msgs/Pose` | Classic planner (single Cartesian goal) |
+| `target_poses` | `geometry_msgs/Pose[]` | Multi-point planner (sequence of waypoints) |
+| `target_joint_positions` | `float64[]` | Joint-space planner |
+| `trajectory_constraints` | `int8[]` | `[theta_x, theta_y, theta_z, x, y, z]` hold flags for the single goal |
+| `trajectories_contraints` | `int8[]` | Flattened per-waypoint constraints (note: field name carries a historical typo) |
+
+Response:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `success` | `bool` | Planning succeeded |
+| `message` | `string` | Human-readable status |
+| `trajectory` | `sensor_msgs/JointState[]` | Waypoints with position and velocity |
+| `dt` | `float64` | Time step between waypoints (seconds) |
+
+The active planner decides which target field it consumes: sending `target_pose` while the joint-space planner is active will not do what you expect. Switch planners first with `set_planner`.
+
+```bash
+ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
+  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}}}"
+```
+
+### `/unified_planner/set_planner`
+
+Type: `curobo_msgs/srv/SetPlanner`. Switches the active planner. Request field `planner_type` (uint8) uses the constants defined in the service:
+
+| Constant | ID | Status |
+|---|---|---|
+| `CLASSIC` | 0 | Implemented (default) |
+| `MPC` | 1 | Implemented (closed-loop reactive control) |
+| `BATCH` | 2 | **Not implemented** — the call fails |
+| `CONSTRAINED` | 3 | **Not implemented** — the call fails (use `trajectory_constraints` on `generate_trajectory` instead) |
+| `MULTIPOINT` | 4 | Implemented |
+| `JOINT_SPACE` | 5 | Implemented |
+| `RETARGET` | 6 | Implemented (IK-based teleoperation follower) |
+
+Response: `success`, `message`, `previous_planner`, `current_planner`.
+
+Planner instances are cached: the first switch to a planner pays its warmup cost, later switches are fast. See [Unified Planner](unified-planner.md).
+
+```bash
+ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
+```
+
+### `/unified_planner/get_planners`
+
+Type: `curobo_msgs/srv/GetPlanners` (empty request). Returns `planner_names` (display names), `planner_ids` (matching `SetPlanner` enum IDs), `current_planner_name`, `current_planner_id`, `success`.
+
+### `/unified_planner/clear_trajectory`
+
+Type: `std_srvs/srv/Trigger`. Clears the cached trajectory and the RViz preview.
+
+### `/unified_planner/update_motion_gen_config`
+
+Type: `std_srvs/srv/Trigger`. Rebuilds the motion-planning solver from the current ROS parameters. Call it after changing build-time parameters such as `voxel_size`, `collision_activation_distance`, or `interpolation_dt` at runtime. The rebuild is blocking (roughly 20 s, warmup dominates).
+
+Not needed after `set_collision_cache` — that service rebuilds the solvers itself.
+
+## Services — obstacles and collision world
+
+### `/unified_planner/add_object`
+
+Type: `curobo_msgs/srv/AddObject`. Adds a static obstacle to the scene.
+
+Request:
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | `int8` | `CUBOID=0`, `SPHERE=1`, `CAPSULE=2`, `CYLINDER=3`, `MESH=4` |
+| `name` | `string` | Must be unique |
+| `mesh_file_path` | `string` | Mesh only; absolute path to `.stl`/`.obj` |
+| `pose` | `geometry_msgs/Pose` | In the robot base frame |
+| `dimensions` | `geometry_msgs/Vector3` | Semantics depend on `type` (see below) |
+| `color` | `std_msgs/ColorRGBA` | Visualization only |
+
+Dimension semantics by type:
+
+| Type | `x` | `y` | `z` |
+|---|---|---|---|
+| Cuboid | full extent X | full extent Y | full extent Z |
+| Sphere | radius | — | — |
+| Capsule | radius | — | length |
+| Cylinder | radius | — | height |
+| Mesh | scale X | scale Y | scale Z |
+
+Response: `success`, `message` (e.g. `Object 'table' added ...`).
+
+```bash
+ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
+  "{type: 0, name: 'table', pose: {position: {x: 0.6, y: 0.0, z: 0.1}, orientation: {w: 1.0}}, \
+    dimensions: {x: 0.8, y: 1.0, z: 0.05}, color: {r: 0.5, g: 0.3, b: 0.1, a: 1.0}}"
+```
+
+### `/unified_planner/remove_object`
+
+Type: `curobo_msgs/srv/RemoveObject`. Request: `name`. Removes one obstacle.
+
+### `/unified_planner/remove_all_objects`
+
+Type: `std_srvs/srv/Trigger`. Removes every obstacle. Response message: `All <n> obstacles removed`.
+
+### `/unified_planner/get_obstacles`
+
+Type: `std_srvs/srv/Trigger`. Response `message` lists the current obstacle names, one per line.
+
+### `/unified_planner/attach_object` / `/unified_planner/detach_object`
+
+Types: `curobo_msgs/srv/AttachObject` (request: `object_name`) and `std_srvs/srv/Trigger`. Attaches an existing scene obstacle to the robot flange so it moves with the arm and is collision-checked, then releases it. Requires the robot configuration to define an `attached_object` extra link — see [Tutorial 3](../tutorials/03-collision-objects.md).
+
+### `/unified_planner/set_link_collision`
+
+Type: `curobo_msgs/srv/SetLinkCollision`. Enables or disables the collision spheres of specific robot links (useful when grasping: disable the gripper links against the grasped part). Request: `link_names` (string[]), `enabled` (bool). Response: `success`, `message`, `applied_links`, `unknown_links`. All solvers share the same kinematics configuration, so one call affects planning, MPC, and IK alike. The state persists until the opposite call.
+
+### `/unified_planner/set_collision_spheres_enabled`
+
+Type: `std_srvs/srv/SetBool`. Toggles publication of the robot collision-sphere markers on `/unified_planner/collision_spheres`. **Disabled by default**; enable it for debugging sphere coverage.
+
+### `/unified_planner/get_voxel_grid`
+
+Type: `curobo_msgs/srv/GetVoxelGrid`. Rasterizes the current collision world into a voxel grid.
+
+Request: bounding box in the robot base frame (metres): `bbox_min_x/y/z`, `bbox_max_x/y/z` (typical workspace: −1.52 to 1.52). Response: `voxel_grid` (`nav2_msgs/VoxelGrid`).
+
+### `/unified_planner/get_collision_distance`
+
+Type: `curobo_msgs/srv/GetCollisionDistance` (empty request). Returns the collision distance of each robot sphere at the current joint state: `data` (`float32[]`) and `nb_sphere` (`int8`).
+
+### `/unified_planner/set_collision_cache`
+
+Type: `curobo_msgs/srv/SetCollisionCache`. Resizes the collision caches. Request fields `obb`, `mesh`, `blox` (int32 each): `-1` = leave unchanged, `0` = disable that cache, `>0` = new size. Setting `blox: 0` disables the perception voxel layer — camera-based avoidance stops until it is re-enabled.
+
+Response: `success`, `message`, `obb_cache`, `mesh_cache`, `blox_cache`.
+
+Two behaviors to know:
+
+- The call is **refused while an execution goal is active** (`success: false`) — cancel the goal first.
+- On success the solvers are **rebuilt automatically** (blocking, ~20 s). Do not call `update_motion_gen_config` afterwards; the response message ends with `- solvers rebuilt (blocking, ~20s)`.
+
+## Services — kinematics (IK / FK)
+
+IK and FK solvers are **lazy**: they do not exist until you call the matching warmup service. Calling `ik` or `fk` before warmup fails.
+
+### `/unified_planner/warmup_ik` and `/unified_planner/warmup_fk`
+
+Types: `curobo_msgs/srv/WarmupIK`, `curobo_msgs/srv/WarmupFK`. Request: `batch_size` (int32). Builds the solver for that batch size. Calling `ik_batch`/`fk` with a different batch size than the warmup triggers a re-initialization.
+
+### `/unified_planner/ik`
+
+Type: `curobo_msgs/srv/Ik`. Request: `pose` (`geometry_msgs/Pose`, robot base frame). Response: `joint_states` (`sensor_msgs/JointState`), `joint_states_valid` (`std_msgs/Bool`), `error_msg` (`std_msgs/String`), `success`. The IK solve is collision-aware and shares the scene with the motion planner.
+
+### `/unified_planner/ik_batch`
+
+Type: `curobo_msgs/srv/IkBatch`. Same as `ik` with arrays: `poses[]` in, `joint_states[]` / `joint_states_valid[]` out. Poses are solved in parallel on the GPU.
+
+### `/unified_planner/fk`
+
+Type: `curobo_msgs/srv/Fk`. Request: `joint_states` (`sensor_msgs/JointState[]`). Response: `poses` (`geometry_msgs/Pose[]`), `joint_states_valid`, `error_msg`.
+
+See [Tutorial 6](../tutorials/06-ik-fk-services.md) for worked examples.
+
+## Services — robot control strategy
+
+The *control strategy* selects how planned trajectories are sent to a robot (emulator, velocity streaming, position streaming) — see [Tutorial 4](../tutorials/04-robot-execution.md).
+
+### `/unified_planner/set_robot_strategy`
+
+Type: `curobo_msgs/srv/SetRobotStrategy`. Request: `robot_strategy` (string key, e.g. `"emulator"`, `"joint_speed"`, `"joint_pose"`). Response: `success`, `message`, `previous_robot_strategy`, `current_robot_strategy`.
+
+```bash
+ros2 service call /unified_planner/set_robot_strategy curobo_msgs/srv/SetRobotStrategy \
+  "{robot_strategy: 'emulator'}"
+```
+
+### `/unified_planner/get_robot_strategy`
+
+Type: `std_srvs/srv/Trigger`. Returns the active strategy key in `message`.
+
+### `/unified_planner/get_robot_strategies`
+
+Type: `curobo_msgs/srv/GetRobotStrategies` (empty request). Returns `strategy_names` (valid keys), `current_strategy_name`, `success`.
+
+## Action — `/unified_planner/execute_trajectory`
+
+Type: `curobo_msgs/action/SendTrajectory`. The unified "plan (or reuse) and execute" entry point. One goal at a time; a second goal is rejected while one is active.
+
+Goal (mirrors `TrajectoryGeneration`; the active planner decides which fields it consumes):
+
+| Field | Type | Notes |
+|---|---|---|
+| `start_pose` | `sensor_msgs/JointState` | Empty = current state |
+| `target_pose` | `geometry_msgs/Pose` | Classic / MPC / Retarget |
+| `target_poses` | `geometry_msgs/Pose[]` | Multi-point |
+| `target_joint_positions` | `float64[]` | Joint-space |
+| `allow_cached` | `bool` (default `true`) | Reuse a matching, non-expired trajectory from a previous `generate_trajectory` call |
+
+Feedback (status is carried only here — there is no separate status topic):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `state` | `string` | `PLANNING`, `EXECUTING`, `TRACKING`, `ON_TARGET`, or `FAILED` |
+| `step_progression` | `float32` | Open-loop progress, 0 to 1 |
+| `position_error` | `float64` | Current Cartesian error (m), reactive planners |
+| `on_target` | `bool` | Reactive planners keep servoing after reaching the target |
+| `joint_command` | `sensor_msgs/JointState` | Command currently streamed |
+
+Result: `success`, `message`.
+
+With an **open-loop** planner (classic, multi-point, joint-space) the action plans once, streams the trajectory, and succeeds when it ends. With a **closed-loop** planner (MPC, retarget) the action keeps running and servoing; retarget the goal live via `/unified_planner/mpc_goal`, and stop by cancelling the goal.
+
+```bash
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory \
+  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}}}" --feedback
+```
 
 ## Topics
 
-### Publishers
+### Published by `unified_planner`
 
-| Topic Name | Message Type | Node | Description | Frequency |
-|------------|--------------|------|-------------|-----------|
-| `<node_name>/collision_spheres` | `visualization_msgs/MarkerArray` | unified_planner | Robot collision spheres visualization | On update |
+| Topic | Type | Rate | Content |
+|---|---|---|---|
+| `/unified_planner/scene_obstacles` | `visualization_msgs/MarkerArray` | every 2 s | Markers for all scene obstacles |
+| `/unified_planner/collision_spheres` | `visualization_msgs/MarkerArray` | every 2 s, **off by default** | Robot collision spheres (enable with `set_collision_spheres_enabled`) |
+| `/unified_planner/voxel_grid_sparse` | `curobo_msgs/msg/SparseVoxelGrid` | `sparse_voxel_publish_rate` (default 7 Hz, ≤0 disables) | Occupied voxel indices of the perception layer |
+| `/trajectory` | `trajectory_msgs/JointTrajectory` | on plan | Ghost/preview trajectory for RViz |
+| `/mpc_predicted_path` | `nav_msgs/Path` | MPC active | Predicted end-effector path over the horizon |
+| `/mpc_goal_marker` | `visualization_msgs/Marker` | MPC active | Current MPC goal |
+| `/mpc_costs` | `curobo_msgs/msg/MpcCosts` | MPC active | Per-step cost and constraint breakdown |
 
-### Subscribers
+The active control strategy adds its own topics, configured in the robot descriptor (`robots/<name>.yaml`). With the default Doosan setup: `/leeloo/execute_trajectory` (`trajectory_msgs/JointTrajectory`, published), `/leeloo/trajectory_state` (`std_msgs/Float32`, subscribed), `/dsr01/joint_states` (`sensor_msgs/JointState`, subscribed). The emulator strategy publishes `/emulator/joint_states` (`sensor_msgs/JointState`).
 
-| Topic Name | Message Type | Node | Description |
-|------------|--------------|------|-------------|
-| `/camera/depth/points` | `sensor_msgs/PointCloud2` | unified_planner | Depth camera point cloud for obstacle detection |
-| `/joint_states` | `sensor_msgs/JointState` | unified_planner | Current robot joint positions |
+### Subscribed by `unified_planner`
 
----
+| Topic | Type | Notes |
+|---|---|---|
+| `/unified_planner/mpc_goal` | `geometry_msgs/Pose` | Live goal retargeting; ignored (with a warning) unless a reactive planner (MPC, retarget) is active |
+| depth image topic from `cameras.yaml` | `sensor_msgs/Image` | e.g. `/depth_to_rgb/image_raw`; one subscription per configured camera |
+| camera info topic from `cameras.yaml` | `sensor_msgs/CameraInfo` | Read once at startup (5 s wait) when intrinsics are not given in the YAML |
 
-## Services
+### `robot_segmentation` node
 
-### Motion Planning Services
+| Interface | Name | Type |
+|---|---|---|
+| Subscribes | `/depth_to_rgb/image_raw` (param `depth_image_topic`) | `sensor_msgs/Image` |
+| Subscribes | `/depth_to_rgb/camera_info` (param `camera_info_topic`) | `sensor_msgs/CameraInfo` |
+| Publishes | `/masked_depth_image` | `sensor_msgs/Image` (`16UC1`) |
+| Publishes | `/collision_spheres` | `visualization_msgs/MarkerArray` |
+| Publishes | `/robot_pointcloud_debug` | `sensor_msgs/PointCloud2` |
+| Service | `/set_mask` | `curobo_msgs/srv/SetMask` |
+| Service | `/remove_mask` | `curobo_msgs/srv/RemoveObject` |
 
-#### 1. `generate_trajectory` - Generate Motion Trajectory (UPDATED Dec 5, 2025)
+## Checking node readiness
 
-**Service Type**: `curobo_msgs/srv/TrajectoryGeneration`
-
-**Purpose**: Generate collision-free motion trajectory from start to target pose(s).
-
-**Request Fields:**
-- `start_pose` (JointState): Starting joint configuration
-- `target_pose` (Pose): Single target end-effector pose
-- `target_poses` (Pose[]): **NEW** Multiple waypoints for multi-point planning
-- `target_joint_positions` (float64[]): **NEW** Target in joint space
-- `trajectory_constraints` (int8[]): **NEW** Constraints [theta_x, theta_y, theta_z, x, y, z]
-- `trajectories_contraints` (int8[]): **NEW** Per-waypoint constraints (flattened)
-
-**Response Fields:**
-- `success` (bool): True if trajectory generated successfully
-- `message` (string): Status message
-- `trajectory` (JointState[]): **NEW (Dec 5)** Full trajectory returned in response
-- `dt` (float64): **NEW (Dec 5)** Time step between waypoints (seconds)
-
-**What's New (Dec 5, 2025)**:
-- Trajectory now returned directly in response
-- Support for multi-point waypoint planning
-- Support for joint-space target planning
-- Support for trajectory constraints (rotation, translation)
-
-**ROS2 CLI Examples:**
+The planner builds its solvers synchronously at startup (roughly 25–35 s). Two reliable ways to wait for it:
 
 ```bash
-# 1. Single-point Cartesian planning (classic)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
+# The parameter flips to true once warmup completes
+ros2 param get /unified_planner node_is_available
 
-# 2. Multi-point waypoint planning (NEW)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_poses: [
-    {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {w: 1.0}},
-    {position: {x: 0.6, y: 0.2, z: 0.4}, orientation: {w: 1.0}},
-    {position: {x: 0.7, y: 0.2, z: 0.4}, orientation: {w: 1.0}}
-  ]}"
-
-# 3. Joint-space planning (NEW)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_joint_positions: [0.0, -0.5, 0.5, 0.0, 1.57, 0.0]}"
-
-# 4. With trajectory constraints (NEW) - Constrain rotation around X
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}, \
-    trajectory_constraints: [1, 0, 0, 0, 0, 0]}"
+# Or wait for the planning service to be advertised
+ros2 service list | grep /unified_planner/generate_trajectory
 ```
 
-**Expected Response:**
-```yaml
-success: true
-message: 'Trajectory generated successfully'
-trajectory:
-  - position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    velocity: []
-  - position: [0.123, -0.234, 0.345, -0.123, 0.456, 0.234]
-    velocity: []
-  # ... more waypoints
-dt: 0.05  # 50ms between waypoints
-```
+There is no `is_available` service — readiness is exposed as the parameter above.
 
-**Use Cases:**
-- Plan collision-free motion from current pose to target
-- Multi-waypoint tasks (pick-and-place, inspection paths)
-- Joint-space motions for specific joint configurations
-- Constrained motions (keep orientation, move in straight line)
+## Related pages
 
----
-
-#### 2. `set_planner` - Switch Planner Type (NEW Nov 9, 2025)
-
-**Service Type**: `curobo_msgs/srv/SetPlanner`
-
-**Purpose**: Dynamically switch between different planning algorithms at runtime.
-
-**Request Fields:**
-- `planner_type` (uint8): Planner type constant
-
-**Planner Type Constants:**
-| Constant | Value | Planner Type | Description |
-|----------|-------|--------------|-------------|
-| CLASSIC | 0 | Classic motion planning | Open-loop, single-shot planning for static environments |
-| MPC | 1 | Model Predictive Control | Closed-loop, reactive planning for dynamic obstacles |
-| MULTIPOINT | 4 | Multi-point planning | Waypoint-based planning (includes constrained planning) |
-| JOINT_SPACE | 5 | Joint-space planning | Plan in joint space (not Cartesian) |
-
-**Note**: BATCH (2) and CONSTRAINED (3) planner types are not implemented. Constrained planning is included in MULTIPOINT and CLASSIC planners.
-
-**Response Fields:**
-- `success` (bool): True if planner switched successfully
-- `message` (string): Status message
-- `previous_planner` (string): Name of previous planner
-- `current_planner` (string): Name of active planner
-
-**ROS2 CLI Examples:**
-
-```bash
-# Switch to MPC planner
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
-
-# Switch to classic planner
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 0}"
-
-# Switch to multi-point planner
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 4}"
-```
-
-**Expected Response:**
-```yaml
-success: true
-message: 'Planner switched successfully'
-previous_planner: 'ClassicPlanner'
-current_planner: 'MPCPlanner'
-```
-
-**Use Cases:**
-- Switch to MPC for dynamic environments with moving obstacles
-- Use MULTIPOINT for tasks requiring specific waypoints
-- Use JOINT_SPACE for direct joint control
-
----
-
-### Collision Management Services
-
-#### 3. `add_object` - Add Collision Object
-
-**Service Type**: `curobo_msgs/srv/AddObject`
-
-**Purpose**: Add obstacle to the collision scene.
-
-**Request Fields:**
-- `name` (string): Unique object identifier
-- `type` (int8): 0=CUBOID, 1=SPHERE, 2=CAPSULE, 3=CYLINDER, 4=MESH
-- `dimensions` (Vector3): Object dimensions — for cuboid: `{x, y, z}` full extents; for sphere: `{x: radius}`; for cylinder/capsule: `{x: radius, z: height}`
-- `pose` (Pose): Object pose in base frame
-- `mesh_file_path` (string): Absolute path to mesh file (for MESH type only)
-- `color` (ColorRGBA): Optional visualization color
-
-**Response Fields:**
-- `success` (bool): True if object added
-- `message` (string): Status message including world state counts, e.g. `"Object 'table' added successfully (3 cuboids, 0 mesh in world)"`
-
-**ROS2 CLI Examples:**
-
-```bash
-# Add cuboid (table)
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'table', type: 0, dimensions: {x: 1.0, y: 0.8, z: 0.05}, \
-    pose: {position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}"
-
-# Add sphere (ball)
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'ball', type: 1, dimensions: {x: 0.1}, \
-    pose: {position: {x: 0.4, y: 0.2, z: 0.3}, orientation: {w: 1.0}}}"
-
-# Add cylinder (pole)
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'pole', type: 3, dimensions: {x: 0.05, z: 1.0}, \
-    pose: {position: {x: 0.3, y: 0.3, z: 0.5}, orientation: {w: 1.0}}}"
-```
-
-**Important Note - Mesh Handling:**
-
-When adding a MESH object, curobo internally voxelizes the mesh into oriented bounding boxes (OBBs) for the BLOX collision checker. Both the original mesh and the derived cuboids are stored in the world configuration.
-
-**Implications:**
-- **Collision cache**: Increase the **cuboid (OBB) cache** size before adding a mesh — the number of derived cuboids depends on mesh complexity
-- **Naming convention**: Each derived cuboid is named `{mesh_name}_cuboid_{idx}` and tracked internally for cleanup
-- **Cache sizing**: Set the cache before calling `update_motion_gen_config`, then add the mesh
-
-**Example with mesh:**
-```bash
-# 1. Set cache to accommodate derived cuboids (check mesh complexity first)
-ros2 service call /unified_planner/set_collision_cache \
-  curobo_msgs/srv/SetCollisionCache "{obb: 200, mesh: 1, blox: -1}"
-
-# 2. Apply the cache change
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-
-# 3. Add mesh object
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-  "{name: 'part', type: 4, mesh_file_path: '/path/to/mesh.stl', \
-    pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0}}}"
-```
-
----
-
-#### 4. `remove_object` - Remove Collision Object
-
-**Service Type**: `curobo_msgs/srv/RemoveObject`
-
-**Purpose**: Remove specific obstacle from scene.
-
-**Request Fields:**
-- `name` (string): Object name to remove
-
-**Response Fields:**
-- `success` (bool): True if removed
-- `message` (string): Status message
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject "{name: 'table'}"
-```
-
----
-
-#### 5. `get_obstacles` - List All Obstacles
-
-**Service Type**: `std_srvs/srv/Trigger`
-
-**Purpose**: Retrieve list of all current obstacles in the scene.
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
-```
-
-**Expected Response:**
-```yaml
-success: true
-message: 'Obstacles: table, ball, pole'
-```
-
----
-
-#### 6. `remove_all_objects` - Clear All Obstacles
-
-**Service Type**: `std_srvs/srv/Trigger`
-
-**Purpose**: Remove all obstacles from the scene.
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
-```
-
----
-
-#### 7. `get_voxel_grid` - Get Voxelized Environment
-
-**Service Type**: `curobo_msgs/srv/GetVoxelGrid`
-
-**Purpose**: Retrieve voxelized representation of current collision scene.
-
-**Response Fields:**
-- `success` (bool)
-- `message` (string)
-- `voxel_grid` (PointCloud2): Occupied voxels as point cloud
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/get_voxel_grid curobo_msgs/srv/GetVoxelGrid
-```
-
-**Important Note:**
-The voxel area is currently a **hardcoded cube of 1.52m** centered on the robot base. Obstacles outside this region will not appear in the voxel grid.
-
-**Use Cases:**
-- Visualize collision voxels in RViz (within 1.52m cube)
-- Debug collision checking
-- Export scene representation
-
----
-
-#### 8. `get_collision_distance` - Query Collision Distances
-
-**Service Type**: `curobo_msgs/srv/GetCollisionDistance`
-
-**Purpose**: Compute distances to nearest obstacles for a given robot configuration.
-
-**Request Fields:**
-- `joint_state` (JointState): Robot joint configuration
-
-**Response Fields:**
-- `success` (bool)
-- `message` (string)
-- `distances` (float64[]): Distance per collision sphere (meters)
-  - **Positive value**: Distance to nearest obstacle (meters)
-  - **Negative value**: Sphere is in collision (penetration depth)
-- `in_collision` (bool): True if any collision detected
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/get_collision_distance curobo_msgs/srv/GetCollisionDistance \
-  "{joint_state: {position: [0.0, -0.5, 0.5, 0.0, 1.57, 0.0]}}"
-```
-
-**Expected Response:**
-```yaml
-success: true
-message: 'Collision distances computed'
-distances: [0.05, 0.12, -0.02, 0.15, 0.25, 0.30, 0.18]  # Third sphere in collision (-0.02m penetration)
-in_collision: true
-```
-
-**Interpretation:**
-- `distances: [0.05, 0.12, -0.02, ...]`: Third sphere has -0.02m distance (in collision)
-- `in_collision: true`: At least one sphere is in collision
-
----
-
-#### 9. `set_collision_cache` - Configure Collision Cache (NEW Dec 12, 2025)
-
-**Service Type**: `curobo_msgs/srv/SetCollisionCache`
-
-**Purpose**: Dynamically configure collision cache sizes to optimize GPU memory usage.
-
-**Request Fields:**
-- `obb` (int32): OBB cache size (-1 = don't modify)
-- `mesh` (int32): Mesh cache size (-1 = don't modify)
-- `blox` (int32): Voxel cache size (-1 = don't modify)
-
-**Response Fields:**
-- `success` (bool): True if cache updated
-- `message` (string): Status message
-- `obb_cache` (int32): Current OBB cache size
-- `mesh_cache` (int32): Current mesh cache size
-- `blox_cache` (int32): Current voxel cache size
-
-**IMPORTANT**: After modifying collision cache parameters, you **must call** `update_motion_gen_config` service to apply the changes.
-
-**ROS2 CLI Examples:**
-
-```bash
-# Increase mesh cache for complex scenes
-ros2 service call /unified_planner/set_collision_cache \
-  curobo_msgs/srv/SetCollisionCache "{obb: -1, mesh: 50, blox: -1}"
-
-# REQUIRED: Apply the changes
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-
-# Query current cache sizes (without modifying)
-ros2 service call /unified_planner/set_collision_cache \
-  curobo_msgs/srv/SetCollisionCache "{obb: -1, mesh: -1, blox: -1}"
-```
-
-**Expected Response:**
-```yaml
-success: true
-message: 'Collision cache updated successfully'
-obb_cache: 100
-mesh_cache: 50
-blox_cache: 10
-```
-
-**Use Cases:**
-- Optimize memory for scenes with many mesh objects (increase OBB cache)
-- Adjust cache for point cloud environments (increase blox cache)
-- Balance memory usage vs performance
-
-**See Also**: [Parameters Guide - Collision Cache](parameters.md#collision-cache-parameters)
-
----
-
-### Kinematics Services
-
-IK and FK solvers are **lazy-initialized** — they must be warmed up before use. Both live on the same node as the trajectory planner and share the same robot configuration.
-
-> **Important**: Always call `warmup_ik` or `warmup_fk` before the first IK/FK service call. If the node is restarted, warmup must be called again.
-
----
-
-#### 10. `warmup_ik` - Initialize IK Solver
-
-**Service Type**: `curobo_msgs/srv/WarmupIK`
-
-**Purpose**: Create and warm up the IK solver for a given batch size. Must be called before any `ik` or `ik_batch` call.
-
-**Request Fields:**
-- `batch_size` (int32): Number of poses to solve simultaneously (default: 1)
-
-**Response Fields:**
-- `success` (bool): True if solver initialized successfully
-- `message` (string): Status message
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/warmup_ik curobo_msgs/srv/WarmupIK "{batch_size: 1}"
-```
-
-**Notes:**
-- The IK solver shares the scene model with the MotionPlanner (v2) — obstacle changes are propagated automatically
-- If `ik_batch` is called with a different number of poses than the warmup `batch_size`, the solver reinitializes automatically (slower first call)
-- For batch workloads, warmup with the exact batch size you intend to use
-
----
-
-#### 11. `warmup_fk` - Initialize FK Model
-
-**Service Type**: `curobo_msgs/srv/WarmupFK`
-
-**Purpose**: Create and warm up the FK model for a given batch size. Must be called before any `fk` call.
-
-**Request Fields:**
-- `batch_size` (int32): Expected number of joint states per call (default: 1)
-
-**Response Fields:**
-- `success` (bool): True if model initialized successfully
-- `message` (string): Status message
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/warmup_fk curobo_msgs/srv/WarmupFK "{batch_size: 1}"
-```
-
-**Notes:**
-- FK has **no obstacle dependency** — it depends only on the robot's kinematic model (URDF)
-- Unlike IK, FK does not need to reinitialize when batch size changes
-- No `update_world` propagation for FK (purely geometric computation)
-
----
-
-#### 12. `ik` - Single Pose Inverse Kinematics
-
-**Service Type**: `curobo_msgs/srv/Ik`
-
-**Purpose**: Compute a joint configuration for a single target end-effector pose.
-
-**Request Fields:**
-- `pose` (Pose): Target end-effector pose
-
-**Response Fields:**
-- `success` (bool): True if a valid solution was found
-- `joint_states` (JointState): IK solution
-- `joint_states_valid` (Bool): Validity flag for the solution
-- `error_msg` (String): Error message if failed
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/ik curobo_msgs/srv/Ik \
-  "{pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
-```
-
----
-
-#### 13. `ik_batch` - Batch Inverse Kinematics
-
-**Service Type**: `curobo_msgs/srv/IkBatch`
-
-**Purpose**: Compute joint configurations for multiple target poses simultaneously.
-
-**Request Fields:**
-- `poses` (Pose[]): List of target end-effector poses
-
-**Response Fields:**
-- `success` (bool): True if at least one solution was found
-- `joint_states` (JointState[]): IK solutions (one per input pose)
-- `joint_states_valid` (Bool[]): Validity flag per solution
-- `error_msg` (String): Error message if batch failed
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/ik_batch curobo_msgs/srv/IkBatch \
-  "{poses: [
-    {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}},
-    {position: {x: 0.4, y: 0.2, z: 0.5}, orientation: {w: 1.0}}
-  ]}"
-```
-
----
-
-#### 14. `fk` - Forward Kinematics
-
-**Service Type**: `curobo_msgs/srv/Fk`
-
-**Purpose**: Compute end-effector poses for a list of joint configurations.
-
-**Request Fields:**
-- `joint_states` (JointState[]): List of joint configurations
-
-**Response Fields:**
-- `poses` (Pose[]): Computed end-effector poses (one per input joint state)
-
-**ROS2 CLI Example:**
-
-```bash
-ros2 service call /unified_planner/fk curobo_msgs/srv/Fk \
-  "{joint_states: [{position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}]}"
-```
-
-**See Also**: [Tutorial 6: IK/FK Services](../tutorials/06-ik-fk-services.md)
-
----
-
-### Configuration Services
-
-#### 15. `update_motion_gen_config` - Reload Configuration
-
-**Service Type**: `std_srvs/srv/Trigger`
-
-**Purpose**: Reload motion generation configuration to apply parameter changes.
-
-**When to Use:**
-This service **must be called** after modifying:
-- `voxel_size` parameter
-- `collision_activation_distance` parameter
-- Collision cache sizes (via `set_collision_cache` service)
-
-**ROS2 CLI Example:**
-
-```bash
-# Modify parameter
-ros2 param set /unified_planner voxel_size 0.08
-
-# REQUIRED: Apply the change
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-```
-
-**Use Cases:**
-- Apply parameter changes without restarting node
-- Reload collision cache configuration
-- Update voxel size or collision distance settings
-
----
-
-### Internal/Advanced Services
-
-#### 16. `scene_generator`, `generate_rm`, `collisions`
-
-These services are for internal testing and advanced use cases. See source code for details.
-
----
-
-## Actions
-
-### 1. `send_trajectory` - Execute Planned Trajectory
-
-**Action Type**: `curobo_msgs/action/SendTrajectory`
-
-**Purpose**: Execute a planned trajectory with real-time feedback.
-
-**Goal Fields:**
-- `trajectory` (JointTrajectory): Trajectory to execute
-
-**Feedback Fields:**
-- `current_joint_state` (JointState): Current joint positions
-- `progress` (float32): Execution progress [0.0 - 1.0]
-
-**Result Fields:**
-- `success` (bool): True if execution completed
-- `message` (string): Status message
-
-**ROS2 CLI Example:**
-
-```bash
-# Send trajectory action goal
-ros2 action send_goal /unified_planner/send_trajectory curobo_msgs/action/SendTrajectory \
-  "{trajectory: {...}}" \
-  --feedback
-```
-
-**Use Case**: Execute trajectory generated by `generate_trajectory` service.
-
----
-
-### Reactive (MPC) control — same interface
-
-Reactive control does **not** use a dedicated action. Switch the active planner
-to `mpc` (`set_planner`), then drive it with the **unified** interface:
-
-- `generate_trajectory` (service) — sets the reactive goal (returns no trajectory).
-- `send_trajectory` / `execute_trajectory` (action above) — runs the closed-loop
-  MPC control loop with feedback (`step_progression`) and cancellation.
-- `mpc_goal` (topic, `geometry_msgs/Pose`) — live retargeting during execution;
-  the ROS mapping of cuRobo's continuous `update_goal_tool_poses`.
-
-```bash
-# 1. Switch to the MPC reactive controller
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
-
-# 2. Set the goal, then run the loop (continuously replans, avoids obstacles)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
-ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}" --feedback
-
-# 3. (Optional) retarget live while the loop runs
-ros2 topic pub --once /unified_planner/mpc_goal geometry_msgs/Pose \
-  "{position: {x: 0.6, y: 0.0, z: 0.4}, orientation: {w: 1.0}}"
-```
-
-**See Also**: [Tutorial 5: MPC Planner](../tutorials/05-mpc-planner.md)
-
----
-
-## Parameters
-
-### Core Motion Planning Parameters
-
-| Parameter | Type | Default | Description | Runtime Modifiable |
-|-----------|------|---------|-------------|--------------------|
-| `voxel_size` | float | 0.05 | Collision voxel size (meters) | **Yes (requires update_motion_gen_config)** |
-| `time_dilation_factor` | float | 0.5 | Trajectory speed multiplier [0.0-1.0] | Yes (via rosparam) |
-| `max_attempts` | int | 1 | Planning retry attempts | Yes (via rosparam) |
-| `timeout` | float | 5.0 | Planning timeout (seconds) | Yes (via rosparam) |
-| `collision_activation_distance` | float | 0.025 | Collision threshold (meters) | **Yes (requires update_motion_gen_config)** |
-
-**Example - Modify voxel_size:**
-```bash
-# Set new voxel size
-ros2 param set /unified_planner voxel_size 0.08
-
-# REQUIRED: Apply the change
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-```
-
-**Example - Modify collision_activation_distance:**
-```bash
-# Set new collision distance
-ros2 param set /unified_planner collision_activation_distance 0.03
-
-# REQUIRED: Apply the change
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-```
-
-### Robot Configuration Parameters
-
-| Parameter | Type | Default | Description | Runtime Modifiable |
-|-----------|------|---------|-------------|--------------------|
-| `robot_config_file` | string | m1013.yml | Robot configuration YAML path | No (launch only) |
-| `base_link` | string | base_0 | Robot base frame name | No (launch only) |
-| `world_file` | string | '' | Initial world obstacles YAML | No (launch only) |
-
-### Collision Cache Parameters (NEW Dec 12, 2025)
-
-| Parameter | Type | Default | Description | Runtime Modifiable |
-|-----------|------|---------|-------------|--------------------|
-| `obb_cache_size` | int | 100 | OBB cache size | **Yes (via service or rosparam + update_motion_gen_config)** |
-| `mesh_cache_size` | int | 10 | Mesh cache size | **Yes (via service or rosparam + update_motion_gen_config)** |
-| `blox_cache_size` | int | 10 | Voxel cache size | **Yes (via service or rosparam + update_motion_gen_config)** |
-
-**Important**: Collision cache parameters can be modified via:
-1. **`set_collision_cache` service** (recommended)
-2. **ROS parameters** (via ros2 param set)
-
-**Both methods require calling `update_motion_gen_config` service to apply changes.**
-
-**Example - Via service:**
-```bash
-# Modify via service
-ros2 service call /unified_planner/set_collision_cache \
-  curobo_msgs/srv/SetCollisionCache "{obb: 200, mesh: -1, blox: -1}"
-
-# REQUIRED: Apply the changes
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-```
-
-**Example - Via ROS parameters:**
-```bash
-# Modify via parameter
-ros2 param set /unified_planner obb_cache_size 200
-
-# REQUIRED: Apply the change
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-```
-
-### MPC Parameters (Nov-Dec 2025)
-
-| Parameter | Type | Default | Description | Runtime Modifiable |
-|-----------|------|---------|-------------|--------------------|
-| `mpc_convergence_threshold` | float | 0.01 | MPC goal threshold (meters) | Yes |
-| `mpc_max_iterations` | int | 1000 | Max MPC iterations | Yes |
-| `mpc_horizon` | int | 10 | MPC planning horizon | Yes |
-| `mpc_control_frequency` | int | 100 | MPC replan rate (Hz) | Yes |
-
-**Example - Modify MPC parameters:**
-```bash
-ros2 param set /unified_planner mpc_control_frequency 150
-ros2 param set /unified_planner mpc_convergence_threshold 0.005
-```
-
-### Camera Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `cameras_config_file` | string | '' | Camera configuration YAML |
-| `camera_topic` | string | /camera/depth/points | Point cloud topic |
-| `downsample_voxel_size` | float | 0.01 | Point cloud filter size |
-
----
-
-## Service Call Patterns
-
-### Pattern 1: Plan and Execute
-
-```bash
-# 1. Generate trajectory
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
-
-# 2. Execute trajectory (if success)
-ros2 action send_goal /unified_planner/send_trajectory curobo_msgs/action/SendTrajectory \
-  "{trajectory: {...}}"
-```
-
-### Pattern 2: Dynamic Environment Workflow
-
-```bash
-# 1. Switch to MPC planner
-ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
-
-# 2. Set the goal and run the reactive loop
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.3, z: 0.4}, orientation: {w: 1.0}}}"
-ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory "{}" --feedback
-```
-
-### Pattern 3: Collision Scene Setup
-
-```bash
-# 1. Clear existing obstacles
-ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
-
-# 2. Add new obstacles
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject "{name: 'table', ...}"
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject "{name: 'wall', ...}"
-
-# 3. Verify obstacles
-ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
-
-# 4. Plan trajectory (will avoid obstacles)
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration "{...}"
-```
-
-### Pattern 4: Parameter Update Workflow
-
-```bash
-# 1. Modify parameters
-ros2 param set /unified_planner voxel_size 0.08
-ros2 service call /unified_planner/set_collision_cache \
-  curobo_msgs/srv/SetCollisionCache "{obb: 200, mesh: -1, blox: -1}"
-
-# 2. REQUIRED: Apply all changes
-ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
-
-# 3. Verify changes applied
-ros2 param get /unified_planner voxel_size
-```
-
----
-
-## Version History
-
-### December 15, 2025
-- Removed collision checker type switch
-
-### December 12, 2025
-- Added `set_collision_cache` service for dynamic cache configuration
-
-### December 5, 2025
-- Updated `generate_trajectory` service to return trajectory in response
-- Added trajectory constraints support
-- Added joint-space planning support
-
-### November 27, 2025
-- Added multi-point waypoint support to `generate_trajectory`
-
-### November 9, 2025
-- Added `set_planner` service for runtime planner switching
-- Added closed-loop MPC reactive control (via `execute_trajectory` + `mpc_goal`)
-
----
-
-## Related Documentation
-
-- [Tutorial 1: Your First Trajectory](../tutorials/01-first-trajectory.md) - Basic trajectory generation
-- [Tutorial 3: Collision Objects](../tutorials/03-collision-objects.md) - Obstacle management
-- [Tutorial 5: MPC Planner](../tutorials/05-mpc-planner.md) - MPC usage
-- [Tutorial 6: IK/FK Services](../tutorials/06-ik-fk-services.md) - Kinematics
-- [Parameters Guide](parameters.md) - Detailed parameter tuning
-- [curobo_msgs Package](https://github.com/Lab-CORO/curobo_msgs) - Message definitions
-
----
-
-[← Back to Concepts](README.md)
+- [Parameters](parameters.md) — every ROS parameter with its default and when it takes effect
+- [Unified Planner](unified-planner.md) — planner catalog and switching semantics
+- [MPC Implementation](mpc-implementation.md) — the closed-loop reactive control path
+- [Tutorial 1: First Trajectory](../tutorials/01-first-trajectory.md)

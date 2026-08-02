@@ -1,7 +1,6 @@
 # Tutorial 6: Inverse and Forward Kinematics Services
 
-🟢 **Difficulty**: Beginner
-⏱️ **Estimated Time**: 20-30 minutes
+**Difficulty**: Beginner · **Time**: ~25 min · **Prerequisites**: [Tutorial 1](01-first-trajectory.md)
 
 ## Overview
 
@@ -105,7 +104,7 @@ All poses are in the robot's base frame.
 
 ### 2.1 What is Inverse Kinematics?
 
-Inverse kinematics computes a joint configuration that places the end-effector at a given pose. The IK solver in curobo_ros uses cuRobo's `IkSolver`, which:
+Inverse kinematics computes a joint configuration that places the end-effector at a given pose. The IK solver in curobo_ros uses cuRobo v2's `InverseKinematics`, which:
 - Performs **collision checking** (self-collision + obstacle avoidance)
 - Shares the **same obstacle world** as the trajectory planners — obstacle changes are propagated automatically
 
@@ -246,7 +245,7 @@ If you call `ik_batch` with a different number of poses than the warmup batch si
 ## Related Documentation
 
 - [Unified Planner — IK and FK Services](../concepts/unified-planner.md#ik-and-fk-services)
-- [ROS Interfaces — Kinematics Services](../concepts/ros-interfaces.md#kinematics-services)
+- [ROS Interfaces](../concepts/ros-interfaces.md) — full field reference for the kinematics services
 - [Tutorial 3: Collision Objects](03-collision-objects.md)
 - [cuRobo Official Documentation](https://curobo.org)
 

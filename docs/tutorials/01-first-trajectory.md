@@ -1,437 +1,124 @@
 # Tutorial 1: Your First Trajectory
 
-This tutorial walks you through generating your first motion plan with curobo_ros. You'll learn how to:
-- Request trajectory generation
-- Understand the response
-- Add obstacles
-- Tune parameters for better performance
-- Execute trajectories
+**Difficulty**: Beginner · **Time**: ~20 min · **Prerequisites**: [Installation](../getting-started/installation.md) complete
 
----
+You will plan a motion from the command line, read the response, preview it in RViz, and execute it on the emulated robot.
 
-## Prerequisites
+## 1. Start the system
 
-- Completed [Getting Started Guide](../getting-started/installation.md)
-- unified_planner node is running
-- RViz is open
+In the container:
 
-If not, start the system:
 ```bash
-ros2 launch curobo_ros gen_traj.launch.py
+ros2 launch curobo_ros gen_traj.launch.py robot:=emulator world_file:=$(ros2 pkg prefix curobo_ros)/share/curobo_ros/config/floor_world.yml
 ```
 
----
+`robot:=emulator` runs the Doosan M1013 kinematics without hardware. The `world_file` adds a floor — without it the world is completely empty and the planner will happily swing the arm below the base.
 
-## Step 1: Understanding the Workspace
-
-Before planning, it's helpful to understand your robot's workspace.
-
-### Check Robot Configuration
+Wait for warmup (25–35 s). The node is ready when:
 
 ```bash
-# See which robot is loaded
-ros2 param get /unified_planner robot_config_file
-
-# Example output: m1013.yml (Doosan M1013)
+ros2 param get /unified_planner node_is_available
+# Boolean value is: True
 ```
 
-### Typical Workspace
-
-For the default Doosan M1013 robot:
-- **Reach**: ~1.3 m radius
-- **Safe zone**: x: [0.3, 0.9], y: [-0.5, 0.5], z: [0.1, 0.8]
-- **Base frame**: `base_0`
-
-**Tip**: Look at the robot in RViz to get a sense of its reachable space.
-
----
-
-## Step 2: Generate Your First Trajectory
-
-Let's plan a simple trajectory to a target position!
-
-### Open a New Terminal
+Open a second shell in the container for the commands below:
 
 ```bash
-# If using VSCode: Terminal → New Terminal (already inside container)
-# If not: docker exec -it curobo_ampere_dev bash  # adapt name to your GPU
-
-# Source the workspace
+docker exec -it curobo_ampere_dev bash
 source /home/ros2_ws/install/setup.bash
 ```
 
-### Call the Trajectory Service
+## 2. Know your workspace
+
+The default robot is a **Doosan M1013**: 6 DOF, ~1.3 m reach, base frame `base_0`. A comfortable target zone for this tutorial:
+
+- x: 0.3 to 0.9 m (in front of the robot)
+- y: −0.5 to 0.5 m
+- z: 0.1 to 0.8 m (above the base)
+
+Orientation is a quaternion in the base frame. `{x: 0, y: 1, z: 0, w: 0}` points the tool straight down — a good default for tabletop poses.
+
+## 3. Generate a trajectory
 
 ```bash
 ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0.0, y: 0.0, z: 0.0}}}"
+  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}}}"
 ```
 
-**What this does:**
-- **Target position**: x=0.5m, y=0.0m, z=0.3m (in front of robot)
-- **Target orientation**: Identity quaternion (no rotation)
-
-### Watch in RViz
-
-You should see:
-1. **Main robot** (current state) - stays still
-2. **Ghost robot** (namespace `/preview`) - shows the planned trajectory
-
-### Expected Response
-
-```yaml
-success: true
-message: "Trajectory generated successfully"
-trajectory:
-  # ... joint trajectory data ...
-```
-
-**Success!** 🎉 You've planned your first trajectory!
-
----
-
-## Step 3: Understanding the Response
-
-Let's break down what just happened:
-
-### The Planning Process
+A successful response looks like:
 
 ```
-1. Service call received with target pose
-2. cuRobo solves IK: Finds joint angles for target
-3. cuRobo plans trajectory: Smooth path from current to target
-4. Trajectory interpolated: Dense waypoints for smooth motion
-5. Ghost robot updated: Preview in RViz
-6. Response sent: Success/failure + trajectory data
+success: True
+message: '...'
+trajectory: [<sensor_msgs/JointState with position and velocity>, ...]
+dt: 0.025
 ```
 
-### What's in the Response
+The `trajectory` field is an array of `JointState` waypoints; `dt` is the time step between them (the `interpolation_dt` parameter). In RViz, the translucent **preview robot** replays the plan — nothing has moved yet.
 
-The `trajectory` field contains a `JointTrajectory` message:
+Things to try:
 
-```yaml
-trajectory:
-  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
-  points:
-    - positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      velocities: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-      accelerations: [...]
-      time_from_start: {sec: 0, nanosec: 0}
-    - positions: [0.1, 0.05, ...]
-      velocities: [0.5, 0.3, ...]
-      time_from_start: {sec: 0, nanosec: 50000000}
-    # ... more waypoints ...
-```
+- an unreachable pose (`x: 2.0`) → `success: False` with an IK error in `message`;
+- different orientations — e.g. `{x: 0, y: 0, z: 0, w: 1}` (tool pointing up along +z).
 
-**Each waypoint** includes:
-- Joint positions (radians)
-- Joint velocities (rad/s)
-- Joint accelerations (rad/s²)
-- Timestamp
+## 4. Execute it
 
----
-
-## Step 4: Trying Different Targets
-
-Let's explore the workspace by trying different positions.
-
-### Target 1: Higher Position
+Planning and execution are separate. Execution goes through the `execute_trajectory` action; on the emulator the "robot" is simulated, so this is always safe:
 
 ```bash
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.6}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
+ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory \
+  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {x: 0.0, y: 1.0, z: 0.0, w: 0.0}}}" --feedback
 ```
 
-### Target 2: To the Side
+Because the goal matches the plan you just generated (and `allow_cached` defaults to `true`), the action reuses the cached trajectory instead of re-planning, then streams it. Feedback shows `state: EXECUTING` and `step_progression` climbing from 0 to 1; the main RViz robot follows.
 
-```bash
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.32, y: -0.44, z: 0.13}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-```
+You can also skip step 3 entirely — the action plans by itself when there is no cached trajectory.
 
-### Target 3: Unreachable (Should Fail)
-
-```bash
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 2.0, y: 0.0, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-```
-
-**Expected**: `success: false`, `message: "IK solution not found"` or "Target unreachable"
-
----
-
-## Step 5: Understanding Orientation
-
-So far we've used identity orientation `(w=1, x=0, y=0, z=0)`. Let's try different orientations.
-
-### Quaternion Basics
-
-Quaternions represent 3D rotations:
-- `w, x, y, z` with `w² + x² + y² + z² = 1`
-- Identity: `(1, 0, 0, 0)` = no rotation
-- 180° around Z: `(0, 0, 0, 1)`
-
-**Tip**: Use online quaternion calculators or Python libraries:
-```python
-from scipy.spatial.transform import Rotation as R
-# 90 degrees around Z
-quat = R.from_euler('z', 90, degrees=True).as_quat()  # [x, y, z, w]
-# Note: ROS uses [w, x, y, z] format!
-```
-
-### Example: 45° Rotation
-
-```bash
-# 45 degrees around Z axis
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 0.9239, x: 0.0, y: 0.0, z: 0.3827}}}"
-```
-
----
-
-## Step 6: Adding Obstacles
-
-Now let's make it interesting by adding obstacles!
-
-### Add a Box Obstacle
+## 5. Add an obstacle and re-plan
 
 ```bash
 ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-"{
-  name: 'table',
-  type: 0,
-  pose: {position: {x: 0.4, y: 0.0, z: 0.15}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
-  dimensions: {x: 0.4, y: 0.4, z: 0.4},
-  color: {r: 0.0, g: 0.0, b: 0.0, a: 0.0}
-}"
+  "{type: 0, name: 'table', pose: {position: {x: 0.6, y: 0.0, z: 0.1}, orientation: {w: 1.0}}, \
+    dimensions: {x: 0.8, y: 1.0, z: 0.05}, color: {r: 0.5, g: 0.3, b: 0.1, a: 1.0}}"
 ```
 
-**What this creates:**
-- A box representing a table
-- Position: 0.4m in front, ground level
-- Dimensions: 80cm x 100cm x 5cm
+This adds a 0.8 × 1.0 × 0.05 m tabletop centred 0.6 m in front of the base at z = 0.1 m (dimensions are full extents for a cuboid). It appears in RViz via the `/unified_planner/scene_obstacles` markers. Re-run the `generate_trajectory` call from step 3: the new plan curves around the table.
 
-
-**Object types**:
-- `0`: CUBOID
-- `1`: SPHERE
-- `2`: CAPSULE
-- `3`: CYLINDER
-- `4`: MESH (from file)
-
-### Generate Trajectory (Will Avoid Obstacle)
-
-```bash
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.32, y: -0.44, z: 0.13}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-```
-
-Watch in RViz - the robot now avoids the table!
-
-### Add More Obstacles
-
-```bash
-# Add a sphere
-ros2 service call /unified_planner/add_object curobo_msgs/srv/AddObject \
-"{
-  name: 'ball',
-  type: 1,
-  pose: {position: {x: 0.6, y: 0.2, z: 0.5}, orientation: {w: 1.0, x: 0, y: 0, z: 0}},
-  dimensions: {x: 0.1, y: 0.1, z: 0.1},
-  color: {r: 1.0, g: 0.0, b: 0.0, a: 0.8}
-}"
-```
-
-**Note**: For spheres, set all dimensions equal (x=y=z=radius).
-
-### List All Obstacles
+List and clean up:
 
 ```bash
 ros2 service call /unified_planner/get_obstacles std_srvs/srv/Trigger
+ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject "{name: 'table'}"
 ```
 
-**Response**:
-```yaml
-success: true
-message: "table, ball"  # List of obstacle names
-```
+Obstacle types, dimension semantics, meshes, and attachment are covered in [Tutorial 3](03-collision-objects.md).
 
-### Remove Specific Obstacle
+## 6. Tune a parameter
+
+Two examples that illustrate the two kinds of parameters (full list in the [Parameters Guide](../concepts/parameters.md)):
 
 ```bash
-ros2 service call /unified_planner/remove_object curobo_msgs/srv/RemoveObject "{name: 'ball'}"
-```
-
-### Clear All Obstacles
-
-```bash
-ros2 service call /unified_planner/remove_all_objects std_srvs/srv/Trigger
-```
-
----
-
-## Step 7: Tuning Parameters
-
-Let's experiment with parameters to see their effect.
-
-### Adjust Robot Speed
-
-```bash
-# Slow motion (30% speed)
-ros2 param set /unified_planner time_dilation_factor 0.3
-
-# Generate trajectory
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.2, z: 0.4}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-
-# Watch in RViz - ghost robot moves slower
-```
-
-```bash
-# Fast motion (80% speed)
-ros2 param set /unified_planner time_dilation_factor 0.8
-
-# Generate again - much faster!
-```
-
-### Increase Planning Attempts
-
-```bash
-# Try 3 times if first attempt fails
+# Plan-time: takes effect on the next request, no rebuild
 ros2 param set /unified_planner max_attempts 3
 
-# This increases success rate for difficult targets
-```
-
-### Adjust Timeout
-
-```bash
-# Allow more time for planning
-ros2 param set /unified_planner timeout 10.0
-```
-### Adjusting Voxel Size for Precision
-
-Some parameters require special handling because they are initialized during cuRobo's warmup phase. If you modify these parameters at runtime, you must trigger a reinitialization for the changes to take effect.
-
-#### Modifying Voxel Size
-
-The voxel size parameter controls the resolution of the collision grid used for obstacle detection:
-
-```bash
-# Set voxel size to 8cm (good balance between precision and performance)
-ros2 param set /unified_planner voxel_size 0.08
-```
-
-**Resolution Capabilities:**
-- **High-end GPUs:** Can handle resolutions down to 0.01m (1cm)
-- **Recommended default:** 0.05m (5cm) for most applications
-- **Large environments:** 0.1m (10cm) for better performance
-
-**Important:** After changing voxel size, you must update the motion generation configuration:
-
-```bash
-# Trigger configuration update to apply voxel size changes
+# Build-time: requires a solver rebuild (~20 s, blocking)
+ros2 param set /unified_planner voxel_size 0.03
 ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 ```
 
-#### Performance vs Precision Trade-off
+## Common issues
 
-| Voxel Size | Use Case | GPU Memory | Planning Speed |
-|------------|----------|------------|----------------|
-| 0.01m | Fine manipulation | ⚠️ High | ⚠️ Slow |
-| 0.05m | General purpose | ✅ Medium | ✅ Fast |
-| 0.10m | Large environments | ✅ Low | ✅ Very Fast |
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `success: False`, IK error | Pose out of reach or in collision | Bring the target into the zone from step 2; check obstacles |
+| Service call hangs forever | Node still warming up | Wait for `node_is_available` to be `True` |
+| Plan goes through an obstacle you see in RViz | Marker ≠ collision world | Confirm with `get_obstacles`; markers refresh every 2 s |
+| First plan after switching planners is slow | CUDA graph re-capture | Expected — subsequent plans are fast |
 
-**Tip:** Start with the default (0.05m) and adjust based on your specific application needs and GPU capabilities.
+## Next steps
 
----
+- [Tutorial 3: Managing Collision Objects](03-collision-objects.md)
+- [Tutorial 4: Robot Execution](04-robot-execution.md) — run it on a real robot
+- [RViz Plugin](../concepts/rviz-plugin.md) — the same workflow with mouse and panels
 
-## Step 8: Executing Trajectories (Optional)
-
-If you have a real robot or emulator configured, you can execute the trajectory.
-
-### Using the Action Interface
-
-```bash
-# Switch the strategy to use the emulator
-ros2 param set /unified_planner robot_type "emulator"
-ros2 service call /unified_planner/set_robot_strategy std_srvs/srv/Trigger
-
-# Generate a trajectory first
-ros2 service call /unified_planner/generate_trajectory curobo_msgs/srv/TrajectoryGeneration \
-  "{target_pose: {position: {x: 0.5, y: 0.0, z: 0.3}, orientation: {w: 1.0, x: 0, y: 0, z: 0}}}"
-
-# Execute it
-ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/SendTrajectory {}
-```
-
-**What happens:**
-1. The robot starts following the trajectory
-2. You receive feedback: `step_progression: 0.25` (25% complete)
-3. Robot completes the motion
-4. Result: `success: true`
-
-**Safety**: Make sure the workspace is clear and the robot can move safely!
-
----
-
-
-## Common Issues
-
-### "IK solution not found"
-
-**Cause**: Target pose is unreachable (out of workspace or impossible orientation)
-
-**Solutions**:
-- Try a target closer to the robot
-- Check orientation is valid
-- Increase `max_attempts`: `ros2 param set /unified_planner max_attempts 5`
-
-### "Collision detected" / "Planning failed"
-
-**Cause**: Path to target is blocked by obstacles
-
-**Solutions**:
-- Remove or move obstacles
-- Try a different target
-- Increase `collision_activation_distance` to allow tighter clearances
-
-### Trajectory looks jerky in RViz
-
-**Cause**: Low `time_dilation_factor` or visualization artifacts
-
-**Solutions**:
-- Increase `time_dilation_factor`: `ros2 param set /unified_planner time_dilation_factor 0.6`
-- This is just visualization - actual robot motion will be smooth
-
-### Planning takes too long
-
-**Cause**: Voxel size is too small, or environment is complex
-
-**Solutions**:
-- Increase voxel size (launch parameter - requires restart)
-- Reduce `timeout` to fail faster
-- Check CPU/GPU usage
-
----
-
-## Summary
-
-**Congratulations!** You've learned how to:
-
-- ✅ Generate trajectories to target poses
-- ✅ Understand orientation with quaternions
-- ✅ Add and manage obstacles
-- ✅ Tune parameters (`time_dilation_factor`, `max_attempts`, `timeout`, `voxel_size`)
-- ✅ Execute trajectories with the emulator
-
----
-
-## Next Steps
-
-- **[Adding Your Robot](02-adding-your-robot.md)** - Integrate your own robot (Doosan M1013 example)
-- **[Managing Obstacles](03-collision-objects.md)** - Advanced obstacle management
-- **[Parameters Guide](../concepts/parameters.md)** - Deep dive into all parameters
-- **[Robot Execution](04-robot-execution.md)** - Connect to real robot or emulator
-
-
+[← Tutorials index](index.md) | [Tutorial 2 →](02-adding-your-robot.md)
