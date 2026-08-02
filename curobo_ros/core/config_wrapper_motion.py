@@ -1,5 +1,8 @@
 """
-Config wrappers for cuRobo v2 solvers (MotionPlanner, IK, MPC).
+Config wrapper for the cuRobo v2 motion planner (`MotionPlanner`).
+
+IK is not wrapped here — it lives in ``core/ik_services.py``, built from the
+same shared context. MPC is built by ``MPCController`` from this wrapper.
 
 v2 notes:
 - MotionGen/MpcSolver/IKSolver → MotionPlanner / ModelPredictiveControl / InverseKinematics.
@@ -16,7 +19,7 @@ import torch
 import rclpy
 
 from std_srvs.srv import Trigger
-from curobo_msgs.srv import GetCollisionDistance, Ik, IkBatch
+from curobo_msgs.srv import GetCollisionDistance
 
 # v2 runtime flags — must be set before any cuRobo objects are instantiated.
 # cuda_graph_reset lets solvers rebuild captured graphs when buffer shapes
@@ -33,7 +36,6 @@ _curobo_runtime_public.cuda_graph_reset = True
 
 from curobo.types import JointState
 from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
-from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 from curobo._src.geom.collision.buffer_collision import CollisionBuffer
 from curobo._src.types.device_cfg import DeviceCfg
 
@@ -152,57 +154,6 @@ class ConfigWrapperMotion(ConfigWrapper):
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         return _compute_sphere_distance(self, node, response)
 
-
-class ConfigWrapperIK(ConfigWrapper):
-    """IK config wrapper (v2 `InverseKinematics`)."""
-
-    def __init__(self, node, robot):
-        super().__init__(node, robot)
-
-        self.set_ik_gen_config(node, None, None)
-        node.ik_init()
-
-        self.init_services(node)
-
-        self.motion_gen_srv = node.create_service(
-            Trigger,
-            node.get_name() + '/update_motion_gen_config',
-            partial(self.set_ik_gen_config, node),
-        )
-        self.srv_ik_batch = node.create_service(
-            IkBatch, node.get_name() + '/ik_batch_poses', node.ik_batch_callback
-        )
-        self.srv_ik = node.create_service(
-            Ik, node.get_name() + '/ik_pose', node.ik_callback
-        )
-
-    def set_ik_gen_config(self, node, _, response):
-        # Primitives only at construction; the update_world() below pushes the
-        # perception layer by copy. See primitives_only_scene().
-        scene = self.obstacle_manager.primitives_only_scene()
-
-        cfg = InverseKinematicsCfg.create(
-            robot=self.robot_config_file,
-            scene_model=scene,
-            num_seeds=20,
-            position_tolerance=0.005,
-            orientation_tolerance=0.05,
-            self_collision_check=True,
-            collision_cache=self.collision_cache,
-            use_cuda_graph=False,
-        )
-        node.ik_solver = InverseKinematics(cfg)
-
-        if response is not None:
-            response.success = True
-            response.message = "IK solver config set"
-        return response
-
-    def update_world_config(self, node):
-        node.ik_solver.update_world(self.obstacle_manager.get_scene())
-
-    def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
-        return _compute_sphere_distance(self, node, response)
 
 
 # ---------------------------------------------------------------------------
