@@ -31,7 +31,7 @@ fi
 echo ""
 
 echo "Running test_test_collision..."
-if timeout 450 launch_test "${TEST_DIR}/test_test_collision.py" > /dev/null 2>&1; then
+if timeout 690 launch_test "${TEST_DIR}/test_test_collision.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_collision PASSED"
     ((PASSED_TESTS++)) || true
 else
@@ -43,7 +43,7 @@ fi
 echo ""
 
 echo "Running test_test_object..."
-if timeout 420 launch_test "${TEST_DIR}/test_test_object.py" > /dev/null 2>&1; then
+if timeout 540 launch_test "${TEST_DIR}/test_test_object.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_object PASSED"
     ((PASSED_TESTS++)) || true
 else
@@ -91,7 +91,7 @@ fi
 echo ""
 
 echo "Running test_test_mesh_obstacle..."
-if timeout 420 launch_test "${TEST_DIR}/test_test_mesh_obstacle.py" > /dev/null 2>&1; then
+if timeout 600 launch_test "${TEST_DIR}/test_test_mesh_obstacle.py" > /dev/null 2>&1; then
     echo "  ✓ test_test_mesh_obstacle PASSED"
     ((PASSED_TESTS++)) || true
 else

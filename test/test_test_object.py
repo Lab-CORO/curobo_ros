@@ -112,7 +112,7 @@ class GeneratedTestSuite(unittest.TestCase):
         client = self.node.create_client(AddObject, '/unified_planner/add_object')
 
         # Wait for service to be available
-        timeout = 30.0
+        timeout = 90.0
         if not client.wait_for_service(timeout_sec=timeout):
             self.fail(f"Service '/unified_planner/add_object' not available after {timeout}s")
 
@@ -288,7 +288,7 @@ class GeneratedTestSuite(unittest.TestCase):
         client = self.node.create_client(AttachObject, '/unified_planner/attach_object')
 
         # Wait for service to be available
-        timeout = 30.0
+        timeout = 90.0
         if not client.wait_for_service(timeout_sec=timeout):
             self.fail(f"Service '/unified_planner/attach_object' not available after {timeout}s")
 

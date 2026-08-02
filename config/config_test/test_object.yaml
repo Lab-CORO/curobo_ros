@@ -13,9 +13,9 @@ environment:
   # test` failed on a different subset of suites every run.
   # Waited for by *advertisement*, never called: the node creates this service
   # only after _warmup_initial_planner returns (unified_planner_node.py), so its
-  # appearance in the graph is the readiness signal. Deliberately NOT
-  # is_available -- that service reads an attribute the node never defines, so
-  # it raises on every call and is slated for removal.
+  # appearance in the graph is the readiness signal. There is deliberately no
+  # readiness service to call: the node exposes its state as the
+  # `node_is_available` parameter.
   ready_service: "/unified_planner/generate_trajectory"
   ready_wait: 180.0
   startup_delay: 0.0
@@ -26,9 +26,10 @@ tests:
   - name: "01 Add object"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
-    # timeout=30: the node starts its cuRobo warmup (~18s) synchronously in
-    # __init__; the first service call may block until warmup completes.
-    timeout: 30.0
+    # timeout=90: the node starts its cuRobo warmup synchronously in __init__;
+    # the first service call may block until warmup completes. Measured ~25s on
+    # an idle Orin, ~37s once the SoC throttles under sustained GPU load.
+    timeout: 90.0
     data: {type: 0,
             name: "cube",
             mesh_file_path: "",
@@ -92,9 +93,11 @@ tests:
     # to fit within the attach link's sphere budget, so this asserts a faithful
     # collision model, not a truncated one (a truncated fit still succeeds but
     # logs a warning -- see AttachmentServices.attach).
-    # timeout=30: attach triggers motion planner warmup if not yet done (~18s).
+    # timeout=90: attach triggers motion planner warmup if not yet done (~25s
+    # idle, ~37s throttled), on top of MorphIt's stochastic sphere-fit retries
+    # -- this is the known flake documented in docs/getting-started/testing.md.
     data: {object_name: "cube2"}
-    timeout: 30.0
+    timeout: 90.0
     expect: {success: True, message: "Attached 'cube2'"}
 
   - name: "06 Detach object"

@@ -13,9 +13,9 @@ environment:
   # test` failed on a different subset of suites every run.
   # Waited for by *advertisement*, never called: the node creates this service
   # only after _warmup_initial_planner returns (unified_planner_node.py), so its
-  # appearance in the graph is the readiness signal. Deliberately NOT
-  # is_available -- that service reads an attribute the node never defines, so
-  # it raises on every call and is slated for removal.
+  # appearance in the graph is the readiness signal. There is deliberately no
+  # readiness service to call: the node exposes its state as the
+  # `node_is_available` parameter.
   ready_service: "/unified_planner/generate_trajectory"
   ready_wait: 180.0
   startup_delay: 0.0

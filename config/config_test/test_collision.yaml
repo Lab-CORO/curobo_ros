@@ -13,9 +13,9 @@ environment:
   # test` failed on a different subset of suites every run.
   # Waited for by *advertisement*, never called: the node creates this service
   # only after _warmup_initial_planner returns (unified_planner_node.py), so its
-  # appearance in the graph is the readiness signal. Deliberately NOT
-  # is_available -- that service reads an attribute the node never defines, so
-  # it raises on every call and is slated for removal.
+  # appearance in the graph is the readiness signal. There is deliberately no
+  # readiness service to call: the node exposes its state as the
+  # `node_is_available` parameter.
   ready_service: "/unified_planner/generate_trajectory"
   ready_wait: 180.0
   startup_delay: 0.0
@@ -31,33 +31,36 @@ tests:
   - name: "02 Set collision cache OBB"
     service: "/unified_planner/set_collision_cache"
     type: curobo_msgs/srv/SetCollisionCache
-    # timeout=30: a cache value actually changing triggers a synchronous
-    # solver rebuild+warmup (~20s, see rebuild_solvers_for_cache_change).
-    timeout: 30.0
+    # timeout=90: a cache value actually changing triggers a synchronous
+    # solver rebuild+warmup (see rebuild_solvers_for_cache_change). Measured on
+    # an idle Orin: ~25s. Under sustained GPU load the SoC throttles and the
+    # same rebuild reaches ~37s -- a 30s budget turned every rebuild-heavy
+    # suite red for a reason that had nothing to do with what it asserts.
+    timeout: 90.0
     data: {obb: 100, mesh: -1, blox: -1}
     expect: {success: True, obb_cache: 100, blox_cache: 1}
 
   - name: "02b Disable collision cache voxel"
     service: "/unified_planner/set_collision_cache"
     type: curobo_msgs/srv/SetCollisionCache
-    timeout: 30.0  # see "02" — same rebuild-on-change cost
+    timeout: 90.0  # see "02" — same rebuild-on-change cost
     data: {obb: -1, mesh: -1, blox: 0}
     expect: {success: True, blox_cache: 0}
 
   - name: "02c Re-enable collision cache voxel"
     service: "/unified_planner/set_collision_cache"
     type: curobo_msgs/srv/SetCollisionCache
-    timeout: 30.0  # see "02" — same rebuild-on-change cost
+    timeout: 90.0  # see "02" — same rebuild-on-change cost
     data: {obb: -1, mesh: -1, blox: 1}
     expect: {success: True, blox_cache: 1}
 
   - name: "03 Update motion gen config"
     service: "/unified_planner/update_motion_gen_config"
     type: std_srvs/srv/Trigger
-    # timeout=30: always rebuilds + warms up the MotionPlanner (~20s),
-    # unconditionally (unlike set_collision_cache, which only rebuilds on an
-    # actual value change).
-    timeout: 30.0
+    # timeout=90: always rebuilds + warms up the MotionPlanner, unconditionally
+    # (unlike set_collision_cache, which only rebuilds on an actual value
+    # change). Same ~25s idle / ~37s throttled cost as "02".
+    timeout: 90.0
     data: {}
     expect: {success: True}
 

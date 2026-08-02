@@ -19,9 +19,9 @@ environment:
   # test` failed on a different subset of suites every run.
   # Waited for by *advertisement*, never called: the node creates this service
   # only after _warmup_initial_planner returns (unified_planner_node.py), so its
-  # appearance in the graph is the readiness signal. Deliberately NOT
-  # is_available -- that service reads an attribute the node never defines, so
-  # it raises on every call and is slated for removal.
+  # appearance in the graph is the readiness signal. There is deliberately no
+  # readiness service to call: the node exposes its state as the
+  # `node_is_available` parameter.
   ready_service: "/unified_planner/generate_trajectory"
   ready_wait: 180.0
   startup_delay: 0.0
@@ -31,9 +31,10 @@ tests:
   - name: "01 set collision cache"
     service: "/unified_planner/set_collision_cache"
     type: curobo_msgs/srv/SetCollisionCache
-    # timeout=30: obb/mesh actually change here, triggering a synchronous
-    # solver rebuild+warmup (~20s, see rebuild_solvers_for_cache_change).
-    timeout: 30.0
+    # timeout=90: obb/mesh actually change here, triggering a synchronous
+    # solver rebuild+warmup (see rebuild_solvers_for_cache_change). ~25s on an
+    # idle Orin, ~37s once the SoC throttles under sustained GPU load.
+    timeout: 90.0
     data:
       obb: 136
       mesh: 1
@@ -49,8 +50,9 @@ tests:
   - name: "02 reload MotionGen with new cache"
     service: "/unified_planner/update_motion_gen_config"
     type: std_srvs/srv/Trigger
-    # timeout=30: always rebuilds + warms up the MotionPlanner (~20s).
-    timeout: 30.0
+    # timeout=90: always rebuilds + warms up the MotionPlanner (~25s idle,
+    # ~37s throttled).
+    timeout: 90.0
     data: {}
     expect:
       success: True
@@ -58,8 +60,9 @@ tests:
   - name: "03 add Rubber Duck mesh at origin"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
-    # timeout=30: mesh rasterization/warmup on the collision-cache path.
-    timeout: 30.0
+    # timeout=90: mesh rasterization/warmup on the collision-cache path
+    # (~25s idle, ~37s throttled).
+    timeout: 90.0
     data:
       type: 4
       name: "rubber_duck"
@@ -76,7 +79,10 @@ tests:
   - name: "04 trajectory blocked by duck"
     service: "/unified_planner/generate_trajectory"
     type: curobo_msgs/srv/TrajectoryGeneration
-    timeout: 30.0  # planning against a fresh mesh obstacle, same budget as "03"
+    # Deliberately NOT raised to 90 like the rebuild calls above: this is a pure
+    # plan (~0.2s measured) whose expected outcome is failure. Stretching the
+    # budget of a test that expects False only delays detecting a real hang.
+    timeout: 30.0
     data:
       target_pose:
         position: {x: 0.1, y: 0.0, z: 0.1}
