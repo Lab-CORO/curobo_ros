@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Optional, List, Any
 from enum import Enum
 
-import torch
 from curobo.types import JointState
 
 

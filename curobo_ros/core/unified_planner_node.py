@@ -34,7 +34,6 @@ from curobo_msgs.srv import TrajectoryGeneration, SetPlanner, GetPlanners
 from curobo_msgs.action import SendTrajectory
 
 from curobo.types import DeviceCfg, JointState
-from curobo.scene import Cuboid
 
 from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion
@@ -128,15 +127,17 @@ class UnifiedPlannerNode(Node):
         # (vs ~74ms/call at 200/300) and converges FASTER in wall-clock terms
         # despite fewer iterations per call (more, cheaper corrections beat
         # fewer, expensive ones for a receding-horizon controller).
-        self.declare_parameter('mpc_warm_start_iters', 5) #25
-        self.declare_parameter('mpc_cold_start_iters', 10) #100
-        # MPC solver selection. 'lbfgs_bspline' (défaut) = comportement actuel.
-        # 'mppi_acceleration' = recette validée sur m1013 réel (MPPI + espace
-        # ACCELERATION), pour les postures où L-BFGS+B-spline se fige.
-        # ⚠️ mpc_warm_start_iters/mpc_cold_start_iters ci-dessus (25/100) sont
-        # tunés pour L-BFGS. En 'mppi_acceleration', passer aussi
-        # mpc_warm_start_iters:=5 mpc_cold_start_iters:=10 (valeurs validées) —
-        # sinon MPPI est non tuné (lent, ne converge pas dans la fenêtre du pont).
+        # 5/10 are the MPPI values; the 25/100 in the note above are the L-BFGS
+        # ones, kept here because they pair with mpc_solver_type below.
+        self.declare_parameter('mpc_warm_start_iters', 5)
+        self.declare_parameter('mpc_cold_start_iters', 10)
+        # MPC solver selection. The default is 'mppi_acceleration' (MPPI in
+        # ACCELERATION space), the recipe validated on the real M1013 -- it holds
+        # in the postures where L-BFGS + B-spline stalls.
+        # The two iteration counts above are tuned FOR THIS DEFAULT. Switching to
+        # 'lbfgs_bspline' means also passing mpc_warm_start_iters:=25
+        # mpc_cold_start_iters:=100 -- cuRobo's L-BFGS requires multiples of 25
+        # (see the note above), and 5/10 would leave it untuned.
         self.declare_parameter('mpc_solver_type', 'mppi_acceleration')
         self.declare_parameter('mpc_mppi_num_particles', 400)
         self.declare_parameter('mpc_vel_feedback_alpha', 1.0)
@@ -311,14 +312,20 @@ class UnifiedPlannerNode(Node):
             self.get_logger().info("  -> MotionPlanner already initialized (cache)")
 
     def _ensure_ground_plane(self):
-        """No-op : le sol est le cuboid `floor` de leeloo_world.yaml (z=-0.8).
+        """No-op: the ground is the `floor` cuboid of the loaded world file.
 
-        Avant, cette méthode ajoutait au runtime un cuboid `ground` à z=-0.1.
-        Ce 4ᵉ cuboid était ajouté APRÈS la pré-allocation de la SceneCollision
-        de voxelization (dimensionnée sur les 3 cuboids du world.yaml), ce qui
-        débordait son cache à chaque perception refresh → fallback CPU (~10s)
-        qui gelait la boucle MPC. Supprimé : la base du robot est à ~80cm au-
-        dessus du floor, qui suffit donc comme sol de collision.
+        Both shipped worlds put it at z=-0.8 (config/floor_world.yml here,
+        leeloo_world.yaml in the leeloo deployment).
+
+        This method used to add a `ground` cuboid at z=-0.1 at runtime. That
+        extra cuboid landed AFTER the voxelization SceneCollision had been
+        pre-allocated (sized on the world file's three cuboids), so it overflowed
+        that cache on every perception refresh -> CPU fallback (~10s) that froze
+        the MPC loop. Removed: the robot base sits ~80cm above the floor, which
+        is therefore collision ground enough.
+
+        Kept as a no-op rather than deleted because the reactive warmup path
+        still calls it (see _warmup_reactive).
         """
         return
 

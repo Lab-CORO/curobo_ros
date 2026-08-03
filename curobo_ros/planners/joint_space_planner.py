@@ -9,8 +9,6 @@ v2 notes:
   enable_graph/enable_opt — those tunables live on the trajopt YAML.
 """
 
-from typing import Optional
-
 import torch
 from curobo.types import JointState
 

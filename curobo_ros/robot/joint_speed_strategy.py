@@ -147,9 +147,9 @@ class JointSpeedStrategy(JointCommandStrategy):
         real = self.joint_velocity
         p0 = vel_clamped[0] if vel_clamped else [0.0] * self.dof
         raw0 = self.vel_command[0] if self.vel_command else [0.0] * self.dof
-        # delta réellement publié vs vitesse réelle mesurée (ce que le clamp
-        # est censé borner à max_dv = max_accel_rad_s2*self._accel_clamp_dt
-        # par POINT, donc ici sur le 1er point directement contre le réel).
+        # Delta actually published vs. measured real velocity -- what the clamp
+        # is meant to bound to max_dv = max_accel_rad_s2 * self._accel_clamp_dt
+        # PER POINT, so here the first point straight against the real value.
         accel_p0 = deg(max(abs(a - b) for a, b in zip(p0, real)) / self._accel_clamp_dt)
         clamp_active = [i for i, (c, u) in enumerate(zip(p0, raw0)) if abs(c - u) > 1e-9]
         intra = 0.0

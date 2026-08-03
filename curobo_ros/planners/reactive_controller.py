@@ -70,10 +70,10 @@ class ReactiveController(TrajectoryPlanner):
         self.convergence_threshold = 0.01      # meters
         self.max_iterations = 1000
         # Refresh the perception ESDF every N steps (0 disables, 1 = every step).
-        # À 20 (~3s à 7Hz) le monde de collision du MPC était trop lent pour un
-        # obstacle dynamique (main) — le bras touchait avant la mise à jour. 2 ≈
-        # rythme caméra (5Hz), possible depuis que la voxelization est sur GPU
-        # (plus de fallback CPU ~10s). cf. debug 2026-07-15.
+        # At 20 (~3s at 7Hz) the MPC collision world lagged behind a moving
+        # obstacle (a hand) -- the arm made contact before the update landed.
+        # 2 is roughly camera rate (5Hz), affordable since voxelization moved to
+        # the GPU (no more ~10s CPU fallback). See debug 2026-07-15.
         self.perception_refresh_period = 2
 
         # Latest scalar position error, written by step(), read by is_converged().

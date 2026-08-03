@@ -38,13 +38,13 @@ class MarkerPublisher(Node):
                 sphere_marker.id = i
                 sphere_marker.type = Marker.SPHERE
                 sphere_marker.action = Marker.ADD
-                sphere_marker.scale.x = 0.01  # Taille de la sphère
+                sphere_marker.scale.x = 0.01  # Sphere diameter (m)
                 sphere_marker.scale.y = 0.01
                 sphere_marker.scale.z = 0.01
-                sphere_marker.color.a = 1.0  # Transparence
-                sphere_marker.color.r = 1.0  # Couleur rouge
-                sphere_marker.color.g = 0.0  # Couleur verte
-                sphere_marker.color.b = 0.0  # Couleur bleue
+                sphere_marker.color.a = 1.0  # Opacity
+                sphere_marker.color.r = 1.0
+                sphere_marker.color.g = 0.0
+                sphere_marker.color.b = 0.0  # Blue
                 sphere_marker.pose = pose
 
                 marker_array.markers.append(sphere_marker)
@@ -57,13 +57,13 @@ class MarkerPublisher(Node):
                 sphere_marker.id = i
                 sphere_marker.type = Marker.SPHERE
                 sphere_marker.action = Marker.ADD
-                sphere_marker.scale.x = 0.01  # Taille de la sphère
+                sphere_marker.scale.x = 0.01  # Sphere diameter (m)
                 sphere_marker.scale.y = 0.01
                 sphere_marker.scale.z = 0.01
-                sphere_marker.color.a = 1.0  # Transparence
-                sphere_marker.color.r = 0.0  # Couleur rouge
-                sphere_marker.color.g = 0.0  # Couleur verte
-                sphere_marker.color.b = 1.0  # Couleur bleue
+                sphere_marker.color.a = 1.0  # Opacity
+                sphere_marker.color.r = 0.0
+                sphere_marker.color.g = 0.0
+                sphere_marker.color.b = 1.0  # Blue
                 sphere_marker.pose = pose
 
                 marker_array.markers.append(sphere_marker)
@@ -76,13 +76,13 @@ class MarkerPublisher(Node):
                 text_marker.id = i
                 text_marker.type = Marker.TEXT_VIEW_FACING
                 text_marker.action = Marker.ADD
-                text_marker.scale.z = 0.01  # Taille du texte
-                text_marker.color.a = 1.0  # Transparence
-                text_marker.color.r = 1.0  # Couleur rouge
-                text_marker.color.g = 1.0  # Couleur verte
-                text_marker.color.b = 1.0  # Couleur bleue
+                text_marker.scale.z = 0.01  # Text height (m)
+                text_marker.color.a = 1.0  # Opacity
+                text_marker.color.r = 1.0
+                text_marker.color.g = 1.0
+                text_marker.color.b = 1.0  # Blue
                 text_marker.pose = pose
-                text_marker.text = str(i)  # Numéro du point
+                text_marker.text = str(i)  # Waypoint index
 
                 marker_array.markers.append(text_marker)
 
@@ -109,10 +109,10 @@ class MarkerPublisher(Node):
             voxel_marker.scale.x = float(pose[3])
             voxel_marker.scale.y = float(pose[3])
             voxel_marker.scale.z = float(pose[3])
-            voxel_marker.color.a = 1.0  # Transparence
-            voxel_marker.color.r = 1.0  # Couleur rouge
-            voxel_marker.color.g = 0.0  # Couleur verte
-            voxel_marker.color.b = 0.0  # Couleur bleue
+            voxel_marker.color.a = 1.0  # Opacity
+            voxel_marker.color.r = 1.0
+            voxel_marker.color.g = 0.0
+            voxel_marker.color.b = 0.0  # Blue
 
             voxel_marker.pose.position.x = float(pose[0])
             voxel_marker.pose.position.y = float(pose[1])

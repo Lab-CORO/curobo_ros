@@ -10,24 +10,25 @@ import yaml
 
 def setup_rviz_config(context, *args, **kwargs):
     """
-    Fonction pour modifier le fichier de configuration RViz avec le Fixed Frame approprié
+    Rewrite the RViz config with the Fixed Frame of the selected robot.
+
+    The shipped rviz_curobo.rviz hardcodes one Fixed Frame; a robot whose base
+    link differs would open on an empty view. Rather than ship one config per
+    robot, the file is patched into a temporary copy at launch time.
     """
-    # Récupérer les arguments
     rviz_config_path = LaunchConfiguration('rviz_config').perform(context)
     base_link = LaunchConfiguration('base_link').perform(context)
 
-    # Lire le fichier de configuration RViz original
     try:
         with open(rviz_config_path, 'r') as f:
             rviz_config = yaml.safe_load(f)
 
-        # Modifier le Fixed Frame dans la configuration
         if 'Visualization Manager' in rviz_config:
             if 'Global Options' not in rviz_config['Visualization Manager']:
                 rviz_config['Visualization Manager']['Global Options'] = {}
             rviz_config['Visualization Manager']['Global Options']['Fixed Frame'] = base_link
 
-        # Créer un fichier temporaire avec la configuration modifiée
+        # delete=False: RViz opens the file after this function returns.
         temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.rviz', delete=False)
         yaml.dump(rviz_config, temp_file, default_flow_style=False)
         temp_config_path = temp_file.name
@@ -41,7 +42,8 @@ def setup_rviz_config(context, *args, **kwargs):
         print(f"[rviz_visualization.launch] Using original config: {rviz_config_path}")
         temp_config_path = rviz_config_path
 
-    # Nœud RViz2 avec la configuration modifiée
+    # On failure the except branch above falls back to the original config, so
+    # this always receives a readable path.
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -58,24 +60,21 @@ def setup_rviz_config(context, *args, **kwargs):
 
 def generate_launch_description():
     """
-    Fichier de lancement pour la visualisation RViz.
-    Ce fichier lance RViz avec la configuration appropriée.
+    Start RViz. Included by gen_traj.launch.py when gui:=true.
     """
 
-    # Configuration RViz par défaut
     rviz_config = PathJoinSubstitution([
         FindPackageShare('curobo_ros'),
         'rviz/rviz_curobo.rviz'
     ])
 
-    # Déclaration de l'argument pour le fichier de configuration RViz
     declare_rviz_config = DeclareLaunchArgument(
         'rviz_config',
         default_value=rviz_config,
         description='Chemin vers le fichier de configuration RViz'
     )
 
-    # Déclaration de l'argument pour le base_link
+    # Passed down by gen_traj.launch.py, which resolves it from the descriptor.
     declare_base_link = DeclareLaunchArgument(
         'base_link',
         default_value='base_0',

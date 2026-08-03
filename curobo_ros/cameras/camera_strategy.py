@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 
-from abc import ABC, abstractmethod
+from abc import ABC
 import torch
 import numpy as np
-import rclpy
 from scipy.spatial.transform import Rotation
 
 # v2: curobo.types is a flat module; everything is re-exported from it.
 # TensorDeviceType → DeviceCfg.
-from curobo.types import CameraObservation, Pose, DeviceCfg
+from curobo.types import Pose, DeviceCfg
 
-from tf2_ros import Buffer, TransformListener, TransformException
-import ros2_numpy
+from tf2_ros import Buffer, TransformListener
 
 
 class CameraStrategy(ABC):

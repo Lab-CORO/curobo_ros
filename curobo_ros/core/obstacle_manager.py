@@ -269,13 +269,14 @@ class ObstacleManager:
             # integration time — it no longer takes image_height/image_width.
             depth_minimum_distance=self._mapper_depth_min,
             depth_maximum_distance=self._mapper_depth_max,
-            # decay_factor défaut=1.0 = AUCUNE décroissance → l'occupancy accumule
-            # sans fin et le nombre de voxels occupés croît de façon monotone même
-            # sur une scène statique (bruit de bord franchissant peu à peu le seuil).
-            # On ne le règle PAS à la main : il est dérivé de `decay_half_life_s`
-            # (secondes) et du débit combiné des caméras, parce que cuRobo applique
-            # la décroissance UNE FOIS PAR APPEL integrate() — ajouter une caméra
-            # ou changer un fps modifierait sinon l'horizon d'oubli en silence.
+            # decay_factor defaults to 1.0, meaning NO decay: occupancy then
+            # accumulates without bound and the occupied-voxel count grows
+            # monotonically even on a static scene (edge noise gradually crossing
+            # the threshold). It is NOT set by hand: it is derived from
+            # `decay_half_life_s` (seconds) and the combined camera rate, because
+            # cuRobo applies the decay ONCE PER integrate() CALL -- adding a
+            # camera or changing an fps would otherwise silently shift the
+            # forgetting horizon.
             decay_factor=time_decay,
             num_cameras=1,
         ))
@@ -553,10 +554,10 @@ class ObstacleManager:
         # centres (from the TSDF), so it sidesteps the dense-ESDF ambiguity where
         # unobserved cells are zero-initialised and get mislabelled.
         #
-        # CuRobo v2 (v0.8) : la méthode vit sur l'intégrateur ESDF
-        # (mapper.integrator -> BlockSparseESDFIntegrator), PAS sur le Mapper, et
-        # renvoie un tuple (centers, colors) — et non un objet avec .centers.
-        #   centers : (N, 3) float32, positions monde des voxels avec SDF <= 0.
+        # CuRobo v2 (v0.8): the method lives on the ESDF integrator
+        # (mapper.integrator -> BlockSparseESDFIntegrator), NOT on the Mapper,
+        # and returns a (centers, colors) tuple -- not an object with .centers.
+        #   centers: (N, 3) float32, world positions of voxels with SDF <= 0.
         mapper = getattr(node, 'mapper', None)
         if mapper is not None:
             try:

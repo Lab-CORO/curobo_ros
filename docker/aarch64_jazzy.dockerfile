@@ -94,14 +94,14 @@ ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 # Safe inside an isolated Docker container.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# ── Pin cuda-bindings à l'ABI du driver CUDA 13.2 du Jetson ────────────────────
+# -- Pin cuda-bindings to the Jetson's CUDA 13.2 driver ABI ---------------------
 # Sans ce pin, l'extra curobo `.[cu13]` (ÉTAPE curobo) tire cuda-bindings 13.3.x,
-# dont le cydriver demande au driver des symboles CUDA 13.3 via cuGetProcAddress_v2
+# whose cydriver asks the driver for CUDA 13.3 symbols via cuGetProcAddress_v2
 # absents du driver 13.2 (« cudaVersion 13030 exceeds driver 13020 ») → pointeur de
 # fonction invalide → « illegal memory access » au runtime (voxelisation /
 # perception mapper / kinematics), avec contexte CUDA corrompu en cascade.
-# PIP_CONSTRAINT applique ce pin à TOUS les pip install suivants du build : 13.3
-# n'est jamais installé (au lieu d'être rétrogradé après coup).
+# PIP_CONSTRAINT applies this pin to EVERY later pip install in the build: 13.3
+# is never installed at all (rather than downgraded after the fact).
 RUN echo "cuda-bindings==13.2.0" > /etc/pip-constraints.txt
 ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
 
@@ -293,15 +293,15 @@ RUN pip3 install --no-cache-dir --ignore-installed "numpy==1.26.4" scipy && \
     python3 -m pip install --no-cache-dir --ignore-installed --no-deps \
     pandas scikit-learn pyarrow
 
-# Vérification finale CuRobo v2
+# Final CuRobo v2 check
 RUN python3 -c "import curobo; print(f'cuRobo {curobo.__version__} OK')" || \
     echo "Warning: cuRobo import check skipped (no GPU in build sandbox — expected)"
 
-# Retrait des bibliothèques CUDA forward-compat de l'image de base.
-# Inutiles sur Jetson (le driver hôte R39 supporte CUDA 13.2 nativement) et
-# elles font planter le hook 'cudacompat' du nvidia-container-toolkit 1.19.1
-# (panic: slice bounds out of range) au démarrage avec le runtime nvidia.
-# Sans ce nettoyage, le conteneur ne démarre pas en mode GPU.
+# Remove the forward-compat CUDA libraries from the base image.
+# Useless on Jetson (the R39 host driver supports CUDA 13.2 natively) and
+# they crash the 'cudacompat' hook of nvidia-container-toolkit 1.19.1
+# (panic: slice bounds out of range) at startup with the nvidia runtime.
+# Without this cleanup the container does not start in GPU mode.
 RUN rm -rf /usr/local/cuda*/compat /usr/local/cuda*/compat_orin 2>/dev/null || true
 
 # Build ROS workspace

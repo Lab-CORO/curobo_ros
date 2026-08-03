@@ -14,7 +14,7 @@ import struct
 
 # cuRobo imports (v2)
 from curobo.kinematics import Kinematics, KinematicsCfg
-from curobo.types import DeviceCfg, JointState
+from curobo.types import JointState
 
 from curobo_msgs.srv import SetMask, RemoveObject
 
@@ -223,10 +223,10 @@ class DepthMapRobotSegmentation(Node):
             self.get_logger().error(f"CvBridge Error: {e}")
             return
 
-        # Segmentation pilotée par l'ARRIVÉE de la frame (= rythme caméra, ~5Hz)
-        # plutôt qu'un timer 100Hz qui republiait la même frame → nvblox
-        # ré-intégrait ~6x la même donnée depth (surcharge GPU inutile,
-        # concurrence avec le solve MPPI). cf. debug 2026-07-15.
+        # Segmentation is driven by frame ARRIVAL (i.e. camera rate, ~5Hz)
+        # rather than a 100Hz timer that republished the same frame -- nvblox
+        # then re-integrated the same depth data ~6x (wasted GPU work, competing
+        # with the MPPI solve). See debug 2026-07-15.
         if self.camera_info is not None:
             joint_pose = self.robot_context.get_joint_pose()
             expected_dof = len(self._kin_model.joint_names)

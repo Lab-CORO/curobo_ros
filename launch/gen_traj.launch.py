@@ -14,8 +14,8 @@ import yaml
 
 def get_urdf_path_from_config(config_file_path, default_urdf_path):
     """
-    Charge le paramètre urdf_path depuis le fichier YAML de configuration.
-    Si le fichier ou le paramètre n'existe pas, retourne le chemin par défaut.
+    Read urdf_path from the cuRobo robot config YAML.
+    Falls back to default_urdf_path if the file or the key is missing.
     """
     try:
         with open(config_file_path, 'r') as file:
@@ -32,8 +32,8 @@ def get_urdf_path_from_config(config_file_path, default_urdf_path):
 
 def get_base_link_from_config(config_file_path, default_base_link):
     """
-    Charge le paramètre base_link depuis le fichier YAML de configuration.
-    Si le fichier ou le paramètre n'existe pas, retourne le frame par défaut.
+    Read base_link from the cuRobo robot config YAML.
+    Falls back to default_base_link if the file or the key is missing.
     """
     try:
         with open(config_file_path, 'r') as file:
@@ -50,15 +50,15 @@ def get_base_link_from_config(config_file_path, default_base_link):
 
 def launch_setup(context, *args, **kwargs):
     """
-    Fonction appelée lors de l'exécution du launch pour résoudre les LaunchConfiguration
+    Called at launch time, once LaunchConfiguration values can be resolved.
     """
-    # Récupérer les valeurs résolues des arguments
+    # Resolve the argument values
     robot_config_file = LaunchConfiguration('robot_config_file').perform(context)
     urdf_path_arg = LaunchConfiguration('urdf_path').perform(context)
     robot_name = LaunchConfiguration('robot').perform(context)
 
-    # Si un robot (descripteur) est fourni et que robot_config_file n'a pas été
-    # surchargé explicitement, dériver le YAML curobo (+ base_link) du descripteur.
+    # With a robot descriptor and no explicit robot_config_file override, derive
+    # the cuRobo YAML (and base_link) from the descriptor.
     descriptor_base_link = None
     descriptor_joint_states_topic = None
     if robot_name:
@@ -66,9 +66,9 @@ def launch_setup(context, *args, **kwargs):
             from curobo_ros.robot.robot_description import load_robot_description
             _desc = load_robot_description(robot_name)
             descriptor_base_link = _desc.base_link
-            # Topic sur lequel le robot publie ses JointState réels. C'est la
-            # seule source de vérité : l'émulateur publie /emulator/joint_states,
-            # un vrai robot son propre topic (M1013 : /dsr01/joint_states).
+            # Topic the robot publishes its real JointStates on, and the single
+            # source of truth for it: the emulator uses /emulator/joint_states,
+            # a real robot its own (M1013: /dsr01/joint_states).
             descriptor_joint_states_topic = _desc.strategy_params.get('joint_states_topic')
             if not robot_config_file:
                 robot_config_file = _desc.curobo_config_path
@@ -76,15 +76,15 @@ def launch_setup(context, *args, **kwargs):
         except Exception as e:
             print(f"[gen_traj.launch] Warning: could not load descriptor '{robot_name}': {e}")
 
-    # Chemin par défaut pour urdf_path
+    # Fallback urdf_path
     default_urdf_path = os.path.join(
         get_package_share_directory('curobo_ros'),
         'curobo_doosan/src/m1013/',
         'm1013.urdf'
     )
 
-    # Si urdf_path n'est pas fourni (égal au défaut), charger depuis robot_config_file
-    # On vérifie si urdf_path est vide ou correspond au placeholder
+    # urdf_path defaults to the empty string: unset means "read it from
+    # robot_config_file", an explicit value wins.
     if not urdf_path_arg or urdf_path_arg == '':
         urdf_path_resolved = get_urdf_path_from_config(robot_config_file, default_urdf_path)
         print(f"[gen_traj.launch] Loading urdf_path from config: {urdf_path_resolved}")
@@ -92,12 +92,12 @@ def launch_setup(context, *args, **kwargs):
         urdf_path_resolved = urdf_path_arg
         print(f"[gen_traj.launch] Using provided urdf_path: {urdf_path_resolved}")
 
-    # base_link : descripteur en priorité, sinon extrait du YAML curobo.
+    # base_link: descriptor first, otherwise read from the cuRobo YAML.
     default_base_link = descriptor_base_link or "base_0"
     base_link = get_base_link_from_config(robot_config_file, default_base_link)
     print(f"[gen_traj.launch] Using base_link: {base_link}")
 
-    # Lire le contenu URDF depuis le fichier
+    # robot_state_publisher wants the URDF as a string, not a path.
     try:
         with open(urdf_path_resolved, 'r') as urdf_file:
             urdf_content = urdf_file.read()
@@ -114,8 +114,9 @@ def launch_setup(context, *args, **kwargs):
         LaunchConfiguration('mapper_extent_xyz').perform(context))
 
     nodes = [
-        # Lancer les nœuds directement au lieu d'inclure launch_rviz2.launch.py
-        # afin d'utiliser le bon URDF
+        # The state publishers are declared inline rather than pulled in from
+        # another launch file, so they receive the URDF resolved above for the
+        # selected robot instead of a hardcoded one.
         RosNode(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -132,15 +133,15 @@ def launch_setup(context, *args, **kwargs):
             name='joint_state_publisher',
             output='screen',
             parameters=[{
-                # Topic de feedback du robot sélectionné, lu dans son descripteur.
-                # Codé en dur sur l'émulateur auparavant : RViz affichait alors un
-                # robot figé à zéro dès qu'on lançait un vrai robot.
+                # Feedback topic of the selected robot, read from its descriptor.
+                # This used to be hardcoded to the emulator, so RViz showed a
+                # robot frozen at zero as soon as a real one was launched.
                 'source_list': [
                     descriptor_joint_states_topic or '/emulator/joint_states'],
             }]
         ),
 
-        # Run curobo_gen_traj node
+        # The planner itself (node name: unified_planner)
         Node(
             package='curobo_ros',
             executable='curobo_trajectory_planner',
@@ -186,10 +187,11 @@ def launch_setup(context, *args, **kwargs):
             }]
         ),
 
-        # Nodes pour la prévisualisation des trajectoires (remplace le fichier XML problématique).
-        # /trajectory/joint_states n'est publié par aucun node de ce dépôt : il vient du
-        # panneau RViz trajectory_preview/TrajectoryPreviewPanel (rviz/rviz_curobo.rviz),
-        # qui rejoue le /trajectory publié par GhostStrategy. Ne pas « corriger ».
+        # Trajectory preview pipeline (the translucent ghost robot in RViz).
+        # /trajectory/joint_states is published by no node in this repository:
+        # it comes from the trajectory_preview/TrajectoryPreviewPanel RViz panel
+        # (rviz/rviz_curobo.rviz), which replays the /trajectory that
+        # GhostStrategy publishes. It only looks orphaned -- do not "fix" it.
         RosNode(
             package='joint_state_publisher',
             executable='joint_state_publisher',
@@ -222,7 +224,7 @@ def launch_setup(context, *args, **kwargs):
         ),
     ]
 
-    # Ajouter l'inclusion conditionnelle de RViz
+    # RViz, included only when gui:=true
     nodes.append(
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -237,20 +239,20 @@ def launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    # Déclaration de l'argument urdf_path (vide par défaut pour déclencher le chargement depuis YAML)
+    # Empty by default, which triggers the lookup in robot_config_file.
     declare_urdf_path = DeclareLaunchArgument(
         'urdf_path',
         default_value='',
         description='Chemin vers le fichier URDF du robot (si vide, chargé depuis robot_config_file)'
     )
-    # Sélecteur de robot (descripteur robots/<robot>.yaml). Pilote le YAML curobo,
-    # le base_link et la stratégie par défaut.
+    # Robot selector (descriptor robots/<robot>.yaml). Drives the cuRobo YAML,
+    # the base_link and the default control strategy.
     declare_robot = DeclareLaunchArgument(
         'robot',
         default_value='doosan_m1013',
         description='Nom du descripteur robot (robots/<robot>.yaml) ou chemin'
     )
-    # robot_config_file : override explicite du YAML curobo (vide = dérivé du descripteur)
+    # Explicit override of the cuRobo YAML (empty = derived from the descriptor)
     declare_robot_config_file = DeclareLaunchArgument(
         'robot_config_file',
         default_value='',
@@ -275,16 +277,15 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # Définition des arguments de lancement
         declare_robot,
         declare_urdf_path,
         declare_robot_config_file,
         declare_camera_config_file,
         declare_gui,
         declare_world_file,
-        # Les défauts ci-dessous DOIVENT rester alignés sur les declare_parameter()
-        # de unified_planner_node.py : ils sont transmis au node et écrasent donc
-        # ses propres défauts.
+        # The defaults below MUST stay aligned with the declare_parameter() calls
+        # in unified_planner_node.py: they are forwarded to the node and therefore
+        # override its own defaults.
         DeclareLaunchArgument(
             'max_attempts', default_value='1',
             description='Planning retries per request (MotionPlanner.plan_pose)'
@@ -309,6 +310,6 @@ def generate_launch_description():
                         'baked into the MotionPlanner, changing it at runtime needs a rebuild'
         ),
 
-        # Utiliser OpaqueFunction pour résoudre les LaunchConfiguration au moment de l'exécution
+        # OpaqueFunction defers the body until LaunchConfigurations can be resolved
         OpaqueFunction(function=launch_setup)
     ])

@@ -1,4 +1,3 @@
-import os
 import torch
 
 from curobo.types import DeviceCfg

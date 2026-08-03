@@ -1,9 +1,9 @@
-"""Outils en ligne de commande livrés avec le paquet.
+"""Command-line tools shipped with the package.
 
-Contrairement aux nodes de ``curobo_ros/core``, ce sont des utilitaires ponctuels
-qu'on lance à la main contre un planner déjà en route (``ros2 run curobo_ros <outil>``).
-Ils ne dépendent que de rclpy et des interfaces curobo_msgs.
+Unlike the nodes in ``curobo_ros/core``, these are one-shot utilities run by hand
+against an already-running planner (``ros2 run curobo_ros <tool>``). They depend
+only on rclpy and the curobo_msgs interfaces.
 
-Les outils d'analyse hors-ligne (matplotlib/pandas, pas de ROS) restent dans
-``scripts/`` et ne sont pas installés — voir ``scripts/plot_mpc_diag.py``.
+Offline analysis tools (matplotlib/pandas, no ROS) stay in ``scripts/`` and are
+not installed -- see ``scripts/plot_mpc_diag.py``.
 """

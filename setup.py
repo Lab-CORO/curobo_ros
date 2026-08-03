@@ -37,9 +37,9 @@ setup(
         'console_scripts': [
             'curobo_trajectory_planner = curobo_ros.core.unified_planner_node:main',
             'robot_segmentation = curobo_ros.core.robot_segmentation:main',
-            # Outils. `ros2 run` ne cherche que dans lib/<pkg>/, où seuls les
-            # console_scripts atterrissent : un fichier posé via data_files va
-            # dans share/ et reste introuvable pour `ros2 run`.
+            # Tools. `ros2 run` only looks in lib/<pkg>/, where console_scripts
+            # are the only thing that lands: a file installed through data_files
+            # goes to share/ and stays invisible to `ros2 run`.
             'benchmark_voxel_grid = curobo_ros.tools.benchmark_voxel_grid:main',
         ],
     },

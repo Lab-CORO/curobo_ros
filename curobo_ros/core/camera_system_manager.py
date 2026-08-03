@@ -1,12 +1,13 @@
 from curobo.config_io import load_yaml
 from curobo_ros.cameras.camera_context import CameraContext
 
-# Cadence supposée pour une caméra dont le YAML ne déclare pas `frame_rate_hz`.
-# Volontairement HAUTE : cette valeur sert à normaliser la décroissance du TSDF
-# (voir ObstacleManager._resolve_time_decay). Surestimer le débit rapproche
-# `time_decay` de 1.0 -> oubli trop lent, obstacles rémanents : conservateur pour
-# la collision. Le sous-estimer efface la carte plus vite que prévu -> obstacles
-# réels qui disparaissent : c'est le sens dangereux. On préfère donc trop haut.
+# Assumed rate for a camera whose YAML omits `frame_rate_hz`.
+# Deliberately HIGH: this value normalizes the TSDF decay (see
+# ObstacleManager._resolve_time_decay). Overestimating the rate pushes
+# `time_decay` toward 1.0 -> forgetting is too slow, obstacles linger, which is
+# the conservative direction for collision. Underestimating clears the map
+# faster than reality -> real obstacles vanish, which is the dangerous
+# direction. So err high.
 DEFAULT_CAMERA_FRAME_RATE_HZ = 30.0
 
 

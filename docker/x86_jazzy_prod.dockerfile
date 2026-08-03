@@ -1,18 +1,18 @@
-# Base image NVIDIA PyTorch sur Ubuntu 24.04 (Noble)
-# nvcr.io/nvidia/pytorch:24.09-py3 est la première version sur Ubuntu 24.04
+# NVIDIA PyTorch base image on Ubuntu 24.04 (Noble)
+# nvcr.io/nvidia/pytorch:24.09-py3 is the first release on Ubuntu 24.04
 FROM nvcr.io/nvidia/pytorch:24.11-py3 AS torch_cuda_base
 
 LABEL maintainer="Lucas Carpentier, Guillaume Dupoiron"
 
 RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections
 ARG ROS_DISTRO=jazzy
-# Architecture CUDA : 75=RTX20xx, 86=RTX30xx, 89=RTX40xx, 80=A100, 90=H100
-# Format cmake (sans point) : 86 → RTX 3xxx
-# Format torch (avec point)  : 8.6 → RTX 3xxx
+# CUDA architecture: 75=RTX20xx, 86=RTX30xx, 89=RTX40xx, 80=A100, 90=H100
+# cmake form (no dot): 86 -> RTX 3xxx
+# torch form (with dot): 8.6 -> RTX 3xxx
 ARG CUDA_ARCH=86
 ARG TORCH_CUDA_ARCH_LIST="8.6"
-# Nombre de jobs parallèles — réduire si RAM insuffisante (crash)
-# RAM estimée : ~1.5 GB/job CUDA → j4 = ~6 GB, j8 = ~12 GB
+# Parallel job count -- lower it if RAM is short (the build crashes)
+# Rough RAM use: ~1.5 GB per CUDA job -> j4 = ~6 GB, j8 = ~12 GB
 ARG MAKEFLAGS="-j4"
 
 # add GL:
@@ -137,12 +137,12 @@ RUN mkdir /pkgs/curobo_src && cd /pkgs/curobo_src && git clone -b lab-coro https
 WORKDIR /pkgs/curobo_src
 RUN MAX_JOBS=${MAKEFLAGS##*-j} pip3 install .[dev,usd] --no-build-isolation
 
-# Headers internes CuRobo requis lors du JIT (check_cuda.h, cuda_precisions.h, etc.)
+# CuRobo internal headers needed at JIT time (check_cuda.h, cuda_precisions.h, ...)
 RUN cp /pkgs/curobo_src/src/curobo/curobolib/cpp/*.h /usr/local/cuda/include/
 
-# Pré-compilation des extensions CUDA CuRobo (évite le JIT au premier lancement)
-# Actif par défaut — requiert: docker build --gpus all
-# Pour désactiver: --build-arg PRECOMPILE_CUROBO=false
+# Pre-compile the CuRobo CUDA extensions (avoids JIT on first launch)
+# On by default -- requires: docker build --gpus all
+# To disable: --build-arg PRECOMPILE_CUROBO=false
 ARG PRECOMPILE_CUROBO=true
 RUN if [ "$PRECOMPILE_CUROBO" = "true" ]; then \
         python3 -c "\
@@ -175,25 +175,25 @@ RUN export LD_LIBRARY_PATH="/opt/hpcx/ucx/lib:$LD_LIBRARY_PATH"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Problème GPG : apt 2.8.x sur Ubuntu 24.04 vérifie les InRelease en mode
-# sig+data séparé, ce qui échoue (BADSIG) quand les miroirs Ubuntu servent
-# des InRelease signés avec des clés plus récentes que celles du keyring de
-# l'image de base. Le flag AllowInsecureRepositories DOIT être passé en
-# ligne de commande (la doc apt le dit explicitement — apt.conf.d l'ignore).
+# GPG problem: apt 2.8.x on Ubuntu 24.04 verifies InRelease in detached
+# sig+data mode, which fails (BADSIG) when the Ubuntu mirrors serve
+# InRelease files signed with keys newer than the ones in the base image's
+# keyring. The AllowInsecureRepositories flag MUST be passed on the
+# command line (the apt docs say so explicitly -- apt.conf.d ignores it).
 #
-# Solution : wrapper apt-get qui injecte les flags sur tous les appels suivants.
+# Fix: an apt-get wrapper that injects the flags into every later call.
 RUN printf '#!/bin/sh\nexec /usr/bin/apt-get \\\n  -o Acquire::AllowInsecureRepositories=true \\\n  -o Acquire::AllowDowngradeToInsecureRepositories=true \\\n  --allow-unauthenticated "$@"\n' \
     > /usr/local/sbin/apt-get && chmod +x /usr/local/sbin/apt-get
 
-# Dépôts ROS 2 — ros2-apt-source.deb installe la clé ROS via dpkg (sans apt),
-# ce qui évite de dépendre d'apt pour cette étape critique.
-# gnupg2/lsb-release/curl sont déjà présents dans l'image de base NVIDIA.
+# ROS 2 repositories -- ros2-apt-source.deb installs the ROS key via dpkg (not apt),
+# which avoids depending on apt for this critical step.
+# gnupg2/lsb-release/curl are already present in the NVIDIA base image.
 RUN export ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F\" '{print $4}') && \
     curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME}})_all.deb" && \
     dpkg -i /tmp/ros2-apt-source.deb && \
     rm /tmp/ros2-apt-source.deb
 
-# ROS Jazzy desktop + dépendances
+# ROS Jazzy desktop + dependencies
 RUN apt-get update && apt-get install -y \
     python3-argcomplete \
     python3-colcon-common-extensions \
@@ -209,7 +209,7 @@ RUN apt-get update && apt-get install -y \
     ros-jazzy-rmw-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# RealSense (si disponible sur jazzy, sinon commenter)
+# RealSense (if available on jazzy, otherwise comment out)
 RUN apt-get update && apt-get install -y \
     ros-jazzy-realsense2-camera \
     ros-jazzy-realsense2-description \
@@ -233,14 +233,14 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# blinker installé par apt bloque pip open3d — ignoré si absent (Ubuntu 24)
+# apt-installed blinker blocks pip open3d -- skipped when absent (Ubuntu 24)
 RUN apt remove python3-blinker -y 2>/dev/null || true
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir --upgrade open3d
 # Fixer les conflits numpy/scipy :
-# - system scipy (apt 1.11.4) est incompatible avec pip numpy
-# - installer scipy via pip le rend prioritaire sur le système (/usr/local > /usr/lib)
-# - pinner numpy à 1.26.4 pour compatibilité avec nvblox_torch, numba, cupy, etc.
+# - system scipy (apt 1.11.4) is incompatible with pip numpy
+# - installing scipy through pip gives it priority over the system one (/usr/local > /usr/lib)
+# - pin numpy to 1.26.4 for compatibility with nvblox_torch, numba, cupy, etc.
 RUN pip3 install --no-cache-dir --force-reinstall "numpy==1.26.4" scipy && \
     python3 -m pip install --no-cache-dir --force-reinstall --no-deps \
     pandas scikit-learn pyarrow
