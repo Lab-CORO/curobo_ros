@@ -124,7 +124,12 @@ class ConfigWrapperMotion(ConfigWrapper):
             rclpy.parameter.Parameter('node_is_available', rclpy.Parameter.Type.BOOL, False)
         ])
 
-        node.motion_planner.warmup()
+        try:
+            node.motion_planner.warmup()
+        except Exception:
+            node.motion_planner = None
+            node.motion_gen = None
+            raise
 
         node.set_parameters([
             rclpy.parameter.Parameter('node_is_available', rclpy.Parameter.Type.BOOL, True)

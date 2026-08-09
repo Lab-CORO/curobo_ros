@@ -265,8 +265,8 @@ class ObstacleManager:
             voxel_size=self._mapper_voxel_size,
             esdf_voxel_size=self._esdf_voxel_size,
             grid_center=torch.tensor(self._mapper_grid_center, dtype=torch.float32),
-            # CuRobo v0.8 MapperCfg infers image dims from the depth frame at
-            # integration time — it no longer takes image_height/image_width.
+            image_height=self._mapper_image_height,
+            image_width=self._mapper_image_width,
             depth_minimum_distance=self._mapper_depth_min,
             depth_maximum_distance=self._mapper_depth_max,
             # decay_factor defaults to 1.0, meaning NO decay: occupancy then
@@ -555,13 +555,22 @@ class ObstacleManager:
         # unobserved cells are zero-initialised and get mislabelled.
         #
         # CuRobo v2 (v0.8): the method lives on the ESDF integrator
-        # (mapper.integrator -> BlockSparseESDFIntegrator), NOT on the Mapper,
-        # and returns a (centers, colors) tuple -- not an object with .centers.
+        # (mapper.integrator -> BlockSparseESDFIntegrator), NOT on the Mapper.
+        #
+        # It returns a single OccupiedVoxels dataclass, NOT the (centers, colors)
+        # tuple a previous comment here claimed. Unpacking it raised "cannot
+        # unpack non-iterable OccupiedVoxels object" -- and because this block is
+        # wrapped in try/except, the failure only WARNed: the grid silently kept
+        # the analytic primitives and dropped every camera-observed obstacle.
+        # Read .centers explicitly so an API change breaks loudly instead.
+        # (OccupiedVoxels also defines __len__ and carries block_idx_per_voxel /
+        # block_data / optional texture_* fields, see mapper/storage.py:370.)
         #   centers: (N, 3) float32, world positions of voxels with SDF <= 0.
         mapper = getattr(node, 'mapper', None)
         if mapper is not None:
             try:
-                centers, _colors = mapper.integrator.extract_occupied_voxels(surface_only=False)
+                occupied = mapper.integrator.extract_occupied_voxels(surface_only=False)
+                centers = occupied.centers
                 n_occ = 0 if centers is None else int(centers.shape[0])
                 if n_occ:
                     world_xyz = centers.detach().cpu().numpy()  # [N, 3] world
