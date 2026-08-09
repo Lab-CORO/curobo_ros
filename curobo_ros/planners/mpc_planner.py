@@ -402,7 +402,6 @@ class MPCController(ReactiveController):
                 optimizer_configs=[mppi_optimizer_cfg],
                 transition_model=_build_mppi_transition_model(step_dt, horizon),
                 squared_l2_regularization_weight=_MPPI_CSPACE_REGULARIZATION,
-                interpolation_steps=8,
                 metrics_rollout=_build_metrics_rollout_cfg(mppi_optimizer_cfg["rollout"]["cost_cfg"]),
                 **base_kwargs,
             )

@@ -605,6 +605,8 @@ class UnifiedPlannerNode(Node):
                     with self.gpu_lock:
                         result = planner.plan(start_state, goal, config, self.robot_context)
                     if not result.success:
+                        self.get_logger().error(
+                            f"Planning failed in execute path: {result.message}")
                         result_msg.success = False
                         result_msg.message = f"Planning failed: {result.message}"
                         goal_handle.abort()
@@ -743,27 +745,49 @@ class UnifiedPlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _setup_planner(self, planner):
-        # Enforce a single live CUDA graph before this planner runs: if it isn't
-        # the current graph owner, release every other solver's captured graph so
-        # this one re-captures (on its next call) as the sole live graph. Cheap
-        # no-op when the owner is unchanged (repeated plans reuse the graph).
-        self._ensure_exclusive_graph(planner)
+        # Held under gpu_lock, same invariant as every other graph-capturing path
+        # here (refresh_perception_world, rebuild_solvers_for_cache_change, both
+        # planner.plan() call sites). This one was MISSING it, and that is not
+        # theoretical: switching MPC -> Classic mid-session with the cameras live
+        # crashed the node (2026-08-08). _warmup_classic() captures the seed-IK
+        # CUDA graph, and torch.cuda.graph() defaults to capture_error_mode
+        # "global" -- while a capture is live, ANY CUDA op from ANY thread of the
+        # process fails with cudaErrorStreamCaptureUnsupported. The depth callback
+        # honours its half of the contract (non-blocking acquire then skip the
+        # frame, camera_depth_map_strategy.py:157), but a lock nobody holds is
+        # always free, so it ran mapper.integrate() straight into the capture.
+        # The capture aborted while leaving the stream in
+        # cudaStreamCaptureStatusActive, which poisoned the CUDA context for the
+        # whole process: 106 consecutive CUDA failures, no recovery short of a
+        # node restart.
+        #
+        # gpu_lock is an RLock and is the OUTERMOST lock in the documented order
+        # (robot_context.py:17-37), so acquiring it here is deadlock-free even
+        # when a caller already holds it. Cost: the depth callback drops its
+        # frames during the ~6 s warmup -- exactly the designed behaviour.
+        with self.gpu_lock:
+            # Enforce a single live CUDA graph before this planner runs: if it
+            # isn't the current graph owner, release every other solver's captured
+            # graph so this one re-captures (on its next call) as the sole live
+            # graph. Cheap no-op when the owner is unchanged (repeated plans reuse
+            # the graph).
+            self._ensure_exclusive_graph(planner)
 
-        # Open-loop planners share one MotionPlanner instance (class-level).
-        if isinstance(planner, SinglePlanner):
-            if self.motion_planner is None:
-                self.get_logger().info("On-demand warmup: open-loop planner")
-                self._warmup_classic()
-            planner.set_motion_gen(self.motion_planner)
+            # Open-loop planners share one MotionPlanner instance (class-level).
+            if isinstance(planner, SinglePlanner):
+                if self.motion_planner is None:
+                    self.get_logger().info("On-demand warmup: open-loop planner")
+                    self._warmup_classic()
+                planner.set_motion_gen(self.motion_planner)
 
-        # Reactive controllers build their own solver from the shared context.
-        # ensure_solver() is idempotent (no-op once built), so just make sure a
-        # ground plane exists and let the active controller build/reuse its solver.
-        elif isinstance(planner, ReactiveController):
-            if planner.solver is None:
-                self.get_logger().info("On-demand warmup: reactive controller")
-                self._ensure_ground_plane()
-            planner.ensure_solver()
+            # Reactive controllers build their own solver from the shared context.
+            # ensure_solver() is idempotent (no-op once built), so just make sure a
+            # ground plane exists and let the active controller build/reuse its solver.
+            elif isinstance(planner, ReactiveController):
+                if planner.solver is None:
+                    self.get_logger().info("On-demand warmup: reactive controller")
+                    self._ensure_ground_plane()
+                planner.ensure_solver()
 
     # ------------------------------------------------------------------
     # CUDA graph exclusivity (only the active solver holds a live graph)
