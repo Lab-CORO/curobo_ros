@@ -11,6 +11,17 @@ from std_msgs.msg import Float32
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from curobo_ros.core.diagnostics import open_diag_csv
 
+# Bounds on the interval the feedback plausibility gate is allowed to assume
+# between two joint_states messages (see callback_joint_pose).
+#   FLOOR: two callbacks landing in the same instant must not collapse the gate
+#   to zero travel and reject a legitimate sample.
+#   CEILING: after a real gap (startup, a stalled driver, a paused executor) we
+#   genuinely do not know where the arm went, so the gate must OPEN, not close.
+#   At 0.5 s the window is ~360 deg per joint, i.e. no gate at all — the safe
+#   direction, since refusing feedback forever is worse than accepting it.
+_FEEDBACK_DT_FLOOR_S = 0.005
+_FEEDBACK_DT_CEIL_S = 0.5
+
 
 class JointSpeedStrategy(JointCommandStrategy):
     '''Joint-SPEED control: stream a full JointTrajectory (positions + velocities +
@@ -28,6 +39,11 @@ class JointSpeedStrategy(JointCommandStrategy):
                               points — default self.dt/interpolation_dt; set
                               to pin a specific value, e.g. the previously
                               hardcoded 0.02, pending hardware validation)
+      feedback_max_speed_dps  (deg/s, plausibility gate on INCOMING joint
+                              feedback — see callback_joint_pose. Default 720,
+                              ~4x the fastest M1013 axis)
+      feedback_reject_limit   (consecutive rejected samples before the gate
+                              gives up and accepts anyway — default 3)
     '''
 
     def __init__(self, node, dt, description=None):
@@ -82,6 +98,23 @@ class JointSpeedStrategy(JointCommandStrategy):
         # wasn't reliable was wrong — verified against the driver source.)
         self.joint_pose = [0.0] * self.dof
         self.joint_velocity = [0.0] * self.dof
+
+        # Plausibility gate on the feedback above (callback_joint_pose).
+        self._feedback_max_speed_rad_s = math.radians(
+            float(self.params.get('feedback_max_speed_dps', 720.0)))
+        self._feedback_reject_limit = int(self.params.get('feedback_reject_limit', 3))
+        self._last_good_pose = None
+        self._last_good_time = 0.0
+        self._reject_streak = 0
+        self._reject_total = 0
+
+        # Declared eagerly (was lazy, in _debug_csv_enabled()): send_trajectrory()
+        # is only reached once a command is actually being sent, so `ros2 param
+        # set .../joint_speed_debug_csv true` failed with "undeclared parameter"
+        # before the first one — the same trap mpc_debug had. Declaring here, at
+        # strategy construction (node startup), makes it settable up front.
+        if not node.has_parameter('joint_speed_debug_csv'):
+            node.declare_parameter('joint_speed_debug_csv', False)
 
     def _clamp_velocities(self, vel_list):
         """Hard-limit joint acceleration relative to the REAL, measured
@@ -222,12 +255,75 @@ class JointSpeedStrategy(JointCommandStrategy):
         # curobo cspace names, so a by-name remap would wrongly drop every joint
         # and yield an empty q. curobo only needs the right count/order.
         n = self.dof or len(msg.position)
+        pos = list(msg.position[:n])
+        now = time.monotonic()
         with self.buffer_lock:
-            self.joint_pose = list(msg.position[:n])
+            if len(pos) != n or not self._feedback_is_plausible(pos, now):
+                return
+            self.joint_pose = pos
+            self._last_good_pose = pos
+            self._last_good_time = now
             if msg.velocity:
                 self.joint_velocity = list(msg.velocity[:n])
             if msg.name:
                 self.joint_names = list(msg.name[:n])
+
+    def _feedback_is_plausible(self, pos, now) -> bool:
+        '''Reject a joint_states sample the arm cannot physically have reached.
+
+        This is not defensive paranoia: measured 2026-08-07 on three
+        consecutive hardware runs (mpc_diag_20260807_140507 / _140539 /
+        _141605), /dsr01/joint_states carried 5 samples that stepped 125-200 deg
+        in ~120 ms and were followed by a sample resuming the true trajectory
+        exactly where the previous one left it. The arm never went there. All
+        five share a signature: every component inside +-0.5 rad with at least
+        one pinned at exactly 0.50003 rad. There is a single publisher on that
+        topic (joint_state_broadcaster, /dsr01) with the six expected names, so
+        it is the driver's own read path, not a competing publisher.
+
+        Without this gate those samples reach the MPC as ground truth through
+        ReactiveController._close_state_loop: the run above fed the optimizer a
+        phantom 1.88 m / 114 deg pose error on one step.
+
+        Rejecting means running one cycle on the previous position, which is
+        strictly better than running on a wrong one. But NEVER freeze: after
+        _feedback_reject_limit consecutive rejections the gate gives up and
+        accepts, because a persistent mismatch means our own reference is the
+        stale one (arm moved while we were not listening), and stale feedback
+        held forever is the more dangerous failure.
+
+        Caller must hold buffer_lock.
+        '''
+        prev = self._last_good_pose
+        if prev is None or len(prev) != len(pos):
+            self._reject_streak = 0
+            return True
+
+        dt = min(max(now - self._last_good_time, _FEEDBACK_DT_FLOOR_S), _FEEDBACK_DT_CEIL_S)
+        bound = self._feedback_max_speed_rad_s * dt
+        worst = max(abs(a - b) for a, b in zip(pos, prev))
+        if worst <= bound:
+            self._reject_streak = 0
+            return True
+
+        self._reject_streak += 1
+        self._reject_total += 1
+        detail = (f"jump {math.degrees(worst):.1f} deg in {dt * 1000:.0f} ms "
+                  f"(gate {math.degrees(bound):.1f} deg), "
+                  f"q={[round(math.degrees(v), 2) for v in pos]}, "
+                  f"{self._reject_total} rejected so far")
+        if self._reject_streak >= self._feedback_reject_limit:
+            # Distinct call site from the WARN below on purpose: rclpy indexes
+            # throttling on file+line, not on the message text.
+            self.node.get_logger().error(
+                f"joint feedback: {self._reject_streak} implausible samples in a "
+                f"row - accepting anyway rather than freezing on stale state. {detail}")
+            self._reject_streak = 0
+            return True
+        self.node.get_logger().warn(
+            f"joint feedback: rejected implausible sample. {detail}",
+            throttle_duration_sec=1.0)
+        return False
 
     def get_progression(self):
         with self.buffer_lock:

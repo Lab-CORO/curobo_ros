@@ -40,7 +40,8 @@ class RetargetController(ReactiveController):
         return "Motion Retargeting (Teleop)"
 
     def get_config_parameters(self) -> list:
-        return ['convergence_threshold', 'retarget_position_weight',
+        return ['convergence_threshold', 'convergence_threshold_rad',
+                'convergence_hold_steps', 'retarget_position_weight',
                 'retarget_orientation_weight']
 
     # ---- cuRobo-specific hooks ------------------------------------------------
@@ -91,7 +92,12 @@ class RetargetController(ReactiveController):
         # fed-back current_state. on_target is the FK distance of the FRESH
         # solution (not the stale previous action).
         result = self.solver.solve_frame(self.goal)
+        # Both errors, then the hold counter -- is_on_target() gates on all
+        # three. Leaving the orientation error at its `inf` init would silently
+        # pin on_target to False for this controller.
         self._last_position_error = self._fk_position_error(result.joint_state)
+        self._last_orientation_error = self._fk_orientation_error(result.joint_state)
+        self._update_hold()
         return result.joint_state
 
     def apply_live_goal(self, raw_goal) -> bool:

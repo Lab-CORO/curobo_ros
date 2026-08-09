@@ -41,6 +41,7 @@ setup(
             # are the only thing that lands: a file installed through data_files
             # goes to share/ and stays invisible to `ros2 run`.
             'benchmark_voxel_grid = curobo_ros.tools.benchmark_voxel_grid:main',
+            'run_pose_matrix = curobo_ros.tools.run_pose_matrix:main',
         ],
     },
 )

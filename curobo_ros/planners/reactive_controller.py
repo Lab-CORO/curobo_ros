@@ -68,6 +68,18 @@ class ReactiveController(TrajectoryPlanner):
 
         # Tunables (overwritten from the per-call config in plan()).
         self.convergence_threshold = 0.01      # meters
+        # 0.05 rad = 2.9 deg, matching _ensure_ik_solver's own
+        # orientation_tolerance in mpc_planner.py. The IK anchor handed to MPPI
+        # is only accurate to that, so a tighter convergence gate here would be
+        # a target the pipeline cannot structurally reach -- tighten both or
+        # neither.
+        self.convergence_threshold_rad = 0.05  # radians
+        # Consecutive in-tolerance steps required before on_target goes true.
+        # 5 steps ~ 1.2 s at the production mpc_command_interval of 0.24 s.
+        # Rationale: measured 2026-08-07, position reached 0.0037 m then drifted
+        # back out to 0.0094 m by the end of the run. An instantaneous test
+        # reports success on the way through; only a held one means converged.
+        self.convergence_hold_steps = 5
         self.max_iterations = 1000
         # Refresh the perception ESDF every N steps (0 disables, 1 = every step).
         # At 20 (~3s at 7Hz) the MPC collision world lagged behind a moving
@@ -78,8 +90,14 @@ class ReactiveController(TrajectoryPlanner):
 
         # Latest scalar position error, written by step(), read by is_converged().
         self._last_position_error = float('inf')
+        # Latest scalar ORIENTATION error (rad), written by step().
+        self._last_orientation_error = float('inf')
+        # Consecutive steps with BOTH errors inside tolerance; see _update_hold.
+        self._hold_count = 0
         # Cartesian target (xyz tensor), set by _set_target, read by FK error.
         self._target_position = None
+        # Cartesian target orientation (wxyz quaternion tensor), same source.
+        self._target_quaternion = None
         self._step_times = []
         # Last commanded action — fed back so the next current_state carries
         # velocity/acceleration continuity (without it the solver restarts from
@@ -185,8 +203,19 @@ class ReactiveController(TrajectoryPlanner):
         Passes ordered_tool_frames + num_goalset like the official cuRobo reactive
         example so the goal buffer is shaped exactly as the solver expects.
         """
+        # Single choke point for every goal change -- setup() and
+        # apply_live_goal() both land here, on both reactive controllers. A new
+        # target invalidates any hold accumulated against the previous one, so
+        # resetting here (rather than in plan()) also covers live retargeting.
+        self._hold_count = 0
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
+        )
+        # raw is [x, y, z, qw, qx, qy, qz] -- cuRobo's quaternion convention is
+        # WXYZ (Pose.from_list below consumes the same seven values in the same
+        # order), so raw[3:7] can be stored verbatim.
+        self._target_quaternion = torch.tensor(
+            raw[3:7], dtype=self._dtype, device=self._device
         )
         return GoalToolPose.from_poses(
             {self.solver.tool_frames[0]: Pose.from_list(list(raw))},
@@ -194,13 +223,23 @@ class ReactiveController(TrajectoryPlanner):
             num_goalset=1,
         )
 
-    def _compute_ee_position(self, current_state: JointState):
-        """Current end-effector position via the solver's forward kinematics."""
+    def _compute_ee_pose(self, current_state: JointState):
+        """Current end-effector (position, quaternion) via the solver's FK.
+
+        One FK call for both, since the two error metrics are always wanted
+        together and the call is the expensive part.
+        """
         fk = getattr(self.solver, 'compute_kinematics', None)
         if fk is None:
             fk = self.solver.kinematics.compute_kinematics
         kin = fk(current_state)
-        return kin.tool_poses.position.reshape(-1, 3)[0]  # [B,H,L,3] -> first link
+        # [B,H,L,*] -> first link of the first batch/horizon entry
+        return (kin.tool_poses.position.reshape(-1, 3)[0],
+                kin.tool_poses.quaternion.reshape(-1, 4)[0])
+
+    def _compute_ee_position(self, current_state: JointState):
+        """Current end-effector position via the solver's forward kinematics."""
+        return self._compute_ee_pose(current_state)[0]
 
     def _fk_position_error(self, current_state: JointState) -> float:
         """Real Cartesian distance (m) between the current EE and the target."""
@@ -212,13 +251,70 @@ class ReactiveController(TrajectoryPlanner):
         except Exception:
             return float('inf')
 
-    def is_on_target(self) -> bool:
-        """Signal (NOT a stop condition): the arm is within tolerance of the goal.
+    def _fk_orientation_error(self, current_state: JointState) -> float:
+        """Real angular distance (rad) between the current EE and the target.
 
-        Reactive control keeps servoing even when on target, so this only drives
-        the `on_target` feedback flag — it never ends the control loop.
+        Measured by FK against the goal quaternion, deliberately NOT read from
+        ``result.rotation_error``: that field is scaled by roughly 1e-3 relative
+        to the true error (verified 2026-08-07 against fk_err_m over three
+        decades) AND was written to the CSV with 5 decimals, leaving ~16
+        quantisation steps across a whole run — unusable either way.
+
+        Geodesic angle between unit quaternions: theta = 2*acos(|<q1,q2>|).
+        The absolute value takes the shorter of the two arcs, since q and -q
+        are the same rotation.
         """
-        return self._last_position_error < self.convergence_threshold
+        if self._target_quaternion is None:
+            return float('inf')
+        try:
+            _, quat = self._compute_ee_pose(current_state)
+            dot = torch.dot(quat.reshape(-1), self._target_quaternion.reshape(-1)).abs()
+            return float((2.0 * torch.acos(dot.clamp(max=1.0))).item())
+        except Exception:
+            return float('inf')
+
+    def _within_tolerances(self) -> bool:
+        """Both errors inside their tolerance, right now (no hold requirement)."""
+        return (self._last_position_error < self.convergence_threshold
+                and self._last_orientation_error < self.convergence_threshold_rad)
+
+    def _update_hold(self) -> int:
+        """Advance the consecutive-in-tolerance counter. Call once per step.
+
+        Resets to 0 the moment either error leaves tolerance -- that reset is
+        the whole point. An instantaneous test passes while the arm is merely
+        travelling through the tolerance ball; requiring N consecutive steps
+        distinguishes "converged" from "passing by".
+        """
+        if self._within_tolerances():
+            self._hold_count += 1
+        else:
+            self._hold_count = 0
+        return self._hold_count
+
+    def is_on_target(self) -> bool:
+        """Signal (NOT a stop condition): the arm has CONVERGED on the goal.
+
+        Requires position AND orientation inside tolerance, held for
+        convergence_hold_steps consecutive steps. Reactive control keeps
+        servoing afterwards, so this still only drives the `on_target` feedback
+        flag -- it never ends the control loop, which exits on cancel or error.
+
+        Callers that end their action on this flag now get a genuine acceptance
+        criterion. Before 2026-08-07 it tested instantaneous position only, so a
+        goal could report success with the tool mis-aimed, or while merely
+        passing through the target on its way back out.
+        """
+        return (self._within_tolerances()
+                and self._hold_count >= self.convergence_hold_steps)
+
+    def get_orientation_error(self) -> float:
+        """Latest scalar orientation error (radians)."""
+        return self._last_orientation_error
+
+    def get_hold_count(self) -> int:
+        """Consecutive steps spent inside both tolerances."""
+        return self._hold_count
 
     def get_position_error(self) -> float:
         """Latest scalar position error (meters)."""
@@ -280,6 +376,8 @@ class ReactiveController(TrajectoryPlanner):
             )
 
         self.convergence_threshold = config.get('convergence_threshold', 0.01)
+        self.convergence_threshold_rad = config.get('convergence_threshold_rad', 0.05)
+        self.convergence_hold_steps = int(config.get('convergence_hold_steps', 5))
         self.max_iterations = config.get('max_iterations', 1000)
         self.start_state = start_state
 
@@ -580,11 +678,17 @@ class ReactiveController(TrajectoryPlanner):
     def _publish_feedback(self, goal_handle, action_state):
         """Publish the reactive status through the action feedback (no status topic)."""
         err = self.get_position_error()
+        rot_err = self.get_orientation_error()
         on_target = self.is_on_target()
         fb = SendTrajectory.Feedback()
         fb.state = "ON_TARGET" if on_target else "TRACKING"
         fb.on_target = bool(on_target)
         fb.position_error = float(err) if err != float('inf') else -1.0
+        # -1.0 is the "not measurable" sentinel, matching position_error's
+        # convention above: inf means no target set or FK failed, and a client
+        # must not read that as a perfectly-aligned 0.
+        fb.orientation_error = float(rot_err) if rot_err != float('inf') else -1.0
+        fb.hold_count = int(self.get_hold_count())
         fb.step_progression = (
             float(1.0 - min(err / 0.1, 1.0)) if err != float('inf') else 0.0
         )

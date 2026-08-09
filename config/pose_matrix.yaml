@@ -1,0 +1,201 @@
+metadata:
+  generated_at: '2026-08-07T14:03:26'
+  source: /home/ros2_ws/src/leeloo_calibration/config/calibration_poses.yaml
+  singular_j5_rad: 0.35
+  note: Cartesian goals obtained by FK through the planner's own kinematic model,
+    so every pose is reachable by construction. j5_rad is |joint 5| at the goal, the
+    distance to the wrist singularity where axes 4 and 6 go collinear. transit_min_j5_rad
+    is the smallest |j5| along a joint-space line from the PREVIOUS pose in this file,
+    a proxy for crossing the singularity en route -- which is where it actually happens.
+    near_singularity is true when either drops below singular_j5_rad.
+poses:
+- index: 22
+  j5_rad: 0.7362
+  transit_min_j5_rad: 0.7362
+  near_singularity: false
+  joint_positions:
+  - 3.160345
+  - -1.866525
+  - 0.896009
+  - 2.299258
+  - -0.736182
+  - -3.348752
+  pose:
+    x: 1.097045
+    y: 0.046466
+    z: 0.382952
+    qw: 0.35284
+    qx: 0.071233
+    qy: 0.318
+    qz: 0.877101
+- index: 31
+  j5_rad: 1.3516
+  transit_min_j5_rad: 0.0185
+  near_singularity: true
+  joint_positions:
+  - -0.840093
+  - 0.492018
+  - 1.769172
+  - -2.048293
+  - 1.351619
+  - -1.092827
+  pose:
+    x: 0.46713
+    y: -0.626904
+    z: 0.367987
+    qw: 0.700673
+    qx: 0.435972
+    qy: -0.45397
+    qz: 0.336002
+- index: 15
+  j5_rad: 1.4507
+  transit_min_j5_rad: 0.038
+  near_singularity: true
+  joint_positions:
+  - 3.488329
+  - -0.770144
+  - -1.541425
+  - 4.35711
+  - -1.45068
+  - -4.874352
+  pose:
+    x: 0.880654
+    y: 0.161568
+    z: 0.241404
+    qw: 0.610601
+    qx: 0.642501
+    qy: 0.019756
+    qz: 0.462567
+- index: 26
+  j5_rad: 1.5853
+  transit_min_j5_rad: 0.0276
+  near_singularity: true
+  joint_positions:
+  - -0.410842
+  - -0.088146
+  - 1.963058
+  - -0.432739
+  - 1.585285
+  - -2.276598
+  pose:
+    x: 0.40068
+    y: -0.192282
+    z: 0.498343
+    qw: 0.242073
+    qx: 0.793025
+    qy: -0.54941
+    qz: -0.103246
+- index: 28
+  j5_rad: 1.6668
+  transit_min_j5_rad: 1.5853
+  near_singularity: false
+  joint_positions:
+  - 0.043495
+  - 0.843287
+  - 1.064661
+  - -0.420979
+  - 1.666752
+  - -2.276513
+  pose:
+    x: 0.942939
+    y: 0.026139
+    z: 0.279902
+    qw: 0.278813
+    qx: 0.885572
+    qy: -0.358398
+    qz: -0.097859
+- index: 4
+  j5_rad: 1.8305
+  transit_min_j5_rad: 0.0274
+  near_singularity: true
+  joint_positions:
+  - 3.149401
+  - -1.571513
+  - 0.833123
+  - 1.587582
+  - -1.830523
+  - -3.348643
+  pose:
+    x: 0.973146
+    y: 0.089742
+    z: 0.543889
+    qw: 0.257653
+    qx: -0.440261
+    qy: 0.628954
+    qz: 0.586688
+- index: 36
+  j5_rad: 1.8944
+  transit_min_j5_rad: 0.0319
+  near_singularity: true
+  joint_positions:
+  - -0.033326
+  - 1.462995
+  - 1.324754
+  - 3.945582
+  - 1.89437
+  - -1.511891
+  pose:
+    x: 0.869227
+    y: -0.077363
+    z: -0.241509
+    qw: 0.774597
+    qx: 0.482816
+    qy: 0.060591
+    qz: 0.404001
+- index: 12
+  j5_rad: 1.9384
+  transit_min_j5_rad: 0.022
+  near_singularity: true
+  joint_positions:
+  - -0.122361
+  - 1.675962
+  - -0.865717
+  - 4.945213
+  - -1.938422
+  - -2.973362
+  pose:
+    x: 0.982528
+    y: 0.0245
+    z: 0.461571
+    qw: 0.105746
+    qx: -0.3267
+    qy: 0.662598
+    qz: 0.665619
+- index: 42
+  j5_rad: 1.9955
+  transit_min_j5_rad: 0.0285
+  near_singularity: true
+  joint_positions:
+  - -0.703119
+  - 1.866237
+  - -1.45735
+  - 4.972162
+  - 1.995482
+  - -2.972557
+  pose:
+    x: 0.580089
+    y: -0.586294
+    z: 0.427851
+    qw: 0.487981
+    qx: 0.486724
+    qy: -0.706118
+    qz: 0.162392
+- index: 8
+  j5_rad: 2.0523
+  transit_min_j5_rad: 1.9955
+  near_singularity: false
+  joint_positions:
+  - -0.11244
+  - 0.859611
+  - 1.625088
+  - 3.114099
+  - 2.052274
+  - -1.512261
+  pose:
+    x: 0.860418
+    y: -0.059608
+    z: 0.224282
+    qw: 0.703021
+    qx: 0.157173
+    qy: 0.146535
+    qz: 0.677927

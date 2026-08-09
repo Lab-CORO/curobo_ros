@@ -103,6 +103,14 @@ class UnifiedPlannerNode(Node):
 
         self.declare_parameter('collision_activation_distance', 0.025)
         self.declare_parameter('convergence_threshold', 0.01)
+        # Angular half of the acceptance criterion. 0.05 rad = 2.9 deg, which is
+        # _ensure_ik_solver's own orientation_tolerance in mpc_planner.py — the
+        # anchor handed to MPPI is no better than that, so tightening this alone
+        # sets a target the pipeline cannot structurally reach.
+        self.declare_parameter('convergence_threshold_rad', 0.05)
+        # Consecutive in-tolerance steps required before on_target goes true.
+        # Set 1 to restore the pre-2026-08-07 instantaneous behaviour.
+        self.declare_parameter('convergence_hold_steps', 5)
         self.declare_parameter('max_mpc_iterations', 1000)
         # Capture/replay CUDA graphs in the solvers (faster, but a captured
         # MotionGen graph can be invalidated by intervening MPC activity — see
@@ -149,6 +157,17 @@ class UnifiedPlannerNode(Node):
         # (interpolation_steps*2 * mpc_step_dt = 8*0.03 = 0.24) to fully execute
         # each window. cf. debug 2026-07-16.
         self.declare_parameter('mpc_command_interval', 0.24)
+        # Diagnostic CSV toggles. These used to be declared lazily on first use
+        # (mpc_planner.py::_debug_enabled(), diagnostics.py::resolve_diag_dir())
+        # — convenient for callers that only ever read them, but it means
+        # `ros2 param set .../mpc_debug true` fails with "undeclared parameter"
+        # until a goal has already run once (setup()/step() is the only place
+        # that touched them). Declared eagerly here instead so they can be set
+        # before the first goal, which is the whole point of a debug toggle.
+        # Defaults unchanged; has_parameter() in the lazy call sites keeps them
+        # a no-op there now.
+        self.declare_parameter('mpc_debug', False)
+        self.declare_parameter('diagnostic_csv_dir', '')
         # Reactive (Retarget/teleop) build params — read by RetargetController.
         self.declare_parameter('retarget_position_weight', 1.0)
         self.declare_parameter('retarget_orientation_weight', 1.0)
@@ -867,6 +886,8 @@ class UnifiedPlannerNode(Node):
         if isinstance(planner, ReactiveController):
             return {
                 'convergence_threshold': self.get_parameter('convergence_threshold').value,
+                'convergence_threshold_rad': self.get_parameter('convergence_threshold_rad').value,
+                'convergence_hold_steps': self.get_parameter('convergence_hold_steps').value,
                 'max_iterations': self.get_parameter('max_mpc_iterations').value,
             }
         return {}
