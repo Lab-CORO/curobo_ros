@@ -19,6 +19,7 @@ echo "1) Ampere (RTX 30XX series: 3060, 3070, 3080, 3090, A100)"
 echo "2) Ada Lovelace (RTX 40XX series: 4060, 4070, 4080, 4090)"
 echo "3) Turing (RTX 20XX series: 2060, 2070, 2080)"
 echo "4) Volta (Titan V, V100)"
+echo "5) Jetson Orin (AGX/NX, aarch64, SM_87)"
 echo ""
 read -p "Enter the number corresponding to your GPU: " gpu_choice
 
@@ -38,6 +39,11 @@ case $gpu_choice in
     4)
         GPU_NAME="volta"
         echo "Selected: Volta"
+        ;;
+    5)
+        GPU_NAME="jetson"
+        IS_JETSON=1
+        echo "Selected: Jetson Orin"
         ;;
     *)
         echo "Invalid choice, defaulting to Ampere"
@@ -60,24 +66,42 @@ echo "            → Mount your own workspace to use the package"
 echo ""
 read -p "Enter your choice (1 for DEV, 2 for PROD): " mode_choice
 
+# Jetson images are tagged curobo_ros:aarch64-jazzy[-prod] (built by
+# build_docker.sh) rather than the generic ${GPU_NAME}-dev/-prod pattern —
+# leeloo_docker and capacitynet build FROM the exact aarch64-jazzy DEV tag.
 case $mode_choice in
     1)
         RUN_MODE="dev"
-        IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
-        CONTAINER_NAME="curobo_${GPU_NAME}_dev"
+        if [ -n "$IS_JETSON" ]; then
+            IMAGE_TAG="curobo_ros:aarch64-jazzy"
+            CONTAINER_NAME="curobo_jetson_dev"
+        else
+            IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
+            CONTAINER_NAME="curobo_${GPU_NAME}_dev"
+        fi
         echo "Selected: DEV mode"
         ;;
     2)
         RUN_MODE="prod"
-        IMAGE_TAG="curobo_ros:${GPU_NAME}-prod"
-        CONTAINER_NAME="curobo_${GPU_NAME}_prod"
+        if [ -n "$IS_JETSON" ]; then
+            IMAGE_TAG="curobo_ros:aarch64-jazzy-prod"
+            CONTAINER_NAME="curobo_jetson_prod"
+        else
+            IMAGE_TAG="curobo_ros:${GPU_NAME}-prod"
+            CONTAINER_NAME="curobo_${GPU_NAME}_prod"
+        fi
         echo "Selected: PROD mode"
         ;;
     *)
         echo "Invalid choice, defaulting to DEV mode"
         RUN_MODE="dev"
-        IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
-        CONTAINER_NAME="curobo_${GPU_NAME}_dev"
+        if [ -n "$IS_JETSON" ]; then
+            IMAGE_TAG="curobo_ros:aarch64-jazzy"
+            CONTAINER_NAME="curobo_jetson_dev"
+        else
+            IMAGE_TAG="curobo_ros:${GPU_NAME}-dev"
+            CONTAINER_NAME="curobo_${GPU_NAME}_dev"
+        fi
         ;;
 esac
 
@@ -215,6 +239,14 @@ if ! [[ "$OSTYPE" == "msys" ]]; then
     xhost +local:docker 2>/dev/null || echo "Warning: Could not enable X11 forwarding"
 fi
 
+# GPU flags: Jetson's nvidia-container-runtime crashes under `--gpus all`
+# (cudacompat hook in toolkit 1.19.1) — use `--runtime nvidia` instead.
+if [ -n "$IS_JETSON" ]; then
+    GPU_FLAGS="--runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all"
+else
+    GPU_FLAGS="--gpus all"
+fi
+
 # Start the container
 echo ""
 echo "Starting container..."
@@ -227,7 +259,7 @@ if ! [[ "$OSTYPE" == "msys" ]]; then
         -e NVIDIA_DRIVER_CAPABILITIES=all \
         -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
         --device=/dev/:/dev/ \
-        --gpus all \
+        $GPU_FLAGS \
         --network host \
         -e DISPLAY=$DISPLAY \
         -v /tmp/.X11-unix:/tmp/.X11-unix \

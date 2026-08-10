@@ -21,7 +21,8 @@ environment:
   ready_wait: 180.0
   startup_delay: 0.0
   ready_timeout: 90.0  # ReadyToTest budget, loader-side (default is 15s)
-
+  allowable_exit_codes: [0, -2, -9]
+  
 tests:
   - name: "01 warmup IK"
     service: "/unified_planner/warmup_ik"

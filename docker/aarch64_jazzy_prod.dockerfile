@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# aarch64 Jazzy — CuRobo v2 (v0.8.0), CUDA 13.2, Ubuntu 24.04 (Noble), ROS 2 Jazzy
+# aarch64 Jazzy PROD — CuRobo v2 (v0.8.0), CUDA 13.2, Ubuntu 24.04 (Noble), ROS 2 Jazzy
 
 
 # Base image for ARM (Jetson/aarch64) with Ubuntu 24.04 (Noble) + CUDA
@@ -292,17 +292,6 @@ RUN apt-get update && apt-get install -y \
 
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
-WORKDIR /home/ros2_ws/src
-
-RUN sudo rosdep init && rosdep update
-
-# ros2_numpy (jazzy or main branch)
-RUN git clone https://github.com/Box-Robotics/ros2_numpy.git || \
-    git clone -b main https://github.com/Box-Robotics/ros2_numpy.git
-
-# trajectory_preview
-RUN git clone https://github.com/swri-robotics/trajectory_preview.git
-
 # open3d is not used in this workspace and has no pre-built ARM64 wheel — removed.
 # libgomp1 kept as it may be needed by other packages.
 RUN apt-get update && apt-get install --no-install-recommends -y \
@@ -328,11 +317,26 @@ RUN python3 -c "import curobo; print(f'cuRobo {curobo.__version__} OK')" || \
 # Without this cleanup the container does not start in GPU mode.
 RUN rm -rf /usr/local/cuda*/compat /usr/local/cuda*/compat_orin 2>/dev/null || true
 
-# Build ROS workspace
-WORKDIR /home/ros2_ws
-RUN /bin/bash -c "source /opt/ros/jazzy/setup.bash && colcon build"
+# ============================================================
+# PROD: curobo_ros pre-installed at /home/curobo_ws (not /home/ros2_ws).
+# Kept separate from /home/ros2_ws so users mount their own downstream
+# workspace (leeloo, capacitynet, ...) there without colliding with this
+# package's source — mirrors x86_jazzy_prod.dockerfile.
+# ============================================================
+WORKDIR /home/curobo_ws/src
+RUN sudo rosdep init && rosdep update
+RUN git clone https://github.com/Lab-CORO/curobo_ros.git --recurse-submodules && \
+    git clone https://github.com/Lab-CORO/curobo_msgs.git && \
+    git clone https://github.com/Lab-CORO/curobo_rviz.git && \
+    git clone https://github.com/swri-robotics/trajectory_preview.git && \
+    (git clone https://github.com/Box-Robotics/ros2_numpy.git || \
+     git clone -b main https://github.com/Box-Robotics/ros2_numpy.git)
 
-WORKDIR /home/ros2_ws
+WORKDIR /home/curobo_ws
+RUN /bin/bash -c "source /opt/ros/jazzy/setup.bash && \
+    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
 RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc && \
-    echo "source /home/ros2_ws/install/setup.bash" >> ~/.bashrc
+    echo "source /home/curobo_ws/install/setup.bash" >> ~/.bashrc
+
+WORKDIR /home/curobo_ws

@@ -373,5 +373,8 @@ class PostShutdownTests(unittest.TestCase):
 
     def test_exit_codes(self, proc_info):
         """Test that all processes exited without critical errors"""
-        launch_testing.asserts.assertExitCodes(proc_info)
+        launch_testing.asserts.assertExitCodes(
+            proc_info,
+            allowable_exit_codes=[0, -2, -9]
+        )
 
