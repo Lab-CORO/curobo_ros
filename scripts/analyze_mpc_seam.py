@@ -390,6 +390,14 @@ def main():
     ap.add_argument("--interval", type=float, default=0.24,
                     help="mpc_command_interval in seconds, used as the solve-time budget "
                          "for CSVs recorded before cmd_interval_ms existed (default 0.24)")
+    ap.add_argument("--csv-prefix", default="mpc_diag",
+                    help="auto-discovery glob prefix when mpc_csv is omitted, e.g. "
+                         "'lbfgs_diag' for LBFGSController's CSVs (default 'mpc_diag'). "
+                         "Note: this script's column set (accel_win/accel_boundary/vbc/"
+                         "vexec/vfirst/vlast) is MPCController's per-horizon schema -- "
+                         "record_tick()'s one-point-per-call CSV (lbfgs_planner.py) uses "
+                         "different column names, so most fields will report '(absent)'; "
+                         "this flag only helps you find the file, not a schema translation.")
     args = ap.parse_args()
 
     if args.matrix:
@@ -397,9 +405,10 @@ def main():
         if not args.mpc_csv:
             return
 
-    mpc_path = args.mpc_csv or (sorted(glob.glob("**/mpc_diag_*.csv", recursive=True)) or [None])[-1]
+    mpc_path = args.mpc_csv or (
+        sorted(glob.glob(f"**/{args.csv_prefix}_*.csv", recursive=True)) or [None])[-1]
     if not mpc_path:
-        sys.exit("no mpc_diag_*.csv found - run with mpc_debug:=true first")
+        sys.exit(f"no {args.csv_prefix}_*.csv found - run with the matching debug param true first")
 
     rows = read_csv(mpc_path)
     print(f"=== MPC diagnostics: {mpc_path}  ({len(rows)} steps) ===")

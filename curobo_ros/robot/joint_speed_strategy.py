@@ -34,7 +34,12 @@ class JointSpeedStrategy(JointCommandStrategy):
       joint_states_topic    (subscribe JointState feedback, optional)
       max_joint_accel_dps    (deg/s^2, hard velocity-rate limit on outgoing
                               commands — default 45, safety margin under the
-                              Doosan's 70 deg/s^2 SpeedJ limit)
+                              Doosan's 70 deg/s^2 SpeedJ limit. Also exposed as
+                              a live ROS param of the same name — `ros2 param
+                              set <node> max_joint_accel_dps <value>` takes
+                              effect on the next send_trajectrory() call, no
+                              restart needed. Set it very high (e.g. 1e6) to
+                              effectively disable the clamp for a test.)
       accel_clamp_dt          (s, interval the accel clamp assumes between
                               points — default self.dt/interpolation_dt; set
                               to pin a specific value, e.g. the previously
@@ -63,8 +68,14 @@ class JointSpeedStrategy(JointCommandStrategy):
         # the m1013: commanded deltas implying up to ~500 deg/s^2 against a
         # 70 deg/s^2 SpeedJ limit), tripping controller alarms and producing
         # jerky/oscillating motion.
-        max_accel_dps = float(self.params.get('max_joint_accel_dps', 45.0))
-        self._max_accel_rad_s2 = math.radians(max_accel_dps)
+        # Live ROS param, not just a descriptor default: lets a test disable
+        # the clamp (e.g. `ros2 param set <node> max_joint_accel_dps 1e6`)
+        # without restarting the node or touching the robot descriptor. Value
+        # is re-read every _clamp_velocities() call, so changes apply
+        # immediately.
+        default_max_accel_dps = float(self.params.get('max_joint_accel_dps', 45.0))
+        if not node.has_parameter('max_joint_accel_dps'):
+            node.declare_parameter('max_joint_accel_dps', default_max_accel_dps)
         # Interval the clamp assumes between consecutive points. Defaults to
         # self.dt (interpolation_dt) — the physically correct choice now that
         # curobo_ros is the single dt authority (see resolve_interpolation_dt):
@@ -136,7 +147,8 @@ class JointSpeedStrategy(JointCommandStrategy):
         persisted even after that fix. Clamping against the REAL measured
         velocity directly targets what the safety check evaluates.
         """
-        max_dv = self._max_accel_rad_s2 * self._accel_clamp_dt
+        max_accel_dps = float(self.node.get_parameter('max_joint_accel_dps').value)
+        max_dv = math.radians(max_accel_dps) * self._accel_clamp_dt
         clamped = []
         prev = list(self.joint_velocity)
         for v in vel_list:

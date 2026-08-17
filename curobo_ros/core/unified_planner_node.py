@@ -17,12 +17,14 @@ v2 notes:
 - ground plane lives on the Scene via ObstacleManager, not `world_cfg.add_obstacle`.
 """
 
+import os
 import threading
 import time
 import traceback
 
 import rclpy
 import torch
+from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -149,6 +151,31 @@ class UnifiedPlannerNode(Node):
         self.declare_parameter('mpc_solver_type', 'mppi_acceleration')
         self.declare_parameter('mpc_mppi_num_particles', 400)
         self.declare_parameter('mpc_vel_feedback_alpha', 1.0)
+        # Cost/optimizer config for each MPC backend (MPCController.build_solver,
+        # curobo_ros/planners/mpc_planner.py), as plain editable YAML instead of
+        # values baked into the code -- see config/mpc/{mppi,lbfgs}_mpc.yaml for
+        # the shipped defaults and the tuning history recorded in their comments.
+        # Override with an absolute path (ros2 launch .../mpc_mppi_config_file:=
+        # /path/to/custom.yaml) to point at a different file without touching
+        # this package; forwarded from leeloo's control.launch.py and curobo_ros's
+        # gen_traj.launch.py.
+        _mpc_config_dir = os.path.join(get_package_share_directory('curobo_ros'), 'config', 'mpc')
+        self.declare_parameter(
+            'mpc_mppi_config_file', os.path.join(_mpc_config_dir, 'mppi_mpc.yaml'))
+        self.declare_parameter(
+            'mpc_lbfgs_config_file', os.path.join(_mpc_config_dir, 'lbfgs_mpc.yaml'))
+        # LBFGSController build params (curobo_ros/planners/lbfgs_planner.py) --
+        # a separate reactive controller from MPCController, built directly on
+        # cuRobo's optimize_next_action() API (see that file's module
+        # docstring). Iteration counts/horizon are NOT ROS params here: they
+        # live in lbfgs_config_file's own YAML (warm_start_iters/
+        # cold_start_iters/horizon, popped by build_solver() before the rest
+        # of the dict is handed to optimizer_configs) -- see
+        # config/mpc/lbfgs_reactive.yaml. Only the "which file"/"log or not"
+        # runtime toggles are ROS params, matching mpc_debug's pattern below.
+        self.declare_parameter(
+            'lbfgs_config_file', os.path.join(_mpc_config_dir, 'lbfgs_reactive.yaml'))
+        self.declare_parameter('lbfgs_debug', False)
         # Fixed-interval command pacing (seconds). 0.0 = off (re-solve/re-send as
         # fast as the solve allows, ~70ms — replaces the previous window before the
         # bridge finishes it). >0 = hold each command window for this long before
@@ -156,7 +183,7 @@ class UnifiedPlannerNode(Node):
         # executed (fresh + velocity-consistent). Set to the window duration
         # (interpolation_steps*2 * mpc_step_dt = 8*0.03 = 0.24) to fully execute
         # each window. cf. debug 2026-07-16.
-        self.declare_parameter('mpc_command_interval', 0.24)
+        self.declare_parameter('mpc_command_interval', 0.12)
         # Diagnostic CSV toggles. These used to be declared lazily on first use
         # (mpc_planner.py::_debug_enabled(), diagnostics.py::resolve_diag_dir())
         # — convenient for callers that only ever read them, but it means
@@ -191,7 +218,8 @@ class UnifiedPlannerNode(Node):
         # Solvers (created on demand).
         self.motion_planner = None  # v2 alias
         self.motion_gen = None      # legacy alias, kept for older code paths
-        self.mpc = None             # reactive: ModelPredictiveControl
+        self.mpc = None             # reactive: ModelPredictiveControl (MPCController)
+        self.lbfgs = None           # reactive: ModelPredictiveControl (LBFGSController)
         self.retargeter = None      # reactive: MotionRetargeter (teleop)
 
         # Which solver currently owns the single live CUDA graph. Two captured
@@ -306,6 +334,8 @@ class UnifiedPlannerNode(Node):
 
         if planner_type in ('mpc', 'model_predictive_control'):
             self._warmup_mpc()
+        elif planner_type == 'lbfgs':
+            self._warmup_lbfgs()
         elif planner_type in ('retarget', 'motion_retargeting', 'teleop'):
             self._warmup_reactive('retarget')
         elif planner_type in ('classic', 'multi_point', 'joint_space',
@@ -352,7 +382,7 @@ class UnifiedPlannerNode(Node):
         """Build a reactive controller's solver on demand from the shared context.
 
         Each reactive controller's build_solver() publishes its solver where the
-        node expects it (self.mpc / self.retargeter).
+        node expects it (self.mpc / self.lbfgs / self.retargeter).
         """
         self._ensure_ground_plane()
         self.planner_manager.get_planner(key).ensure_solver()
@@ -365,6 +395,14 @@ class UnifiedPlannerNode(Node):
             return
         self.get_logger().info("  -> Initializing MPC solver...")
         self._warmup_reactive('mpc')
+
+    def _warmup_lbfgs(self):
+        """Warm up the LBFGSController's ModelPredictiveControl solver on demand."""
+        if self.lbfgs is not None:
+            self.get_logger().info("  -> LBFGS solver already initialized (cache)")
+            return
+        self.get_logger().info("  -> Initializing LBFGS solver...")
+        self._warmup_reactive('lbfgs')
 
     def update_all_solvers_world(self, scene=None):
         """Propagate scene updates to all initialized solvers."""
@@ -400,6 +438,8 @@ class UnifiedPlannerNode(Node):
         # controller's update_world() override (no node dependency on internals).
         if self.mpc is not None:
             self.planner_manager.get_planner('mpc').update_world(scene)
+        if self.lbfgs is not None:
+            self.planner_manager.get_planner('lbfgs').update_world(scene)
         if self.retargeter is not None:
             self.planner_manager.get_planner('retarget').update_world(scene)
 
@@ -449,6 +489,8 @@ class UnifiedPlannerNode(Node):
             # shared cache, so just rebuild their solvers — no manual cache copy.
             if self.mpc is not None:
                 self.planner_manager.get_planner('mpc').rebuild_solver()
+            if self.lbfgs is not None:
+                self.planner_manager.get_planner('lbfgs').rebuild_solver()
             if self.retargeter is not None:
                 self.planner_manager.get_planner('retarget').rebuild_solver()
 
@@ -839,6 +881,7 @@ class UnifiedPlannerNode(Node):
                 for name in ('trajopt_solver', 'ik_solver'):
                     self._safe_reset_graph(getattr(self.motion_planner, name, None))
             self._safe_reset_graph(self.mpc)
+            self._safe_reset_graph(self.lbfgs)
             self._safe_reset_graph(self.retargeter)
             # Every solver now holds no graph — its next call captures.
             self._set_graph_capture_pending()

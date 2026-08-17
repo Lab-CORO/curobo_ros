@@ -115,7 +115,7 @@ WORKDIR /pkgs/curobo_src
 RUN MAX_JOBS=${MAKEFLAGS##*-j} pip3 install -e .[cu12,dev,usd] --no-build-isolation
 
 # CuRobo internal headers needed at JIT time (check_cuda.h, cuda_precisions.h, ...)
-RUN cp /pkgs/curobo_src/src/curobo/curobolib/cpp/*.h /usr/local/cuda/include/
+# RUN cp /pkgs/curobo_src/src/curobo/curobolib/cpp/*.h /usr/local/cuda/include/
 
 # Pre-compile the CuRobo CUDA extensions (avoids JIT on first launch)
 # On by default -- requires: docker build --gpus all

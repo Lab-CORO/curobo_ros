@@ -1,0 +1,98 @@
+# LBFGS (B-spline control space) cost/optimizer config for LBFGSController
+# (curobo_ros/planners/lbfgs_planner.py). Loaded whole by
+# _build_lbfgs_optimizer_config(); edit values here instead of in code. Path
+# is the `lbfgs_config_file` ROS param (see unified_planner_node.py).
+#
+# `rollout`/`optimizer` below are a snapshot of config/mpc/lbfgs_mpc.yaml
+# (MPCController's own LBFGS file) as of 2026-08-17 -- same proven-on-hardware
+# cost weights and Approx-Wolfe LBFGS tuning (see that file's header for the
+# full dated engineering history: the non_terminal_pose_axes_weight_factor
+# fix, the reverted joint-limit hard constraint, the 1.0e-3-not-1e-3 YAML
+# gotcha). Kept as a SEPARATE file, not shared with MPCController, for two
+# reasons: (1) the three tuning keys below (warm_start_iters/cold_start_iters/
+# horizon) are ModelPredictiveControlCfg.create() kwargs, not optimizer_configs
+# fields -- LBFGSController.build_solver() pops them off before handing the
+# rest to optimizer_configs, and MPCController's _build_lbfgs_optimizer_config()
+# does NOT pop anything from lbfgs_mpc.yaml (loads it as-is), so adding them
+# there would leak unexpected top-level keys into MPCController's
+# optimizer_configs entry; (2) the two controllers can then be cost-tuned
+# independently without one's changes silently affecting the other. If you
+# tune rollout/optimizer here based on a finding from lbfgs_mpc.yaml (or vice
+# versa), port it deliberately -- they will drift, that is expected.
+warm_start_iters: 25
+cold_start_iters: 100
+horizon: 30
+
+rollout:
+  cost_cfg:
+    cspace_cfg:
+      activation_distance: [0.01, 0.01, 0.01, 0.01, 0.01]  # torque
+
+      squared_l2_regularization_weight:
+        - 0.01     # velocity
+        - 10000.0 # acceleration
+        - 10.0    # jerk
+        - 0.0     # torque smooth
+        - 0.0     # energy smooth
+      weight:
+        - 1000.0
+        - 1000.0
+        - 1000.0
+        - 100.0
+        - 0.0     # torque limit
+      cost_type: STATE
+      retime_weights: false
+      retime_regularization_weights: true
+      cspace_target_weight: 1000.0
+      cspace_non_terminal_weight_factor: 0.05
+
+    tool_pose_cfg:
+      use_lie_group: false
+      weight: [5000.0, 1000.0]
+      _terminal_pose_convergence_tolerance: [0.0, 0.0]
+      _non_terminal_pose_axes_weight_factor: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+
+  constraint_cfg:
+    scene_collision_cfg:
+      activation_distance: 0.01
+      use_speed_metric: true
+      use_sweep: true
+      use_sweep_kernel: true
+      weight: 10000.0
+    self_collision_cfg:
+      weight: 100000.0
+
+    # No cspace_cfg (joint-limit) hard constraint here on purpose -- see
+    # lbfgs_mpc.yaml's "TRIED AND REVERTED" note. It caused overshoot/
+    # oscillation under LBFGS's B-spline control-point optimization.
+
+optimizer:
+  solver_type: lbfgs
+  solver_name: lbfgs
+  cost_convergence: 1.0e-11
+  cost_delta_threshold: 0.0
+  cost_relative_threshold: 1.0
+  debug_info:
+    visual_traj: null
+  epsilon: 0.01
+  fixed_iters: true
+  history: 27
+  inner_iters: 25
+  last_best: 10
+  line_search_scale: [0.0, 0.1, 0.5, 1.0]
+  line_search_type: approx_wolfe
+  num_iters: 50
+  num_problems: 1
+  stable_mode: true
+  step_scale: 0.98
+  store_debug: false
+  sync_cuda_time: true
+  use_coo_sparse: true
+  use_cuda_kernel: true
+  use_cuda_line_search_kernel: true
+  use_cuda_update_best_kernel: true
+  use_shared_buffers_kernel: true
+  # 1.0e-3, NOT 1e-3 -- see lbfgs_mpc.yaml's comment on this exact line for why.
+  line_search_wolfe_c_1: 1.0e-3
+  line_search_wolfe_c_2: 0.98
+  return_best_action: true

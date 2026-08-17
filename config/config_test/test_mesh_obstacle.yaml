@@ -66,6 +66,9 @@ tests:
     data:
       type: 4
       name: "rubber_duck"
+      # Host-specific absolute path — if this spec is regenerated, mirror the
+      # fix in test/test_test_mesh_obstacle.py (mesh_file_path resolved
+      # relative to the test file, not hardcoded) instead of reintroducing this.
       mesh_file_path: "/home/ros2_ws/src/curobo_ros/config/config_test/Rubber_Duck.stl"
       pose:
         position: {x: 0.0, y: 0.0, z: 0.0}

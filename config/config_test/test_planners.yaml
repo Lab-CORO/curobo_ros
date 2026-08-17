@@ -1,11 +1,12 @@
 # Test planner management + unified generate/execute action
 #
 # Covers:
-# - planner switching (multipoint / classic / MPC)
+# - planner switching (multipoint / classic / MPC / LBFGS / retarget)
 # - open-loop "preview" cache: generate_trajectory caches a plan, the execute
 #   action reuses it (matching target), and clear_trajectory drops it
-# - reactive (MPC): the execute action servos CONTINUOUSLY (does not self-
-#   terminate); it streams feedback and ends only on cancel (cancel_after)
+# - reactive (MPC / LBFGS / retarget): the execute action servos
+#   CONTINUOUSLY (does not self-terminate); it streams feedback and ends
+#   only on cancel (cancel_after)
 
 package: curobo_ros
 environment:
@@ -125,13 +126,41 @@ tests:
     timeout: 90.0
     expect: {success: False}   # canceled (reactive never self-completes)
 
-  - name: "11 Set planner classic"
+  # ---- Reactive (LBFGS): continuous servoing, ends only on cancel ----
+  #
+  # LBFGSController built directly on cuRobo's optimize_next_action() API
+  # (curobo_ros/planners/lbfgs_planner.py) -- a separate reactive controller
+  # from MPCController, see that module's docstring. Same adversarial pose as
+  # test 10: this controller's goal anchor is MPCSolver's internal
+  # single-seed IK (run_ik=True), a known limitation (see the plan's Risques
+  # section) -- exercising it here on the pose that defeats a 1-seed IK is
+  # deliberate, not incidental coverage.
+
+  - name: "11 Set planner LBFGS"
+    service: "/unified_planner/set_planner"
+    type: curobo_msgs/srv/SetPlanner
+    data: {planner_type: 2}
+    expect: {success: True,
+             current_planner: "LBFGS Model Predictive Control"}
+
+  - name: "12 Execute LBFGS reactive"
+    action: "/unified_planner/execute_trajectory"
+    type: curobo_msgs/action/SendTrajectory
+    data:
+      target_pose:
+        position: {x: 0.627, y: -0.005, z: 0.751}
+        orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+    cancel_after: 6.0
+    timeout: 90.0
+    expect: {success: False}   # canceled (reactive never self-completes)
+
+  - name: "13 Set planner classic"
     service: "/unified_planner/set_planner"
     type: curobo_msgs/srv/SetPlanner
     data: {planner_type: 0}
     expect: {success: True}
 
-  - name: "12 Generate trajectory with constraint"
+  - name: "14 Generate trajectory with constraint"
     service: "/unified_planner/generate_trajectory"
     type: curobo_msgs/srv/TrajectoryGeneration
     # Lock rotation about Z along the path (ToolPoseCriteria) — exercises the
@@ -145,14 +174,14 @@ tests:
 
   # ---- Reactive (Motion Retargeting / teleop): continuous, ends only on cancel ----
 
-  - name: "14 Set planner retarget"
+  - name: "15 Set planner retarget"
     service: "/unified_planner/set_planner"
     type: curobo_msgs/srv/SetPlanner
     data: {planner_type: 6}
     expect: {success: True,
              current_planner: "Motion Retargeting (Teleop)"}
 
-  - name: "15 Execute retarget reactive"
+  - name: "16 Execute retarget reactive"
     action: "/unified_planner/execute_trajectory"
     type: curobo_msgs/action/SendTrajectory
     # Same pose that defeats the MPC's 1-seed IK — the retargeter's 64-seed global

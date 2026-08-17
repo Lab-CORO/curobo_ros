@@ -51,8 +51,8 @@ Type: `curobo_msgs/srv/SetPlanner`. Switches the active planner. Request field `
 | Constant | ID | Status |
 |---|---|---|
 | `CLASSIC` | 0 | Implemented (default) |
-| `MPC` | 1 | Implemented (closed-loop reactive control) |
-| `BATCH` | 2 | **Not implemented** — the call fails |
+| `MPC` | 1 | Implemented (closed-loop reactive control, MPPI) |
+| `LBFGS` | 2 | Implemented (closed-loop reactive control, LBFGS + B-spline, was `BATCH`/unimplemented) |
 | `CONSTRAINED` | 3 | **Not implemented** — the call fails (use `trajectory_constraints` on `generate_trajectory` instead) |
 | `MULTIPOINT` | 4 | Implemented |
 | `JOINT_SPACE` | 5 | Implemented |

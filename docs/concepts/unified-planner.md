@@ -7,12 +7,13 @@ The **unified planner** is the central node of `curobo_ros` (node name `unified_
 | Key | Enum ID | Mode | What it does |
 |---|---|---|---|
 | `classic` | 0 | Open-loop | Single Cartesian goal → collision-free trajectory (default) |
-| `mpc` | 1 | Closed-loop | Model Predictive Control: continuous re-optimization while executing |
+| `mpc` | 1 | Closed-loop | Model Predictive Control (MPPI): continuous re-optimization while executing |
+| `lbfgs` | 2 | Closed-loop | Model Predictive Control (LBFGS + B-spline), built on cuRobo's native `optimize_next_action()` pacing instead of MPC's hand-rolled horizon consumption |
 | `multi_point` | 4 | Open-loop | Sequence of Cartesian waypoints, planned segment by segment |
 | `joint_space` | 5 | Open-loop | Goal expressed directly in joint space |
 | `retarget` | 6 | Closed-loop | IK-based pose-stream follower for teleoperation |
 
-Enum IDs 2 (`BATCH`) and 3 (`CONSTRAINED`) exist in `SetPlanner.srv` but are **not implemented** — switching to them fails. Orientation/position constraints are available on the classic planner through the `trajectory_constraints` request field instead.
+Enum ID 3 (`CONSTRAINED`) exists in `SetPlanner.srv` but is **not implemented** — switching to it fails. Orientation/position constraints are available on the classic planner through the `trajectory_constraints` request field instead.
 
 The catalog lives in one place, `PlannerFactory._PLANNER_CATALOG` (`curobo_ros/planners/planner_factory.py`); `GetPlanners` reflects it at runtime, so the service is always authoritative:
 

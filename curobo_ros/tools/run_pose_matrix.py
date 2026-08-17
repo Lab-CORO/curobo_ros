@@ -15,8 +15,8 @@ Two modes
 Build the matrix once, from joint poses that are reachable by construction::
 
     ros2 run curobo_ros run_pose_matrix --from-joint-poses \\
-        /home/ros2_ws/src/leeloo_calibration/config/calibration_poses.yaml \\
-        --out /home/ros2_ws/src/curobo_ros/config/pose_matrix.yaml --count 10
+        $(ros2 pkg prefix leeloo_calibration)/share/leeloo_calibration/config/calibration_poses.yaml \\
+        --out $(ros2 pkg prefix curobo_ros)/share/curobo_ros/config/pose_matrix.yaml --count 10
 
 Then replay it, as often as you like::
 
@@ -43,6 +43,7 @@ import time
 
 import rclpy
 import yaml
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Pose
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -444,7 +445,8 @@ def main(argv=None):
     ap.add_argument("--out", help="output path for --from-joint-poses")
     ap.add_argument("--count", type=int, default=10,
                     help="poses to select when building (default 10)")
-    ap.add_argument("--urdf", default="/home/ros2_ws/src/leeloo/urdf/leeloo.urdf",
+    ap.add_argument("--urdf",
+                    default=os.path.join(get_package_share_directory('leeloo'), 'urdf', 'leeloo.urdf'),
                     help="URDF used to read joint limits when building the matrix")
     ap.add_argument("--limit-margin", type=float, default=0.20,
                     help="reject candidate poses closer than this (rad) to any joint "
