@@ -12,27 +12,43 @@ are. This controller exists because that workaround was built to paper over
 a structural mismatch specific to ``optimize_action_sequence()``: cuRobo's
 own ``TrajectoryExecutionManager`` assumes "one time step at a time, with
 re-optimization after each action" (its own docstring) and provides
-``optimize_next_action()`` precisely for that pattern -- shift/buffer/pacing
-handled internally, one command per call, a real resolve every
-``interpolation_steps`` (4, hard-locked by ``MPCSolverCfg.create()``) calls.
-Verified directly in cuRobo source (``solver_mpc.py``,
+``optimize_next_action()`` precisely for that pattern -- a real resolve
+every ``interpolation_steps`` (4, hard-locked by ``MPCSolverCfg.create()``)
+calls. Verified directly in cuRobo source (``solver_mpc.py``,
 ``trajectory_execution_manager.py``) and confirmed empirically
 (``/home/coro/.claude/plans/streamed-inventing-eagle.md``, Vérification étape
 0, 2026-08-17): a resolve buffer holds exactly 4 points for LBFGS
 (BSPLINE_3), spaced ``command_dt = optimization_dt/interpolation_steps``
-apart -- so pacing this controller's send cadence to ``interpolation_dt`` and
-deriving ``optimization_dt = 4 * interpolation_dt`` makes one
-``optimize_next_action()`` call, one real hardware tick, and one internal
-fine command coincide exactly, with no hand-rolled index into a partially-
-consumed horizon.
+apart, giving ``optimization_dt = 4 * interpolation_dt``.
 
-Also uses ``update_goal_tool_poses(goal, run_ik=True)`` directly --
-``MPCController._apply_goal()`` always calls ``run_ik=False`` first, and that
-branch unconditionally returns ``True`` (``solver_mpc.py:432-437``), so its
-multi-seed IK anchor fallback (``_solve_goal_state``) is dead code as
-currently wired. This controller's IK anchor is cuRobo's own single-seed
-``IKSolver`` built inside ``MPCSolver.__init__`` -- a known, called-out
-limitation (see the plan's Risques section), not silently inherited.
+Calling ``optimize_next_action()`` once per ``interpolation_dt`` (one real
+hardware tick per call) was the original design here, on the assumption that
+cuRobo would handle buffer pacing "internally" for free. Measured on hardware
+it wasn't free: ``optimize_next_action()``'s ONE real resolve per 4 calls
+(up to ~60ms observed) then has to fit inside a single ``interpolation_dt``
+(30ms) instead of the full ``optimization_dt`` (120ms) it actually has before
+that command window is due -- a structural, not incidental, source of
+"command tick out of time" drops (debug session 2026-08-17). Confirmed
+directly in ``solver_mpc.py``: the non-resolving calls skip
+``warm_start_solve`` (the only place ``current_state`` is read) entirely
+whenever ``trajectory_execution_manager.has_valid_next_command()`` is True --
+a pure call-counter with no wall-clock awareness -- so those calls gain
+nothing from being spaced one per real tick. ``ReactiveController`` now
+batches all ``interpolation_steps`` calls into one back-to-back producer
+burst instead (``_batch_size``, see its docstring in
+``ReactiveController.__init__``), so the one real resolve gets the full
+``optimization_dt`` to fit in, and hands the resulting queue to the
+consumer's existing per-tick send timer.
+
+Also uses ``update_goal_tool_poses(goal, run_ik=False)`` -- ``run_ik=True``
+(cuRobo's single-seed internal ``IKSolver`` anchor) was tried first and
+failed silently (``applied=False``) on this 6DOF non-redundant arm, freezing
+the solver's own commanded trajectory at the start pose for the whole goal
+(debug session 2026-08-17): the anchor exists to resolve redundancy on arms
+with more DOF than task-space constraints, which a 6DOF arm chasing a single
+6D pose doesn't have. ``run_ik=False`` disables that anchor and only updates
+the rollout's Cartesian target -- confirmed converging cleanly (<1mm) on this
+robot without it.
 """
 
 import time
@@ -160,18 +176,29 @@ class LBFGSController(ReactiveController):
             f"robot={cw.robot_config_file}, collision_cache={cw.collision_cache}"
         )
 
-        # Fixed-interval send pacing (ReactiveController._execute_paced): one
-        # optimize_next_action() call, one command, one real tick.
+        # Fixed-interval SEND pacing (ReactiveController._on_send_tick): one
+        # queued action, one command, one real tick.
         self._command_interval = interpolation_dt
 
-        # Pace the producer loop itself, not just the consumer's send timer:
-        # optimize_next_action() advances a fixed 4-point internal buffer one
-        # index per call with no awareness of real elapsed time, re-anchoring
-        # to reality only once every interpolation_steps calls -- an
-        # unthrottled producer burns through that buffer far faster than the
-        # real robot executes commands. See ReactiveController.__init__'s
-        # docstring on _producer_min_interval.
-        self._producer_min_interval = interpolation_dt
+        # optimize_next_action() only does real GPU work on 1 call out of
+        # every interpolation_steps -- confirmed directly in solver_mpc.py:
+        # it calls warm_start_solve(current_state) (the only place
+        # current_state is read) only when
+        # trajectory_execution_manager.has_valid_next_command() is False, a
+        # pure call-counter with no wall-clock awareness. The other calls
+        # just index into the already-computed buffer (get_next_command()),
+        # ignoring current_state entirely. So there is nothing to gain from
+        # spacing those calls 1 per real hardware tick, and real cost: the
+        # one resolving call (measured up to ~60ms) then has to fit inside a
+        # single interpolation_dt (30ms) instead of the full
+        # optimization_dt (120ms) it actually has before that command
+        # window is due. Batch all interpolation_steps calls into one
+        # back-to-back burst per producer iteration instead (see
+        # ReactiveController._batch_size / _execute_paced) and let the
+        # consumer's existing per-tick timer drain the resulting queue --
+        # the real solve now only needs to fit inside optimization_dt.
+        self._batch_size = solver.trajectory_execution_manager.interpolation_steps
+        self._producer_min_interval = optimization_dt
         return solver
 
     def setup(self, start_state: JointState, goal_request: Any) -> bool:
@@ -205,6 +232,21 @@ class LBFGSController(ReactiveController):
     # ---- Control step ----
 
     def step(self, current_state: JointState) -> JointState:
+        # optimize_next_action only does real GPU work (warm_start_solve,
+        # which reads current_state) when the internal command buffer is
+        # exhausted -- checking this BEFORE the call tells us whether THIS
+        # call is that one real resolve, or one of the interpolation_steps-1
+        # cheap buffer-index calls in the same batch (see ReactiveController
+        # _batch_size docstring). Measured 2026-08-17: those "cheap" calls
+        # were still costing ~20ms each -- not the solve, but the FK-error
+        # and RViz-publish work below, run unconditionally on every call.
+        # The predicted-path buffer and FK-derived errors only change on a
+        # real resolve, so gating this block to it (instead of every call)
+        # cuts per-batch cost from ~4x that work down to ~1x, without losing
+        # any information -- non-resolving calls would have published/
+        # recomputed the exact same values.
+        is_resolving = not self.solver.trajectory_execution_manager.has_valid_next_command()
+
         t_solve = time.monotonic()
         result = self.solver.optimize_next_action(current_state)
         solve_ms = (time.monotonic() - t_solve) * 1000.0
@@ -221,22 +263,24 @@ class LBFGSController(ReactiveController):
                 "LBFGS: next_action.velocity is None (send path will zero-fill)",
                 throttle_duration_sec=2.0,
             )
-        self._last_position_error = self._fk_position_error(action)
-        self._last_orientation_error = self._fk_orientation_error(action)
-        self._update_hold()
 
-        self._diag.publish_predicted_path(result)
-        self._diag.publish_full_predicted_path(result)
+        if is_resolving:
+            self._last_position_error = self._fk_position_error(action)
+            self._last_orientation_error = self._fk_orientation_error(action)
+            self._update_hold()
 
-        if self._debug_enabled():
-            breakdown = self._diag.cost_breakdown(result)
-            self._diag.publish_costs(
-                result, breakdown, self._last_position_error, self._last_orientation_error)
-            self._diag.record_tick(
-                result, solve_ms=solve_ms,
-                last_position_error=self._last_position_error,
-                last_orientation_error=self._last_orientation_error,
-            )
+            self._diag.publish_predicted_path(result)
+            self._diag.publish_full_predicted_path(result)
+
+            if self._debug_enabled():
+                breakdown = self._diag.cost_breakdown(result)
+                self._diag.publish_costs(
+                    result, breakdown, self._last_position_error, self._last_orientation_error)
+                self._diag.record_tick(
+                    result, solve_ms=solve_ms,
+                    last_position_error=self._last_position_error,
+                    last_orientation_error=self._last_orientation_error,
+                )
 
         return action
 
