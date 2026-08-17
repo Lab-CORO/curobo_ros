@@ -71,8 +71,8 @@ class LBFGSController(ReactiveController):
         # imposed by cuRobo (interpolation_steps locked to 4 by
         # MPCSolverCfg.create()) and confirmed empirically (see module
         # docstring) -- never decouple this relation.
-        interpolation_dt = resolve_interpolation_dt(node)
-        optimization_dt = 4.0 * interpolation_dt
+        interpolation_dt = resolve_interpolation_dt(node) # 17_08_2026 : 0.03s
+        optimization_dt = 4.0 * interpolation_dt # 17_08_2026 : 0.12 s
 
         config_path = node.get_parameter('lbfgs_config_file').get_parameter_value().string_value
         lbfgs_cfg = _build_lbfgs_optimizer_config(config_path)
@@ -163,6 +163,15 @@ class LBFGSController(ReactiveController):
         # Fixed-interval send pacing (ReactiveController._execute_paced): one
         # optimize_next_action() call, one command, one real tick.
         self._command_interval = interpolation_dt
+
+        # Pace the producer loop itself, not just the consumer's send timer:
+        # optimize_next_action() advances a fixed 4-point internal buffer one
+        # index per call with no awareness of real elapsed time, re-anchoring
+        # to reality only once every interpolation_steps calls -- an
+        # unthrottled producer burns through that buffer far faster than the
+        # real robot executes commands. See ReactiveController.__init__'s
+        # docstring on _producer_min_interval.
+        self._producer_min_interval = interpolation_dt
         return solver
 
     def setup(self, start_state: JointState, goal_request: Any) -> bool:
@@ -179,9 +188,15 @@ class LBFGSController(ReactiveController):
         )
         goal = self._set_target(raw)
         self.solver.setup(start_state)  # returns None -- MPCSolver.setup() has no return value
-        applied = self.solver.update_goal_tool_poses(goal, run_ik=True)
+        applied = self.solver.update_goal_tool_poses(goal, run_ik=False)
         self.goal = goal
         self._diag.publish_goal_marker(raw, applied)
+        # INFO (not gated behind lbfgs_debug): the single-seed IK anchor
+        # (Risque #1, plan streamed-inventing-eagle.md) failing silently is
+        # indistinguishable, from the outside, from a slow/starved send path
+        # -- both look like "the arm doesn't move". This was previously only
+        # visible via log_setup_summary (debug level) or goal-marker color.
+        node.get_logger().info(f"LBFGS: goal IK anchor applied={applied}")
 
         if self._debug_enabled():
             self._diag.log_setup_summary(start_state, raw, applied)
@@ -198,6 +213,14 @@ class LBFGSController(ReactiveController):
         # shape dispatch needed: _send_command/_state_from_action already
         # handle this shape identically to RetargetController's next_action.
         action = result.next_action
+        if getattr(action, 'velocity', None) is None:
+            # _send_command (reactive_controller.py) zero-fills a None velocity,
+            # which is indistinguishable in the CSV from "the solver commanded
+            # zero velocity on purpose" -- surface it explicitly instead.
+            self.node.get_logger().warn(
+                "LBFGS: next_action.velocity is None (send path will zero-fill)",
+                throttle_duration_sec=2.0,
+            )
         self._last_position_error = self._fk_position_error(action)
         self._last_orientation_error = self._fk_orientation_error(action)
         self._update_hold()

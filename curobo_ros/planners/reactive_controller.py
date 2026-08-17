@@ -122,6 +122,21 @@ class ReactiveController(TrajectoryPlanner):
         self._pending_action_fresh = False
         self._paced_send_error = False
 
+        # Opt-in minimum wall-clock period between producer-loop iterations in
+        # _execute_paced (0.0 = disabled, the default -- no behavior change for
+        # MPCController, which never sets this). Solvers built on
+        # optimize_next_action() (e.g. LBFGSController) advance a fixed-size
+        # internal command buffer one index per call with NO awareness of real
+        # elapsed time -- cuRobo re-anchors to the passed-in current_state only
+        # once every interpolation_steps calls (see solver_mpc.py's
+        # TrajectoryExecutionManager). An unthrottled producer burns through
+        # that buffer far faster than the real robot executes commands,
+        # desyncing cuRobo's "one call = one command_dt of real time" premise.
+        # MPCController's optimize_action_sequence() re-solves fully on every
+        # call instead, so it has no such buffer to desync -- hence opt-in,
+        # not a change to the base default.
+        self._producer_min_interval = 0.0
+
         # Device/dtype for building tensors on the hot path.
         self._device = getattr(config_wrapper, '_device', torch.device('cuda'))
         self._dtype = getattr(config_wrapper, '_ops_dtype', torch.float32)
@@ -572,6 +587,8 @@ class ReactiveController(TrajectoryPlanner):
 
             try:
                 while self.is_goal_active:
+                    iter_start = time.time()
+
                     if goal_handle is not None and goal_handle.is_cancel_requested:
                         self.node.get_logger().info(f"{self.get_planner_name()} cancel requested")
                         break
@@ -622,6 +639,16 @@ class ReactiveController(TrajectoryPlanner):
                         )
 
                     tstep += 1
+
+                    # Pad the iteration to _producer_min_interval so calls
+                    # into a fixed-size internal command buffer (e.g.
+                    # optimize_next_action) stay roughly in step with real
+                    # elapsed time -- see the attribute's docstring in
+                    # __init__. No-op (interval 0.0) for MPCController.
+                    if self._producer_min_interval > 0.0:
+                        remaining = self._producer_min_interval - (time.time() - iter_start)
+                        if remaining > 0.0:
+                            time.sleep(remaining)
             finally:
                 self.node.destroy_timer(timer)
 
