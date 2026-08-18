@@ -184,6 +184,9 @@ def launch_setup(context, *args, **kwargs):
                 'mapper_image_height': 720,
                 # Sparse voxel topic publish rate (Hz); <= 0 disables it.
                 'sparse_voxel_publish_rate': 7.0,
+                # MPC cost/optimizer config files (see mpc_planner.py / config/mpc/).
+                'mpc_mppi_config_file': LaunchConfiguration('mpc_mppi_config_file'),
+                'mpc_lbfgs_config_file': LaunchConfiguration('mpc_lbfgs_config_file'),
             }]
         ),
 
@@ -279,6 +282,19 @@ def generate_launch_description():
         description='Chemin vers le fichier de configuration du monde (world config YAML)'
     )
 
+    _curobo_ros_config_dir = os.path.join(
+        get_package_share_directory('curobo_ros'), 'config', 'mpc')
+    declare_mpc_mppi_config_file = DeclareLaunchArgument(
+        'mpc_mppi_config_file',
+        default_value=os.path.join(_curobo_ros_config_dir, 'mppi_mpc.yaml'),
+        description="Chemin vers le fichier YAML de config cout/optimiseur MPPI (voir config/mpc/)"
+    )
+    declare_mpc_lbfgs_config_file = DeclareLaunchArgument(
+        'mpc_lbfgs_config_file',
+        default_value=os.path.join(_curobo_ros_config_dir, 'lbfgs_mpc.yaml'),
+        description="Chemin vers le fichier YAML de config cout/optimiseur LBFGS (voir config/mpc/)"
+    )
+
     return LaunchDescription([
         declare_robot,
         declare_urdf_path,
@@ -286,6 +302,8 @@ def generate_launch_description():
         declare_camera_config_file,
         declare_gui,
         declare_world_file,
+        declare_mpc_mppi_config_file,
+        declare_mpc_lbfgs_config_file,
         # The defaults below MUST stay aligned with the declare_parameter() calls
         # in unified_planner_node.py: they are forwarded to the node and therefore
         # override its own defaults.

@@ -1,4 +1,6 @@
+import functools
 import os
+import time
 import torch
 import numpy as np
 
@@ -24,6 +26,27 @@ from curobo_ros.robot.robot_context import RobotContext
 from curobo_ros.robot.robot_description import resolve_curobo_config
 
 
+class _CameraSource:
+    """Per-camera state for DepthMapRobotSegmentation.
+
+    Each configured camera gets its own depth/info subscription and masked
+    publisher, but all sources share the node's single robot kinematics and
+    the same `_masks` dict — one SetMask call masks every camera at once.
+    """
+    __slots__ = ('name', 'depth_topic', 'info_topic', 'output_topic',
+                 'depth_image', 'camera_info', 'depth_frame_id', 'publisher')
+
+    def __init__(self, name, depth_topic, info_topic, output_topic):
+        self.name = name
+        self.depth_topic = depth_topic
+        self.info_topic = info_topic
+        self.output_topic = output_topic
+        self.depth_image = None
+        self.camera_info = None
+        self.depth_frame_id = None
+        self.publisher = None
+
+
 class DepthMapRobotSegmentation(Node):
     def __init__(self, distance_threshold=0.05, ops_dtype=torch.float32):
         """
@@ -37,8 +60,11 @@ class DepthMapRobotSegmentation(Node):
         super().__init__('curobo_depth_map_robot_segmentation')
 
         # ---- Node params first (no robot/kinematics dependency) ----
-        self.declare_parameter('depth_image_topic', '/depth_to_rgb/image_raw')
-        self.declare_parameter('camera_info_topic', '/depth_to_rgb/camera_info')
+        # `camera_names` lists the logical cameras to segment; each name `n`
+        # reads its own `n.depth_image_topic` / `n.camera_info_topic` /
+        # `n.output_topic`. Default is a single camera named 'default', whose
+        # topic defaults reproduce this node's original Kinect-only behavior.
+        self.declare_parameter('camera_names', ['default'])
         self.declare_parameter('robot_base_frame', 'base_0')
         # Inflation added to every mask shape's half-extents / radius, separate
         # from distance_threshold below.
@@ -51,8 +77,8 @@ class DepthMapRobotSegmentation(Node):
         self.distance_threshold = self.get_parameter(
             'distance_threshold').get_parameter_value().double_value
 
-        depth_image_topic = self.get_parameter('depth_image_topic').get_parameter_value().string_value
-        camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
+        camera_names = list(
+            self.get_parameter('camera_names').get_parameter_value().string_array_value)
 
         self._ops_dtype = ops_dtype
         self._device = torch.device('cuda')
@@ -94,9 +120,6 @@ class DepthMapRobotSegmentation(Node):
             position=torch.zeros(len(kin_model.joint_names), dtype=self._ops_dtype, device=self._device),
             joint_names=list(kin_model.joint_names))
 
-        self.depth_image = None
-        self.camera_info = None
-        self.depth_frame_id = None
         self.bridge = CvBridge()
 
         # Extra user-defined masks (e.g. a grasped object) removed from the depth
@@ -104,8 +127,13 @@ class DepthMapRobotSegmentation(Node):
         # it follows the arm. See SetMask.srv / _shape_inside_mask.
         self._masks = {}
 
-        # Publisher for the masked depth image
-        self.publisher_ = self.create_publisher(Image, "masked_depth_image", 10)
+        # Per-(target_frame, source_frame) last-warn time for _tf_matrix, keyed
+        # manually instead of relying on get_logger().warn(throttle_duration_sec=)
+        # — that throttles per CALL SITE (file+line), not per key. With one
+        # camera that was harmless (one key); with several cameras hitting the
+        # same line for different frame pairs, it would let one camera's warning
+        # silently swallow a genuinely different failure on another camera.
+        self._tf_warn_last = {}
 
         # Publisher for collision spheres visualization
         self.sphere_marker_pub = self.create_publisher(MarkerArray, 'collision_spheres', 10)
@@ -113,19 +141,37 @@ class DepthMapRobotSegmentation(Node):
         # Publisher for robot point cloud (debug)
         self.robot_pointcloud_pub = self.create_publisher(PointCloud2, 'robot_pointcloud_debug', 10)
 
-        # Subscription to depth image
-        self.subscription_depth = self.create_subscription(
-            Image,
-            depth_image_topic,
-            self.listener_callback_depth,
-            1)
+        # ---- Camera sources: one depth+info subscription pair and one masked
+        # publisher per configured camera, all feeding the same masking logic
+        # against the same robot kinematics + `_masks`.
+        self._cameras = []
+        for name in camera_names:
+            is_default = (name == 'default')
+            self.declare_parameter(
+                f'{name}.depth_image_topic', '/depth_to_rgb/image_raw' if is_default else '')
+            self.declare_parameter(
+                f'{name}.camera_info_topic', '/depth_to_rgb/camera_info' if is_default else '')
+            self.declare_parameter(
+                f'{name}.output_topic', 'masked_depth_image' if is_default else f'masked_depth_image_{name}')
 
-        # Subscription to camera info
-        self.subscription_camera_info = self.create_subscription(
-            CameraInfo,
-            camera_info_topic,
-            self.listener_callback_camera_info,
-            1)
+            depth_topic = self.get_parameter(f'{name}.depth_image_topic').get_parameter_value().string_value
+            info_topic = self.get_parameter(f'{name}.camera_info_topic').get_parameter_value().string_value
+            output_topic = self.get_parameter(f'{name}.output_topic').get_parameter_value().string_value
+
+            if not depth_topic or not info_topic:
+                self.get_logger().error(
+                    f"Camera '{name}' is missing depth_image_topic/camera_info_topic "
+                    f"(set '{name}.depth_image_topic' / '{name}.camera_info_topic') - skipped")
+                continue
+
+            cam = _CameraSource(name, depth_topic, info_topic, output_topic)
+            cam.publisher = self.create_publisher(Image, output_topic, 10)
+            self.create_subscription(
+                Image, depth_topic, functools.partial(self._on_depth, cam), 1)
+            self.create_subscription(
+                CameraInfo, info_topic, functools.partial(self._on_camera_info, cam), 1)
+            self._cameras.append(cam)
+            self.get_logger().info(f"Camera '{name}': {depth_topic} -> {output_topic}")
 
         # Services to add/update and remove extra depth masks (e.g. grasped
         # object). Sync callbacks: pure dict mutation, no GPU -> safe under spin.
@@ -134,10 +180,11 @@ class DepthMapRobotSegmentation(Node):
         self.remove_mask_srv = self.create_service(
             RemoveObject, 'remove_mask', self.remove_mask_callback)
 
-        # Segmentation is driven by the depth-frame subscriber callback (runs at
-        # the camera rate), not a fixed timer — see listener_callback_depth.
+        # Segmentation is driven by each camera's depth-frame subscriber callback
+        # (runs at that camera's rate), not a fixed timer — see _on_depth.
 
-        self.get_logger().info("Depth map segmentation node initialized")
+        self.get_logger().info(
+            f"Depth map segmentation node initialized ({len(self._cameras)} camera(s))")
 
     # ── Mask services ────────────────────────────────────────────────────────
 
@@ -189,16 +236,16 @@ class DepthMapRobotSegmentation(Node):
         self.get_logger().info(response.message)
         return response
 
-    def listener_callback_camera_info(self, msg):
+    def _on_camera_info(self, cam: _CameraSource, msg):
         """
-        Callback for receiving camera info data.
+        Callback for receiving camera info data for one camera source.
         Stores the camera intrinsics matrix.
         """
-        self.camera_info = msg
+        cam.camera_info = msg
 
-    def listener_callback_depth(self, msg):
+    def _on_depth(self, cam: _CameraSource, msg):
         """
-        Callback for receiving depth image data.
+        Callback for receiving a depth image for one camera source.
         Converts the Image message into a tensor.
         """
         try:
@@ -211,29 +258,31 @@ class DepthMapRobotSegmentation(Node):
             elif msg.encoding == "32FC1":
                 depth_img = self.bridge.imgmsg_to_cv2(msg, "32FC1")
             else:
-                self.get_logger().warn(f"Unsupported depth encoding: {msg.encoding}")
+                self.get_logger().warn(f"[{cam.name}] Unsupported depth encoding: {msg.encoding}")
                 return
 
             # Convert to torch tensor
-            self.depth_image = torch.from_numpy(depth_img).to(
+            cam.depth_image = torch.from_numpy(depth_img).to(
                 dtype=self._ops_dtype, device=self._device)
-            self.depth_frame_id = msg.header.frame_id
+            cam.depth_frame_id = msg.header.frame_id
 
         except CvBridgeError as e:
-            self.get_logger().error(f"CvBridge Error: {e}")
+            self.get_logger().error(f"[{cam.name}] CvBridge Error: {e}")
             return
 
         # Segmentation is driven by frame ARRIVAL (i.e. camera rate, ~5Hz)
         # rather than a 100Hz timer that republished the same frame -- nvblox
         # then re-integrated the same depth data ~6x (wasted GPU work, competing
         # with the MPPI solve). See debug 2026-07-15.
-        if self.camera_info is not None:
+        if cam.camera_info is not None:
             joint_pose = self.robot_context.get_joint_pose()
             expected_dof = len(self._kin_model.joint_names)
             if len(joint_pose) != expected_dof:
                 # A mismatched vector would otherwise build a silently
                 # mis-shaped tensor here, and the failure would only surface
                 # deep inside compute_kinematics — hard to trace back to this.
+                # (Depends only on shared robot state, not per-camera, so the
+                # call-site throttle below is fine here unlike in _tf_matrix.)
                 self.get_logger().warn(
                     f"Joint pose has {len(joint_pose)} values, expected "
                     f"{expected_dof} (model DOF) - skipping this frame",
@@ -242,16 +291,16 @@ class DepthMapRobotSegmentation(Node):
             self.q_js.position = torch.tensor(
                 joint_pose, dtype=self._ops_dtype, device=self._device)
             self.q_js.joint_names = self.robot_context.get_joint_name()
-            self.segment_and_publish()
+            self.segment_and_publish(cam)
 
-    def segment_and_publish(self):
+    def segment_and_publish(self, cam: _CameraSource):
         """
         Performs the segmentation by masking the robot in the depth image.
         Publishes the filtered depth image as a ROS2 message.
         """
-        masked_depth = self._mask_depth_image(self.depth_image, self.q_js.position)
-        masked_depth_msg = self.depth_tensor_to_image_msg(masked_depth)
-        self.publisher_.publish(masked_depth_msg)
+        masked_depth = self._mask_depth_image(cam.depth_image, self.q_js.position, cam)
+        masked_depth_msg = self.depth_tensor_to_image_msg(masked_depth, cam)
+        cam.publisher.publish(masked_depth_msg)
 
     def depth_to_pointcloud(self, depth_image: torch.Tensor, camera_intrinsics: dict) -> torch.Tensor:
         """
@@ -362,7 +411,7 @@ class DepthMapRobotSegmentation(Node):
 
         return depth_image
 
-    def _mask_depth_image(self, depth_image: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    def _mask_depth_image(self, depth_image: torch.Tensor, q: torch.Tensor, cam: _CameraSource) -> torch.Tensor:
         """
         Masks the depth image by removing robot points.
 
@@ -374,23 +423,24 @@ class DepthMapRobotSegmentation(Node):
         Args:
             depth_image: torch.Tensor of shape (H, W)
             q: torch.Tensor of joint positions
+            cam: camera source owning this depth image (for intrinsics/frame)
 
         Returns:
             torch.Tensor of shape (H, W) with robot pixels masked (set to 0)
         """
         # Get camera intrinsics from camera_info
         camera_intrinsics = {
-            'fx': self.camera_info.k[0],
-            'fy': self.camera_info.k[4],
-            'cx': self.camera_info.k[2],
-            'cy': self.camera_info.k[5]
+            'fx': cam.camera_info.k[0],
+            'fy': cam.camera_info.k[4],
+            'cx': cam.camera_info.k[2],
+            'cy': cam.camera_info.k[5]
         }
 
         # Step 1: Convert depth image to point cloud
         points, valid_mask = self.depth_to_pointcloud(depth_image, camera_intrinsics)
 
         # Step 2: Apply robot masking (reuse logic from point cloud segmentation)
-        filtered_points = self._mask_pointcloud(points, q)
+        filtered_points = self._mask_pointcloud(points, q, cam)
 
         # Step 3: Convert filtered point cloud back to depth image
         masked_depth = self.pointcloud_to_depth(
@@ -400,7 +450,7 @@ class DepthMapRobotSegmentation(Node):
 
         return masked_depth
 
-    def _mask_pointcloud(self, point_cloud: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    def _mask_pointcloud(self, point_cloud: torch.Tensor, q: torch.Tensor, cam: _CameraSource) -> torch.Tensor:
         """
         Applies masking operation to remove points belonging to the robot.
         This is the same logic as in the original robot_segmentation.py
@@ -408,6 +458,7 @@ class DepthMapRobotSegmentation(Node):
         Args:
             point_cloud: torch.Tensor of shape (N, 3)
             q: torch.Tensor of joint positions
+            cam: camera source this point cloud came from (for its TF frame)
 
         Returns:
             torch.Tensor of filtered points (M, 3) where M <= N
@@ -425,7 +476,7 @@ class DepthMapRobotSegmentation(Node):
         # in the robot base frame. Transform the points into the base frame for
         # the distance test; keep the original camera-frame cloud so the depth
         # is reconstructed in the camera frame downstream.
-        points_base = self._transform_points_to_base(point_cloud)
+        points_base = self._transform_points_to_base(point_cloud, cam)
         if points_base is None:
             # No TF available -> skip masking instead of masking the wrong points.
             return point_cloud
@@ -460,7 +511,7 @@ class DepthMapRobotSegmentation(Node):
 
         return point_cloud[mask]
 
-    def _transform_points_to_base(self, points: torch.Tensor):
+    def _transform_points_to_base(self, points: torch.Tensor, cam: _CameraSource):
         """Transform camera-frame points (N, 3) into the robot base frame via TF.
 
         Robot collision spheres are expressed in the kinematic base frame while
@@ -469,10 +520,10 @@ class DepthMapRobotSegmentation(Node):
         comes from the hand-eye calibration (base -> camera). Returns None if
         the transform is unavailable.
         """
-        if self.depth_frame_id is None:
+        if cam.depth_frame_id is None:
             return None
         robot_base_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value
-        T = self._tf_matrix(robot_base_frame, self.depth_frame_id)
+        T = self._tf_matrix(robot_base_frame, cam.depth_frame_id)
         if T is None:
             return None
 
@@ -492,9 +543,11 @@ class DepthMapRobotSegmentation(Node):
             tf = self.tf_buffer.lookup_transform(
                 target_frame, source_frame, rclpy.time.Time())
         except Exception as e:  # TransformException and friends
-            self.get_logger().warn(
-                f'TF {source_frame} -> {target_frame} unavailable: {e}',
-                throttle_duration_sec=2.0)
+            key = (target_frame, source_frame)
+            now = time.monotonic()
+            if now - self._tf_warn_last.get(key, 0.0) >= 2.0:
+                self._tf_warn_last[key] = now
+                self.get_logger().warn(f'TF {source_frame} -> {target_frame} unavailable: {e}')
             return None
 
         tr = tf.transform.translation
@@ -588,12 +641,13 @@ class DepthMapRobotSegmentation(Node):
 
         return None
 
-    def depth_tensor_to_image_msg(self, depth_tensor: torch.Tensor) -> Image:
+    def depth_tensor_to_image_msg(self, depth_tensor: torch.Tensor, cam: _CameraSource) -> Image:
         """
         Converts a depth tensor to a ROS2 Image message.
 
         Args:
             depth_tensor: torch.Tensor of shape (H, W)
+            cam: camera source this depth tensor came from (for the frame id)
 
         Returns:
             Image message
@@ -605,7 +659,7 @@ class DepthMapRobotSegmentation(Node):
         # Create Image message
         msg = self.bridge.cv2_to_imgmsg(depth_mm, encoding="16UC1")
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = self.depth_frame_id
+        msg.header.frame_id = cam.depth_frame_id
 
         return msg
 

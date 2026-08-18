@@ -7,11 +7,8 @@ import time
 from typing import Any
 
 import torch
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
-from visualization_msgs.msg import Marker
+import yaml
 
-from curobo_msgs.msg import MpcCosts
 from curobo.content import get_task_configs_path
 from curobo.types import JointState, GoalToolPose, Pose
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
@@ -20,31 +17,67 @@ from curobo.model_predictive_control import (
     ModelPredictiveControlCfg,
 )
 from curobo._src.util.config_io import resolve_config, join_path
+from curobo._src.util.config_io import Loader as _CUROBO_YAML_LOADER
 
 from .reactive_controller import ReactiveController
+from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
-from curobo_ros.core.diagnostics import open_diag_csv
 
 
-# --- MPPI recipe + ACCELERATION control space ------
-# Scope of mpc_m1013_speedj2.py (validated on real m1013 on 2026-07-14). The
-# default MPC config (L-BFGS + B-spline) freezes on certain poorly-conditioned
-# m1013 postures: L-BFGS line-search with fixed grid [0,0.1,0.5,1.0] finds no
-# valid step when the direction is ill-conditioned (6-DOF non-redundant near-singular).
-# MPPI (no line-search) is immune to this. L-BFGS + ACCELERATION is impossible here
-# (backward of acceleration integration kernel not implemented), so MPPI is the only
-# viable optimizer.
-_MPPI_CSPACE_REGULARIZATION = [0.3, 1.0, 0.0, 0.0, 0.0]  # [vel, acc, jerk, torque, energy]
+# Velocity boundary feedback cap (deg/s) — now a SAFETY NET, not a control knob.
+#
+# Was 5.0, chosen when the runaway below was thought to be inherent to feeding
+# planned velocity back in ACCELERATION mode. Instrumented on hardware
+# 2026-08-07 (mpc_diag CSV) and that diagnosis was wrong:
+#   - vfirst_max_dps sat at exactly 5.00 on EVERY step of the moving phase, i.e.
+#     the cap bound continuously, telling the MPC it was crawling at 5 deg/s
+#     while the arm was really at ~11.3 deg/s;
+#   - so each cycle replanned a fresh acceleration from a false state, and the
+#     plan-to-plan velocity discontinuity (accel_boundary_dps2) reached
+#     200-424 deg/s^2, which JointSpeedStrategy's clamp then had to absorb
+#     (saturating at its 45 deg/s^2 setting on 18 of 31 sends);
+#   - the moment the arm slowed below the cap, vfirst == vlast == vbc and the
+#     discontinuity fell to exactly 0.0 — the cap was the whole effect.
+# The 6->80 deg/s runaway of debug 2026-07-15 came from sampling the LAST plan
+# point for the feedback instead of the point actually executed; that is fixed
+# at the sampling site in step(). This value is now only a hardware backstop
+# against a regression there, set to the LOWEST per-joint velocity limit in the
+# URDF (joint1/joint2 = 2.094 rad/s = 120 deg/s; joints 3-6 allow 180-225), so
+# it bounds every joint and cannot bind in normal operation — the arm's measured
+# working range is ~30 deg/s.
+#
+# HOW TO TELL A REGRESSION FROM FAST MOTION: "vbc_max_dps sits at the cap" is
+# NOT by itself a failure. At 30.0 it pinned on 7/128 steps while the arm really
+# reached 31.6 deg/s — the cap was simply tracking a genuinely fast arm. The
+# failure signature is vbc_max_dps pinned at the cap while real_vel_max_dps
+# (speedj_publish CSV) stays well BELOW it: that is the cap feeding the MPC a
+# velocity the arm has already exceeded, which is the pathology this whole fix
+# removed. Compare the two columns, never the cap alone.
+_VBC_CAP_DPS = 120.0
 
-# Velocity boundary feedback cap (continuity → smoother motion).
-# REQUIRED: in ACCELERATION mode the plan integrates beyond the boundary, so
-# reinjecting planned velocity causes ratcheting (runaway 6→80°/s without cap, cf.
-# debug 2026-07-15). In sandbox, a LOW cap (~5°/s) converges, a high cap (>=8)
-# overshoots and diverges. Intentionally low value = safe (slow motion, can be
-# canceled even if deviating) + smoother than zero boundary.
-#   _VBC_CAP_DPS = 0.0  -> zero boundary (current robust behavior, jerky)
-#   higher            -> more continuity (smooth) BUT risk of overshoot
-_VBC_CAP_DPS = 5.0
+
+def _load_mpc_config(config_path: str) -> dict:
+    """Load an MPC cost/optimizer YAML (see config/mpc/{mppi,lbfgs}_mpc.yaml).
+
+    NOT routed through cuRobo's resolve_config/get_task_configs_path: these
+    are our own files (paths come from the mpc_mppi_config_file /
+    mpc_lbfgs_config_file ROS params), not cuRobo package-relative ones.
+
+    Loaded with cuRobo's own patched Loader (config_io.py), not plain
+    yaml.safe_load -- PyYAML's default float resolver requires a decimal
+    point in the mantissa, so exponent notation like "1e-3" (no dot) silently
+    parses as the STRING '1e-3' instead of a float. That reached a CUDA line
+    search kernel launch and crashed with "TypeError: the argument is of
+    unsupported type: <class 'str'>" (debug 2026-08-14,
+    lbfgs_mpc.yaml's line_search_wolfe_c_1). cuRobo's stock YAMLs use the same
+    "1e-3" spelling and only work because config_io.py patches this loader's
+    float regex at import time; reusing it here (rather than yaml.safe_load)
+    keeps our hand-edited files forgiving of the same spelling."""
+    with open(config_path, 'r') as f:
+        cfg = yaml.load(f, Loader=_CUROBO_YAML_LOADER)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"MPC config file did not parse to a dict: {config_path}")
+    return cfg
 
 
 def _build_mppi_transition_model(step_dt: float, horizon: int, interpolation_steps: int = 4) -> dict:
@@ -66,80 +99,24 @@ def _build_mppi_transition_model(step_dt: float, horizon: int, interpolation_ste
     }
 
 
-def _build_mppi_optimizer_config(num_iters: int, num_particles: int = 800) -> dict:
-    return {
-        "rollout": {
-            "cost_cfg": {
-                "cspace_cfg": {
-                    "activation_distance": [0.01] * 5,
-                    "squared_l2_regularization_weight": [0.0] * 5,
-                    "weight": [10.0, 0.0, 0.0, 0.0, 0.0],
-                    "cost_type": "STATE",
-                    "retime_weights": False,
-                    "retime_regularization_weights": True,
-                    # Weight of joint IK anchor. At 0.0, enable_joint_position_tracking
-                    # activated cspace_target at zero weight AND disabled target_cspace_dist
-                    # → no force → complete freeze from start on hardware (cf. debug 2026-07-15).
-                    # 50 = compromise validated in sandbox (converges; 200 throttles).
-                    "cspace_target_weight": 0.0,
-                    "cspace_non_terminal_weight_factor": 0.05,
-                },
-                "tool_pose_cfg": {
-                    "use_lie_group": True,
-                    "weight": [5000.0, 2000.0],
-                    "_terminal_pose_convergence_tolerance": [0.0, 0.0],
-                },
-            },
-            "constraint_cfg": {
-                "scene_collision_cfg": {
-                    "activation_distance": 0.12,
-                    "use_speed_metric": True,
-                    "use_sweep": True,
-                    "use_sweep_kernel": True,
-                    "weight": 10000.0,
-                },
-                "self_collision_cfg": {"weight": 100000.0},
-            },
-        },
-        "optimizer": {
-            "solver_type": "mppi",
-            "solver_name": "mppi",
-            "num_iters": num_iters,
-            "inner_iters": 1,
-            "num_particles": num_particles,
-            "null_act_frac": 0.05,
-            "beta": 0.1,
-            "gamma": 0.98,
-            "kappa": 0.0001,
-            "init_cov": 0.05,
-            "update_cov": True,
-            "cov_type": "DIAG_A",
-            "step_size_mean": 0.9,
-            "step_size_cov": 0.01,
-            "sample_mode": "BEST",
-            "squash_fn": "CLAMP",
-            "base_action": "REPEAT",
-            "random_mean": False,
-            "seed": 0,
-            "sample_per_problem": True,
-            "sample_params": {
-                "fixed_samples": True,
-                "n_knots": 5,
-                "filter_coeffs": [0.3, 0.3, 0.4],
-                "sample_ratio": {
-                    "halton": 0.3,
-                    "halton-knot": 0.7,
-                    "random": 0.0,
-                    "random-knot": 0.0,
-                    "stomp": 0.0,
-                },
-                "seed": 0,
-            },
-            "store_debug": False,
-            "sync_cuda_time": True,
-            "use_coo_sparse": True,
-        },
-    }
+def _build_mppi_optimizer_config(config_path: str, num_iters: int, num_particles: int = 800) -> dict:
+    """Load the MPPI cost/optimizer config from YAML (see config/mpc/mppi_mpc.yaml
+    and the mpc_mppi_config_file ROS param) and apply the two fields that stay
+    under separate, already-existing ROS params rather than living in the file:
+    optimizer.num_iters (mpc_warm_start_iters) and optimizer.num_particles
+    (mpc_mppi_num_particles)."""
+    cfg = _load_mpc_config(config_path)
+    cfg["optimizer"]["num_iters"] = num_iters
+    cfg["optimizer"]["num_particles"] = num_particles
+    return cfg
+
+
+def _build_lbfgs_optimizer_config(config_path: str) -> dict:
+    """Load the LBFGS cost/optimizer config from YAML (see config/mpc/lbfgs_mpc.yaml
+    and the mpc_lbfgs_config_file ROS param). Unlike the MPPI branch, nothing is
+    overridden after loading -- num_iters/inner_iters and every cost/constraint
+    weight come straight from the file."""
+    return _load_mpc_config(config_path)
 
 
 def _build_metrics_rollout_cfg(cost_cfg_source: dict) -> dict:
@@ -174,7 +151,8 @@ class MPCController(ReactiveController):
         return "Model Predictive Control (MPC)"
 
     def get_config_parameters(self) -> list:
-        return ['convergence_threshold', 'max_mpc_iterations']
+        return ['convergence_threshold', 'convergence_threshold_rad',
+                'convergence_hold_steps', 'max_mpc_iterations']
 
     # ---- cuRobo-specific hooks ------------------------------------------------
 
@@ -217,36 +195,42 @@ class MPCController(ReactiveController):
         self._command_interval = node.get_parameter('mpc_command_interval').get_parameter_value().double_value
         if self._use_mppi_acceleration:
             num_particles = node.get_parameter('mpc_mppi_num_particles').get_parameter_value().integer_value
-            mppi_optimizer_cfg = _build_mppi_optimizer_config(warm_iters, num_particles)
+            mppi_config_path = node.get_parameter('mpc_mppi_config_file').get_parameter_value().string_value
+            mppi_optimizer_cfg = _build_mppi_optimizer_config(mppi_config_path, warm_iters, num_particles)
+            # cspace_regularization_weight lives at the top level of the YAML
+            # (see its comment there) but is a create()-level kwarg, not part of
+            # an optimizer_configs entry -- pop it off before handing the rest
+            # of the dict (rollout/optimizer only) to optimizer_configs.
+            cspace_regularization_weight = mppi_optimizer_cfg.pop("cspace_regularization_weight")
             # NO num_control_points here: it writes n_knots (B-spline concept).
             # The horizon lives in the transition_model dict we provide.
             cfg = ModelPredictiveControlCfg.create(
                 optimizer_configs=[mppi_optimizer_cfg],
                 transition_model=_build_mppi_transition_model(step_dt, horizon),
-                squared_l2_regularization_weight=_MPPI_CSPACE_REGULARIZATION,
+                squared_l2_regularization_weight=cspace_regularization_weight,
                 metrics_rollout=_build_metrics_rollout_cfg(mppi_optimizer_cfg["rollout"]["cost_cfg"]),
                 **base_kwargs,
             )
         else:
-            lbfgs_cost_cfg = resolve_config(
-                join_path(get_task_configs_path(), "mpc/lbfgs_mpc.yml")
-            )["rollout"]["cost_cfg"]
+            lbfgs_config_path = node.get_parameter('mpc_lbfgs_config_file').get_parameter_value().string_value
+            lbfgs_optimizer_cfg = _build_lbfgs_optimizer_config(lbfgs_config_path)
             cfg = ModelPredictiveControlCfg.create(
+                optimizer_configs=[lbfgs_optimizer_cfg],
                 num_control_points=horizon,
-                metrics_rollout=_build_metrics_rollout_cfg(lbfgs_cost_cfg),
+                metrics_rollout=_build_metrics_rollout_cfg(
+                    lbfgs_optimizer_cfg["rollout"]["cost_cfg"]
+                ),
                 **base_kwargs,
             )
         solver = ModelPredictiveControl(cfg)
 
         node.mpc = solver
-        # Predicted end-effector path (current MPC horizon), for RViz (nav_msgs/Path
-        # renders natively, no custom plugin needed).
-        self._path_pub = node.create_publisher(Path, 'mpc_predicted_path', 10)
-        self._goal_marker_pub = node.create_publisher(Marker, 'mpc_goal_marker', 10)
-        # Cost/constraint breakdown, for live inspection via rqt_plot (each
-        # named field is individually plottable). See _cost_breakdown().
-        self._cost_pub = node.create_publisher(MpcCosts, 'mpc_costs', 10)
-        self._path_frame = cw.base_link
+        # Diagnostics/RViz publishing lives alongside the solver it observes
+        # (mpc_diagnostics.py) — a rebuild gets a fresh MPCDiagnostics too.
+        self._diag = MPCDiagnostics(
+            node, solver, cw.base_link, step_dt,
+            self._fk_position_error, self._fk_orientation_error,
+        )
         node.get_logger().info(
             f"MPC solver built: solver_type={solver_type}, optimization_dt={step_dt}s, "
             f"horizon={horizon}, warm_start_iters={warm_iters}, cold_start_iters={cold_iters}, "
@@ -256,302 +240,180 @@ class MPCController(ReactiveController):
 
     def setup(self, start_state: JointState, goal_request: Any) -> bool:
         self._v_bc = None  # New goal = new velocity continuity baseline
-        self._csv_init()
+        # Re-read per goal: build_solver() reads this once, and PlannerManager
+        # caches the planner instance, so without this the send pacing could
+        # only be changed by relaunching the whole stack. It is the main knob
+        # on the batch-boundary discontinuity (the bridge plays
+        # mpc_command_interval / interpolation_dt points before the next batch
+        # overwrites the queue at index 0), so it needs to be sweepable with
+        # `ros2 param set` between runs.
+        self._command_interval = self.node.get_parameter(
+            'mpc_command_interval').get_parameter_value().double_value
+        self._diag.csv_init(self._debug_enabled())
         p = goal_request.target_pose
         raw = [
             p.position.x, p.position.y, p.position.z,
             p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z,
         ]
+        self.node.get_logger().info(
+            f"MPC: new goal received - position=({raw[0]:.4f}, {raw[1]:.4f}, {raw[2]:.4f})m "
+            f"orientation(wxyz)=({raw[3]:.4f}, {raw[4]:.4f}, {raw[5]:.4f}, {raw[6]:.4f})"
+        )
         goal = self._set_target(raw)
         self.solver.setup(start_state)
         applied = self._apply_goal(goal, raw, start_state)
         self.goal = goal
-        self._publish_goal_marker(raw, applied)
+        self._diag.publish_goal_marker(raw, applied)
 
         if self._debug_enabled():
-            ee_pos, ee_quat = None, None
-            try:
-                kin = self.solver.compute_kinematics(start_state)
-                ee_pos = [round(v, 4) for v in kin.tool_poses.position.reshape(-1, 3)[0].cpu().tolist()]
-                ee_quat = [round(v, 4) for v in kin.tool_poses.quaternion.reshape(-1, 4)[0].cpu().tolist()]
-            except Exception as e:
-                self.node.get_logger().warn(f"[MPC DIAG] EE pose log failed: {e}")
-            self.node.get_logger().debug(
-                f"[MPC DIAG] setup: goal_xyz={[round(v, 4) for v in raw[0:3]]} "
-                f"goal_quat(wxyz)={[round(v, 4) for v in raw[3:7]]} "
-                f"tool_frame={self.solver.tool_frames[0]} "
-                f"start_EE_pos={ee_pos} start_EE_quat(wxyz)={ee_quat} "
-                f"fk_err={self._fk_position_error(start_state):.4f}m goal_applied={applied}"
-            )
+            self._diag.log_setup_summary(start_state, raw, applied)
         return True
 
-    # ---- Debug CSV ----
-
-    def _csv_init(self):
-        """Opens a diagnostic CSV (one line per step). Gated by mpc_debug.
-
-        Closes any CSV left open by a previous goal first (setup() is called
-        once per goal — without this, each new goal leaked the previous
-        file's descriptor).
-        """
-        self._csv_close()
-        if not self._debug_enabled():
-            return
-        self._csv = open_diag_csv(self.node, "mpc_diag")
-        if self._csv is not None:
-            self._csv_t0 = time.monotonic()
-            self._csv_t_prev = self._csv_t0
-            self._csv_last_vlast = None
-
-    def _csv_close(self):
-        if getattr(self, '_csv', None) is not None:
-            self._csv.close()
-        self._csv = None
-
-    def _csv_write(self, result, solve_ms, breakdown: dict):
-        if getattr(self, '_csv', None) is None:
-            return
-        seq = result.action_sequence
-        now = time.monotonic()
-        dt_step_ms = (now - self._csv_t_prev) * 1000.0  # Loop period: captures 248ms AND pauses ~10s
-        self._csv_t_prev = now
-        dt = self._step_dt
-        deg = math.degrees
-        vel = seq.velocity[0]  # [npts, dof]
-        npts, dof = vel.shape
-        vfirst = vel[0].cpu().tolist()
-        vlast = vel[-1].cpu().tolist()
-        # Intra-window accel: max over (i,j) of |v[i+1]-v[i]|/dt (MPPI plan noise)
-        accel_win = deg((vel[1:] - vel[:-1]).abs().max().item() / dt) if npts > 1 else 0.0
-        # Batch boundary accel: |vfirst - vlast_prev|/dt (stop-start discontinuity)
-        if self._csv_last_vlast is not None:
-            accel_bd = deg(max(abs(a - b) for a, b in zip(vfirst, self._csv_last_vlast)) / dt)
-        else:
-            accel_bd = 0.0
-        self._csv_last_vlast = vlast
-        vbc = self._v_bc[0].cpu().tolist() if getattr(self, '_v_bc', None) is not None else [0.0] * dof
-        pos_err = getattr(result, 'position_error', None)
-        rot_err = getattr(result, 'rotation_error', None)
-        pose_pos_err = float(pos_err.reshape(-1)[0].item()) if pos_err is not None else float('nan')
-        pose_rot_err = float(rot_err.reshape(-1)[0].item()) if rot_err is not None else float('nan')
-        self._csv.write_header_once(
-            ["t_s", "dt_step_ms", "solve_ms", "fk_err_m", "vfirst_max_dps", "vlast_max_dps",
-             "accel_win_max_dps2", "accel_boundary_dps2", "vbc_max_dps",
-             "pose_pos_err_m", "pose_rot_err_rad", "cost_tool_pose_pos", "cost_tool_pose_orient",
-             "cost_cspace", "con_self_collision", "con_scene_collision", "con_cspace_bound"]
-            + [f"vfirst_j{i+1}_dps" for i in range(dof)]
-            + [f"vlast_j{i+1}_dps" for i in range(dof)])
-        self._csv.writerow(
-            [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
-             f"{self._last_position_error:.5f}", f"{deg(max(abs(v) for v in vfirst)):.2f}",
-             f"{deg(max(abs(v) for v in vlast)):.2f}", f"{accel_win:.1f}", f"{accel_bd:.1f}",
-             f"{deg(max(abs(v) for v in vbc)):.2f}",
-             f"{pose_pos_err:.5f}", f"{pose_rot_err:.5f}",
-             f"{breakdown.get('cost_tool_pose_pos', float('nan')):.4f}",
-             f"{breakdown.get('cost_tool_pose_orient', float('nan')):.4f}",
-             f"{breakdown.get('cost_cspace', float('nan')):.4f}",
-             f"{breakdown.get('con_self_collision', float('nan')):.4f}",
-             f"{breakdown.get('con_scene_collision', float('nan')):.4f}",
-             f"{breakdown.get('con_cspace_bound', float('nan')):.4f}"]
-            + [f"{deg(v):.2f}" for v in vfirst] + [f"{deg(v):.2f}" for v in vlast])
-
-    def _publish_predicted_path(self, result):
-        """Publish the MPC's full predicted end-effector path for RViz.
-
-        ``result.action_sequence`` (used elsewhere to command the robot) is
-        NOT the full optimized horizon: cuRobo's TrajectoryExecutionManager
-        trims it to only ``interpolation_steps * 2`` points — the near-term
-        slice meant to be executed before the next re-plan (see
-        ``get_command_sequence()``). The full horizon the optimizer actually
-        reasoned over (collision costs, goal convergence, etc.) is
-        ``result.robot_state_sequence`` instead, already FK'd (untrimmed).
-        """
-        if getattr(self, '_path_pub', None) is None:
-            return
-        try:
-            state_seq = getattr(result, 'robot_state_sequence', None)
-            if state_seq is not None and state_seq.tool_poses is not None:
-                ee_pos = state_seq.tool_poses.position.reshape(-1, 3).cpu().tolist()
-            else:
-                # Fallback: FK on the trimmed action_sequence (partial horizon).
-                seq = result.action_sequence
-                js = JointState.from_position(seq.position[0], joint_names=self.solver.joint_names)
-                fk = getattr(self.solver, 'compute_kinematics', None) or self.solver.kinematics.compute_kinematics
-                ee_pos = fk(js).tool_poses.position.reshape(-1, 3).cpu().tolist()
-        except Exception as e:
-            self.node.get_logger().warn(f"[MPC DIAG] predicted path FK failed: {e}", throttle_duration_sec=5.0)
-            return
-        path = Path()
-        path.header.frame_id = self._path_frame
-        path.header.stamp = self.node.get_clock().now().to_msg()
-        for x, y, z in ee_pos:
-            pose = PoseStamped()
-            pose.header = path.header
-            pose.pose.position.x = x
-            pose.pose.position.y = y
-            pose.pose.position.z = z
-            pose.pose.orientation.w = 1.0
-            path.poses.append(pose)
-        self._path_pub.publish(path)
-
-    def _cost_breakdown(self, result) -> dict:
-        """Per-term COST and CONSTRAINT values (horizon-summed) for this solve.
-
-        CRASH-SAFETY NOTE (cf. debug 2026-07-20): an earlier version read the
-        weighted COST magnitudes (tool_pose, cspace/anchor) via
-        `compute_metrics_from_action(result.action_buffer)` on the
-        OPTIMIZATION rollout (the only one with cost_cfg set by default). That
-        rollout runs with use_cuda_graph=True and is shared with the
-        optimizer; the extra call rebatches it (num_particles -> 1) while a
-        CUDA graph is captured for a different batch size, which triggered a
-        device-side assert (`index out of bounds`) on real hardware. A
-        device-side assert corrupts the WHOLE CUDA context for the process —
-        unrecoverable via try/except, and it took down the next solve,
-        _send_command, and perception/voxelization with it. That call has
-        been REMOVED. Do not reintroduce compute_metrics_from_action on a
-        use_cuda_graph=True rollout shared with the optimizer.
-
-        Costs are recovered safely instead: build_solver() injects a cost_cfg
-        (mirroring the active branch's tool_pose_cfg/cspace_cfg) into the
-        METRICS rollout's config (see _build_metrics_rollout_cfg) — a
-        fixed-batch-size rollout, never rebatched, so it computes these costs
-        as a side effect of the normal solve. get_current_metrics() just
-        returns an attribute (`_current_metrics`) already populated during
-        that solve — no rebatch, no graph, no extra GPU call. Validated in
-        sandbox: identical cost values to the removed dangerous path, zero
-        CUDA errors across use_cuda_graph=True runs."""
-        try:
-            m = self.solver.trajectory_execution_manager.get_current_metrics()
-            if m is None:
-                return {}
-            cc = m.costs_and_constraints
-            out = {}
-            for name, val in zip(cc.costs.names, cc.costs.values):
-                if name == "tool_pose":
-                    out["cost_tool_pose_pos"] = float(val[0, :, 0].sum().item())
-                    out["cost_tool_pose_orient"] = float(val[0, :, 1].sum().item())
-                else:
-                    out[f"cost_{name}"] = float(val.sum().item())
-            for name, val in zip(cc.constraints.names, cc.constraints.values):
-                if name == "cspace":
-                    out["con_cspace_bound"] = float(val.sum().item())
-                else:
-                    out[f"con_{name}"] = float(val.sum().item())
-            return out
-        except Exception as e:
-            self.node.get_logger().warn(f"[MPC DIAG] cost breakdown failed: {e}", throttle_duration_sec=5.0)
-            return {}
-
-    def _publish_costs(self, result, breakdown: dict):
-        if getattr(self, '_cost_pub', None) is None:
-            return
-        msg = MpcCosts()
-        msg.header.stamp = self.node.get_clock().now().to_msg()
-        msg.header.frame_id = self._path_frame
-        msg.fk_err_m = float(self._last_position_error)
-        pos_err = getattr(result, 'position_error', None)
-        rot_err = getattr(result, 'rotation_error', None)
-        msg.pose_pos_err_m = float(pos_err.reshape(-1)[0].item()) if pos_err is not None else 0.0
-        msg.pose_rot_err_rad = float(rot_err.reshape(-1)[0].item()) if rot_err is not None else 0.0
-        msg.cost_tool_pose_pos = breakdown.get("cost_tool_pose_pos", 0.0)
-        msg.cost_tool_pose_orient = breakdown.get("cost_tool_pose_orient", 0.0)
-        msg.cost_cspace = breakdown.get("cost_cspace", 0.0)
-        msg.con_self_collision = breakdown.get("con_self_collision", 0.0)
-        msg.con_scene_collision = breakdown.get("con_scene_collision", 0.0)
-        msg.con_cspace_bound = breakdown.get("con_cspace_bound", 0.0)
-        self._cost_pub.publish(msg)
+    # ---- Control step ----
 
     def step(self, current_state: JointState) -> JointState:
 
-        if getattr(self, '_use_mppi_acceleration', False):
-            # Velocity continuity (fewer jerks): reinjecting planned velocity from last point,
-            # filtered with EMA and CAPPED. The cap is required — without it, in ACCELERATION
-            # mode the plan integrates beyond the boundary → ratchet/runaway (cf. _VBC_CAP_DPS, debug 2026-07-15).
-            if self._v_bc is None:
-                self._v_bc = torch.zeros_like(current_state.position)
-            current_state = current_state.clone()
-            current_state.velocity = self._v_bc
+        # Velocity continuity: the next solve starts from the velocity this
+        # window will actually have reached (see the sampling index below), so
+        # the MPC's assumed state matches the arm's real one. Previously gated
+        # to _use_mppi_acceleration only; solver_mpc.optimize_action_sequence
+        # -> _solve_impl -> update_current_state feeds current_state.velocity
+        # into the shared goal_registry_manager/rollout params for BOTH
+        # optimizer backends (only self.optimizer.optimize itself differs
+        # between MPPI and LBFGS), so lbfgs_bspline needs this exactly as much
+        # as mppi_acceleration does. Without it, LBFGS was warm-started every
+        # cycle from _state_from_action's seq.position[:, -1, :] (reactive_
+        # controller.py) -- the plan's LAST horizon point -- while paced
+        # sending only ever executes the first k = round(command_interval /
+        # step_dt) - 1 points, so the solver's assumed starting velocity never
+        # matched what the arm actually reached. That produced large
+        # plan-to-plan boundary jumps (accel_boundary_dps2) even though each
+        # individual plan window stayed smooth (accel_win_max_dps2 clean),
+        # and vbc_max_dps read 0.0 on every row because _v_bc was never
+        # assigned for this solver.
+        if self._v_bc is None:
+            self._v_bc = torch.zeros_like(current_state.position)
+        current_state = current_state.clone()
+        current_state.velocity = self._v_bc
+
+        # Snapshot of the state we are about to hand to the solver. Everything
+        # the diagnostics and the convergence criterion report below must
+        # describe THIS state, not the object as it looks once
+        # optimize_action_sequence has had it.
+        #
+        # Measured 2026-08-07 over five hardware runs: current_state.position
+        # occasionally reads back, AFTER the solve, as a small vector bounded by
+        # max_acceleration (0.5 rad, leeloo_curobo.yaml) — a 125-200 deg step in
+        # ~120 ms, with the following step resuming the true trajectory exactly
+        # where the previous one left it. It produced phantom 1.3-1.9 m / 96-163
+        # deg FK errors in the CSV while the commanded per-joint velocities ran
+        # straight through them without a discontinuity, which is not how MPPI
+        # would react to a genuinely 125-deg-wrong initial state. A plausibility
+        # gate on the joint_states feedback (JointSpeedStrategy.
+        # _feedback_is_plausible) did not remove them, and that topic has a
+        # single publisher with the six expected names — so the reading, not the
+        # feedback, is the prime suspect. The mismatch check after the solve
+        # settles it: if it fires, cuRobo is writing into the argument.
+        state_in = current_state.clone()
 
         t_solve = time.monotonic()
         result = self.solver.optimize_action_sequence(current_state)
         solve_ms = (time.monotonic() - t_solve) * 1000.0
+
+        try:
+            if not torch.equal(state_in.position, current_state.position):
+                self.node.get_logger().warn(
+                    "MPC: the solver mutated the state it was given "
+                    f"(in={[round(math.degrees(v), 2) for v in state_in.position.reshape(-1).tolist()]} "
+                    f"out={[round(math.degrees(v), 2) for v in current_state.position.reshape(-1).tolist()]}) "
+                    "- diagnostics use the input snapshot",
+                    throttle_duration_sec=1.0)
+        except Exception:
+            pass
         seq = result.action_sequence
         if seq is not None and seq.position.shape[1] > 0:
             action = seq.clone()
-            if getattr(self, '_use_mppi_acceleration', False):
-                a = self._vel_feedback_alpha
-                cap = math.radians(_VBC_CAP_DPS)
-                self._v_bc = ((1.0 - a) * self._v_bc + a * seq.velocity[:, -1, :]).clamp(-cap, cap)
+            # Sample the plan at the point the arm will actually have
+            # REACHED when this window is replaced, not at the plan's last
+            # point. The bridge pops one point per interpolation_dt tick and
+            # holds a window for _command_interval, so only the first
+            # (_command_interval / step_dt) points are ever executed — at the
+            # production pacing that is 8 of 16, and the unexecuted half is
+            # pure overshoot. Feeding back seq.velocity[:, -1, :] therefore
+            # reinjected a velocity the arm never reached, compounding cycle
+            # over cycle: that, not ACCELERATION mode itself, is the
+            # 6->80 deg/s runaway of debug 2026-07-15. Measured 2026-08-07:
+            # plan point 15 = 17.7 deg/s vs the arm's real peak 11.3, while
+            # plan point 7 = 11.0 — the executed point matches reality.
+            # Previously gated to _use_mppi_acceleration only -- see the read
+            # side above for why LBFGS needs this identically.
+            npts = seq.velocity.shape[1]
+            if self._command_interval > 0.0 and self._step_dt > 0.0:
+                k = int(round(self._command_interval / self._step_dt)) - 1
+                k = max(0, min(k, npts - 1))
+            else:
+                # Unpaced: the window is replaced as soon as the next solve
+                # returns, so there is no fixed executed prefix to sample.
+                k = npts - 1
+            self._executed_idx = k  # _csv_write measures continuity at this point
+            a = self._vel_feedback_alpha
+            cap = math.radians(_VBC_CAP_DPS)
+            self._v_bc = ((1.0 - a) * self._v_bc + a * seq.velocity[:, k, :]).clamp(-cap, cap)
         else:
 
             action = current_state.clone()
             action.velocity = torch.zeros_like(action.position)
             action.acceleration = torch.zeros_like(action.position)
 
-        self._last_position_error = self._fk_position_error(current_state)
+        # state_in, not current_state: a post-solve corruption would otherwise
+        # feed a phantom metre-scale error into _update_hold() and silently
+        # reset a hold counter that had legitimately been accumulating.
+        self._last_position_error = self._fk_position_error(state_in)
+        self._last_orientation_error = self._fk_orientation_error(state_in)
+        self._update_hold()
+        # Measured joint POSITIONS, for the CSV. Without them a run that ends
+        # against a joint limit is undiagnosable offline: con_cspace_bound is a
+        # composite of all five cspace terms and, per the constraint_cfg note
+        # above, is dominated by the jerk violation on every step -- it cannot
+        # isolate a position bound. Logged raw so limits can be checked against
+        # the URDF afterwards rather than baked in here.
+        try:
+            q = state_in.position
+            self._last_q = (q[0] if q.dim() > 1 else q).detach().cpu().tolist()
+        except Exception:
+            self._last_q = None
         if seq is not None and seq.position.shape[1] > 0:
             if self._debug_enabled():
-                breakdown = self._cost_breakdown(result)
-                self._csv_write(result, solve_ms, breakdown)
-                self._publish_costs(result, breakdown)
-            self._publish_predicted_path(result)
+                breakdown = self._diag.cost_breakdown(result)
+                horizon_diag = self._diag.horizon_diag(result, seq, self._executed_idx)
+                self._diag.csv_write(
+                    result, solve_ms, breakdown, horizon_diag,
+                    command_interval=self._command_interval,
+                    last_position_error=self._last_position_error,
+                    last_orientation_error=self._last_orientation_error,
+                    v_bc=self._v_bc, executed_idx=self._executed_idx, last_q=self._last_q,
+                )
+                self._diag.publish_costs(
+                    result, breakdown, self._last_position_error, self._last_orientation_error)
+            self._diag.publish_predicted_path(result)
+            self._diag.publish_full_predicted_path(result)
 
         if self._debug_enabled():
-            try:
-                vel = action.velocity
-                is_horizon = vel.dim() == 3
-                v_first = float(vel[:, 0, :].abs().max()) if is_horizon else float(vel.abs().max())
-                v_last = float(vel[:, -1, :].abs().max()) if is_horizon else v_first
-                n_pts = action.position.shape[1] if action.position.dim() == 3 else 1
-                self.node.get_logger().debug(
-                    f"[MPC DIAG] step: fk_err={self._last_position_error:.4f}m "
-                    f"horizon_points={n_pts} |v|first={v_first:.3e} |v|last={v_last:.3e} rad/s",
-                    throttle_duration_sec=1.0,
-                )
-            except Exception as e:
-                self.node.get_logger().warn(f"[MPC DIAG] step log failed: {e}", throttle_duration_sec=5.0)
+            self._diag.log_step_summary(action, self._last_position_error)
 
         return action
 
     def apply_live_goal(self, raw_goal) -> bool:
+        self.node.get_logger().info(
+            f"MPC: live goal received - position=({raw_goal[0]:.4f}, {raw_goal[1]:.4f}, "
+            f"{raw_goal[2]:.4f})m orientation(wxyz)=({raw_goal[3]:.4f}, {raw_goal[4]:.4f}, "
+            f"{raw_goal[5]:.4f}, {raw_goal[6]:.4f})"
+        )
         goal = self._set_target(raw_goal)
         applied = self._apply_goal(goal, raw_goal)
         self.goal = goal
-        self._publish_goal_marker(raw_goal, applied)
+        self._diag.publish_goal_marker(raw_goal, applied)
         return applied
-
-    def _publish_goal_marker(self, raw, applied: bool = True):
-        """Publish a sphere Marker at the current Cartesian goal, for RViz.
-
-        Color reflects whether the solver actually accepted the goal: red when
-        applied (tracking normally), orange when IK failed and the arm is only
-        pose-tracking (may not move) — see _apply_goal's warn path. Without
-        this, the marker showed a goal as "set" even when the controller
-        wasn't really tracking it, which is a bad debugging trap. cf. debug
-        2026-07-28.
-        """
-        if getattr(self, '_goal_marker_pub', None) is None:
-            return
-        marker = Marker()
-        marker.header.frame_id = self._path_frame
-        marker.header.stamp = self.node.get_clock().now().to_msg()
-        marker.ns = "mpc_goal"
-        marker.id = 0
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.position.x = float(raw[0])
-        marker.pose.position.y = float(raw[1])
-        marker.pose.position.z = float(raw[2])
-        marker.pose.orientation.w = float(raw[3])
-        marker.pose.orientation.x = float(raw[4])
-        marker.pose.orientation.y = float(raw[5])
-        marker.pose.orientation.z = float(raw[6])
-        marker.scale.x = marker.scale.y = marker.scale.z = 0.03
-        marker.color.a = 1.0
-        marker.color.r = 1.0
-        marker.color.g = 0.0 if applied else 0.5  # red = tracking, orange = IK failed
-        marker.color.b = 0.0
-        self._goal_marker_pub.publish(marker)
 
     def update_world(self, scene) -> None:
         """Reload the shared Scene into the MPC's collision checker.
@@ -656,7 +518,8 @@ class MPCController(ReactiveController):
         return bool(self.node.get_parameter('mpc_debug').value)
 
     def cancel(self):
-        self._csv_close()
+        if getattr(self, '_diag', None) is not None:
+            self._diag.csv_close()
         super().cancel()
 
 

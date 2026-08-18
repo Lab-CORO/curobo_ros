@@ -9,7 +9,9 @@ Open-loop planners (plan a full trajectory, then execute) — base ``SinglePlann
 - JointSpacePlanner: joint-space planning
 
 Reactive controllers (closed-loop control loop) — base ``ReactiveController``:
-- MPCController: Model Predictive Control (real-time, cuRobo ModelPredictiveControl)
+- MPCController: Model Predictive Control (real-time, cuRobo ModelPredictiveControl, MPPI or LBFGS
+  via optimize_action_sequence + hand-rolled pacing)
+- LBFGSController: LBFGS+B-spline MPC built directly on cuRobo's optimize_next_action() API
 - RetargetController: teleop pose-stream following (cuRobo MotionRetargeter, IK-based)
 
 Both planner families consume the node's single shared context (robot, obstacles,
@@ -21,6 +23,7 @@ from .single_planner import SinglePlanner
 from .reactive_controller import ReactiveController
 from .classic_planner import ClassicPlanner
 from .mpc_planner import MPCController, MPCPlanner
+from .lbfgs_planner import LBFGSController
 from .retarget_controller import RetargetController
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
@@ -35,6 +38,7 @@ __all__ = [
     'ClassicPlanner',
     'MPCController',
     'MPCPlanner',
+    'LBFGSController',
     'RetargetController',
     'MultiPointPlanner',
     'JointSpacePlanner',

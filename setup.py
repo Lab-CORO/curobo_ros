@@ -20,6 +20,7 @@ setup(
         (os.path.join('share', package_name, 'curobo_doosan/src/m1013/meshes', 'm1013_blue'),      glob(os.path.join('curobo_doosan/src/m1013/meshes/m1013_blue', '*.dae*'))), #TODO faire une packages ros2 pour la config doosan
         (os.path.join('share', package_name, 'rviz'),                                        glob('rviz/*.rviz')),
         (os.path.join('share', package_name, 'config'),                                        glob('config/*.*')),
+        (os.path.join('share', package_name, 'config', 'mpc'),                                 glob('config/mpc/*.*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -41,6 +42,7 @@ setup(
             # are the only thing that lands: a file installed through data_files
             # goes to share/ and stays invisible to `ros2 run`.
             'benchmark_voxel_grid = curobo_ros.tools.benchmark_voxel_grid:main',
+            'run_pose_matrix = curobo_ros.tools.run_pose_matrix:main',
         ],
     },
 )

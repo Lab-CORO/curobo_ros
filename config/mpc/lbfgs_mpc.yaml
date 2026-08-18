@@ -1,0 +1,183 @@
+# LBFGS (B-spline control space) cost/optimizer config for MPCController
+# (curobo_ros/planners/mpc_planner.py). Loaded whole by
+# _build_lbfgs_optimizer_config(); edit values here instead of in code. Path is
+# the `mpc_lbfgs_config_file` ROS param (see unified_planner_node.py), forwarded
+# from leeloo's control.launch.py / curobo_ros's gen_traj.launch.py.
+#
+# Started as a copy of cuRobo's stock task/mpc/lbfgs_mpc.yml, with ONE
+# addition applied below (cross-referenced against mppi_mpc.yaml):
+#
+# 1. tool_pose_cfg._non_terminal_pose_axes_weight_factor, mirroring the fix
+#    validated for MPPI on 2026-08-07. Without it, ToolPoseCriteria defaults
+#    that field to [0]*6 (tool_pose_criteria.py:56), i.e. the pose cost scores
+#    ONLY the terminal horizon step -- the part of the plan actually EXECUTED
+#    before the next re-solve (interpolation_steps*2 points, a small fraction
+#    of the horizon) is then unscored. Measured on the M1013
+#    (mpc_diag_lfbsg.csv, 2026-08-14): fk_err_m plateaued around 0.55m for 47s
+#    of continuous servoing while the solver's own result.position_error read
+#    ~0.0005m throughout.
+#
+# TRIED AND REVERTED (2026-08-14): a constraint_cfg.cspace_cfg joint-POSITION
+# hard limit, ported from mppi_mpc.yaml (see that file's own copy of this
+# block for why MPPI needs it). A/B'd against the exact goal/posture from
+# mpc_diag_20260814_155723.csv (repro script, m1013, LBFGS): WITH the
+# constraint, fk_err_m overshot 0.53m -> 1.12m in the first 0.5s then
+# plateaued oscillating around 0.25m/20deg, never converging -- matches the
+# "overshoots and can't return" symptom reported that day. WITHOUT it
+# (everything else identical), fk_err_m converged smoothly 0.53m -> 0.0000m
+# and fk_rot_err_deg 177.6 -> 0.0 in 4s, no overshoot. The live CSV corroborates:
+# con_cspace_bound spiked into the millions while every joint stayed >17deg from
+# its real limit -- not a legitimate proximity signal. Likely cause: LBFGS
+# optimizes B-spline CONTROL POINTS (BSPLINE_3), not interpolated joint
+# positions directly: candidate points probed during the Approx-Wolfe line
+# search can transiently leave the real joint range even when the final
+# interpolated trajectory never would, so this STATE-type bound cost sees
+# phantom violations and injects a huge, noisy gradient -- something MPPI's
+# direct ACCELERATION-space sampling never exposed it to. Do not re-add this
+# constraint to this file without re-running that A/B first.
+#
+# This is now our own copy, not cuRobo's file -- every field below is fair
+# game to tune. Two known gaps, both discussed 2026-08-14:
+#   - tool_pose weight ratio 5000:200 = 25:1 position:orientation is much
+#     steeper than MPPI's 2.5:1, and even accounting for use_lie_group=false
+#     here vs true for MPPI (axis-angle's gradient is 2x lie-group's per
+#     radian of real error for equal weight -- see wp_tool_pose.py's
+#     compute_rotation_error_axis_angle vs compute_rotation_error_lie_group),
+#     LBFGS still weighs orientation ~5x less than MPPI per radian of actual
+#     error. Likely cause of the slow orientation convergence seen with
+#     camera obstacles removed.
+#   - cspace_target_weight below (1000.0, cuRobo's stock value) is currently
+#     INERT: MPCController._apply_goal() (mpc_planner.py) always calls
+#     solver.update_goal_tool_poses(goal, run_ik=False) first, and that call
+#     (run_ik=False) ALWAYS returns True and unconditionally calls
+#     disable_joint_position_tracking() -> cost_cspace_base.py's
+#     disable_cspace_target(), which zeroes the RUNTIME weight tensor
+#     regardless of what is configured here (solver_mpc.py:432-437,
+#     cost_cspace_base.py:82-86). The multi-seed IK anchor fallback
+#     (_solve_goal_state in mpc_planner.py) is therefore dead code as
+#     currently wired, for BOTH solvers. Not touched here -- re-enabling it
+#     would need a deliberate change to _apply_goal(), not just this file.
+#
+# NOTE: unlike the MPPI branch, optimizer.num_iters/inner_iters here are NOT
+# overridden from mpc_warm_start_iters/mpc_cold_start_iters at runtime -- those
+# two ROS params only feed warm_start_optimization_num_iters/
+# cold_start_optimization_num_iters (ModelPredictiveControlCfg.create kwargs),
+# which govern how many solves happen at cold vs warm start, not the per-solve
+# iteration count below. cuRobo requires num_iters to be a MULTIPLE of
+# inner_iters (LBFGSOpt.update_niters()) -- keep that constraint if you edit
+# either.
+#
+# This file is also loaded whole and handed AS-IS to optimizer_configs by
+# _build_lbfgs_optimizer_config() (mpc_planner.py) for MPCController's LBFGS
+# branch -- do not add top-level keys here beyond `rollout`/`optimizer`, cuRobo
+# rejects unexpected keys in an optimizer_configs entry. lbfgs_planner.py's
+# LBFGSController-specific tuning (warm_start_iters/cold_start_iters/horizon)
+# lives in its own config/mpc/lbfgs_reactive.yaml instead, precisely to avoid
+# coupling the two controllers through one shared file.
+rollout:
+  cost_cfg:
+    cspace_cfg:
+      activation_distance: [0.01, 0.01, 0.01, 0.01, 0.01]  # torque
+
+      squared_l2_regularization_weight:
+        # velocity damping raised 0.01 (cuRobo's stock value) -> 1.0 on
+        # 2026-08-14, alongside the tool_pose orientation weight going
+        # 200 -> 1000 above. mpc_diag_20260814_165407.csv (post-rebalance)
+        # converged but then rang: fk_err_m oscillated 0.005m-0.08m on a
+        # 5-7s period, best point 0.0106m, steady band ~0.02-0.03m -- all six
+        # joints sweeping a few degrees in lockstep, the textbook signature of
+        # an underdamped response (raised the tracking gain without raising
+        # rate damping to match). 0.01 was tuned for the ORIGINAL 200
+        # orientation weight; classic control-theory move is to scale damping
+        # with gain, not leave it fixed. UNVERIFIED as of this edit -- if 1.0
+        # overdamps (visibly slower convergence) or underdamps (oscillation
+        # persists), it needs sweeping, not just accepting on faith.
+        - 0.01     # velocity
+        - 10000.0 # acceleration
+        - 10.0    # jerk
+        - 0.0     # torque smooth
+        - 0.0     # energy smooth
+      weight:
+        - 1000.0
+        - 1000.0
+        - 1000.0
+        - 100.0
+        - 0.0     # torque limit
+      cost_type: STATE
+      retime_weights: false
+      retime_regularization_weights: true
+      cspace_target_weight: 1000.0
+      cspace_non_terminal_weight_factor: 0.05
+
+    tool_pose_cfg:
+      use_lie_group: false
+      # orientation weight raised 200 -> 1000 on 2026-08-14: mpc_diag_20260814_164331.csv
+      # showed fk_rot_err_deg drifting 0.5deg -> 35deg (never recovering) while
+      # fk_pos_err_m converged 0.48m -> 0.05m -- j1/j2/j3 swept 15-40deg chasing
+      # position while j4/j5/j6 (the wrist, orientation's actual DOF) barely moved
+      # (<5deg). 1000 matches MPPI's effective orientation gradient strength
+      # (MPPI: weight=2000, use_lie_group=true; axis-angle's gradient is 2x
+      # lie-group's per radian of real error at equal weight -- see the header
+      # comment's rotation-error-formula note -- so 1000 here ~= 2000 there).
+      # UNVERIFIED as of this edit -- re-test on the actual failing goal before
+      # trusting this value.
+      weight: [5000.0, 1000.0]
+      _terminal_pose_convergence_tolerance: [0.0, 0.0]
+
+      # Added on top of cuRobo's stock file -- see header comment above.
+      _non_terminal_pose_axes_weight_factor: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+
+  constraint_cfg:
+    scene_collision_cfg:
+      activation_distance: 0.01
+      use_speed_metric: true
+      use_sweep: true
+      use_sweep_kernel: true
+      weight: 10000.0
+    self_collision_cfg:
+      weight: 100000.0
+
+    # No cspace_cfg (joint-limit) hard constraint here on purpose -- see the
+    # "TRIED AND REVERTED" note in the header comment above. It caused
+    # overshoot/oscillation under LBFGS's B-spline control-point optimization
+    # and was removed 2026-08-14 after an A/B confirmed it, not the absence of
+    # a joint-limit signal, was the cause of the observed non-convergence.
+
+optimizer:
+  solver_type: lbfgs
+  solver_name: lbfgs
+  cost_convergence: 1.0e-11
+  cost_delta_threshold: 0.0
+  cost_relative_threshold: 1.0
+  debug_info:
+    visual_traj: null
+  epsilon: 0.01
+  fixed_iters: true
+  history: 27
+  inner_iters: 25
+  last_best: 10
+  line_search_scale: [0.0, 0.1, 0.5, 1.0]
+  line_search_type: approx_wolfe
+  num_iters: 50
+  num_problems: 1
+  stable_mode: true
+  step_scale: 0.98
+  store_debug: false
+  sync_cuda_time: true
+  use_coo_sparse: true
+  use_cuda_kernel: true
+  use_cuda_line_search_kernel: true
+  use_cuda_update_best_kernel: true
+  use_shared_buffers_kernel: true
+  # 1.0e-3, NOT 1e-3: PyYAML's SafeLoader only recognizes exponent notation as
+  # a float when the mantissa has a decimal point (YAML 1.1 float regex) --
+  # "1e-3" parses as the STRING '1e-3', which then reaches the CUDA line-search
+  # kernel launch (launch_line_search) and fails with "TypeError: the argument
+  # is of unsupported type: <class 'str'>" inside cuda.core's kernel arg
+  # handler (debug 2026-08-14, log_lgfbs.txt). cuRobo's own stock
+  # lbfgs_mpc.yml has this same "1e-3" spelling and gets away with it only
+  # because its loader (resolve_config) evidently coerces it upstream --
+  # our plain yaml.safe_load (_load_mpc_config) does not.
+  line_search_wolfe_c_1: 1.0e-3
+  line_search_wolfe_c_2: 0.98
+  return_best_action: true

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+Loopback-only CycloneDDS profile for tune_mpc.py's isolated trial nodes.
+
+The workstation's default profile (~/.cyclone/profile.xml) is tuned for the
+real multi-machine Leeloo network: it disables multicast and binds to the
+wlp4s0 Wi-Fi interface with a static peer list (Ridgeback/arm/workstation
+IPs). That's correct for real hardware but breaks discovery between
+independent processes on localhost -- which is all tune_mpc.py's harness
+client and its trial subprocess ever are. Rather than touch the shared
+profile (used for real robot bringup), tune_mpc.py points CYCLONEDDS_URI at
+this file instead, for both its own client node and every trial subprocess,
+alongside the isolated ROS_DOMAIN_ID it already sets.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+    <Domain Id="any">
+        <General>
+            <Interfaces>
+                <NetworkInterface name="lo" />
+            </Interfaces>
+            <AllowMulticast>true</AllowMulticast>
+        </General>
+        <Discovery>
+            <!-- lo isn't multicast-capable here, so SPDP falls back to
+                 unicast port-scanning on localhost, bounded by
+                 MaxAutoParticipantIndex (default 9). bringup_leeloo.launch.py
+                 sim:=true spawns ~24 node processes; left at the default,
+                 late-joining participants (confirmed: curobo_trajectory_planner
+                 specifically) silently never get discovered by a client
+                 created before them. Matches (and exceeds) the workstation's
+                 own profile's value for the same reason. -->
+            <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
+            <Peers>
+                <Peer Address="127.0.0.1"/>
+            </Peers>
+        </Discovery>
+    </Domain>
+</CycloneDDS>
