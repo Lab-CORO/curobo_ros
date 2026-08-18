@@ -998,7 +998,7 @@ class ReactiveController(TrajectoryPlanner):
         2026-0x-xx oscillation the docstring below describes.
         """
         if not self.node.has_parameter('use_real_velocity_feedback'):
-            self.node.declare_parameter('use_real_velocity_feedback', False)
+            self.node.declare_parameter('use_real_velocity_feedback', True)
         return bool(self.node.get_parameter('use_real_velocity_feedback').value)
 
     def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
