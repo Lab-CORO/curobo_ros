@@ -49,7 +49,7 @@ rollout:
     tool_pose_cfg:
       use_lie_group: false
       weight: [5000.0, 1000.0]
-      _terminal_pose_convergence_tolerance: [0.0, 0.0]
+      _terminal_pose_convergence_tolerance: [0.005, 0.0001]
       _non_terminal_pose_axes_weight_factor: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
 
   constraint_cfg:

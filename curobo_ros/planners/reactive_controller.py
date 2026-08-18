@@ -59,47 +59,18 @@ class ReactiveController(TrajectoryPlanner):
         self.goal: Any = None
         self.is_goal_active = False
 
-        # Raw [x, y, z, qw, qx, qy, qz] written from the ROS thread (topic) and
-        # consumed on the control-loop thread to avoid racing CUDA graph capture.
-        # The lock only guards the pointer swap (see set_live_goal/_take_live_goal)
-        # — apply_live_goal() itself runs outside it, since it does CUDA work.
+
         self._live_goal_lock = threading.Lock()
         self._latest_goal = None
         self._latest_goal_fresh = False
 
         # Tunables (overwritten from the per-call config in plan()).
         self.convergence_threshold = 0.01      # meters
-        # 0.05 rad = 2.9 deg, matching _ensure_ik_solver's own
-        # orientation_tolerance in mpc_planner.py. The IK anchor handed to MPPI
-        # is only accurate to that, so a tighter convergence gate here would be
-        # a target the pipeline cannot structurally reach -- tighten both or
-        # neither.
+
         self.convergence_threshold_rad = 0.05  # radians
-        # Consecutive in-tolerance steps required before on_target goes true.
-        # 5 steps ~ 1.2 s at the production mpc_command_interval of 0.24 s.
-        # Rationale: measured 2026-08-07, position reached 0.0037 m then drifted
-        # back out to 0.0094 m by the end of the run. An instantaneous test
-        # reports success on the way through; only a held one means converged.
+
         self.convergence_hold_steps = 5
         self.max_iterations = 1000
-        # Refresh the perception ESDF every N producer-loop iterations (0
-        # disables, 1 = every iteration). Units: for LBFGSController this is
-        # BATCHES (loop_iter, one producer iteration = batch_size=4 step()
-        # calls), not individual steps -- see loop_iter's own docstring below
-        # in _execute_paced for why tstep can't be used here.
-        # At 20 (~3s at 7Hz) the MPC collision world lagged behind a moving
-        # obstacle (a hand) -- the arm made contact before the update landed.
-        # 2 is roughly camera rate (5Hz), affordable since voxelization moved to
-        # the GPU (no more ~10s CPU fallback). See debug 2026-07-15.
-        # Re-verified 2026-08-18 on the Jetson Orin AGX (LBFGSController):
-        # median measured batch period is ~150ms (lbfgs_diag CSV, dt_step_ms
-        # column), so period=2 -> ~300ms/3.3Hz, already slower than the 200ms/
-        # 5Hz camera -- no GPU cycles wasted re-checking a stale frame. period=4
-        # (~600ms/1.7Hz) was considered to cut refresh_perception_world()'s
-        # blocking gpu_lock overhead further, but would triple the worst-case
-        # staleness on a moving obstacle vs. the 2026-07-15 incident's own
-        # trade-off -- kept at 2, since that incident is exactly the failure
-        # mode this guards against.
         self.perception_refresh_period = 2
 
         # Latest scalar position error, written by step(), read by is_converged().
@@ -113,61 +84,19 @@ class ReactiveController(TrajectoryPlanner):
         # Cartesian target orientation (wxyz quaternion tensor), same source.
         self._target_quaternion = None
         self._step_times = []
-        # Last commanded action — fed back so the next current_state carries
-        # velocity/acceleration continuity (without it the solver restarts from
-        # rest every step and the arm never builds up motion).
         self._last_action = None
         # Wall-clock of the last status log (throttled, rate-independent).
         self._last_log_time = 0.0
 
-        # Fixed-interval command pacing (used only when a subclass sets
-        # self._command_interval > 0, e.g. MPCController via the
-        # mpc_command_interval ROS param). Producer/consumer split: the
-        # execute() loop is the producer (solves continuously, never blocks on
-        # sending); a per-goal timer is the consumer (sends the next queued
-        # action at a fixed cadence, or warns and sends nothing if the queue
-        # is empty). Only the producer ever calls step() (CUDA), so the
-        # timer's callback group only needs to prevent a slow SEND from
-        # overlapping the next tick — no GPU-concurrency concern. cf. debug
-        # 2026-07-17.
         self._timer_cb_group = None
         self._pending_lock = threading.Lock()
-        # Condition sharing _pending_lock: the consumer (_on_send_tick)
-        # notifies it after every pop, so the producer (_execute_paced) can
-        # block waiting for queue room instead of pacing itself to a
-        # wall-clock deadline. A deadline-based scheme (tried first, removed
-        # 2026-08-17) doesn't work here: the producer's batch time and the
-        # consumer's fixed per-tick drain are two independent clocks, and any
-        # wall-clock target that assumes a fixed relationship between them
-        # either starves the consumer (padding too much) or silently drops
-        # not-yet-sent actions (padding too little, requiring clear() to
-        # refill) -- see _execute_paced's backpressure wait. cf. debug
-        # 2026-08-17.
         self._pending_cv = threading.Condition(self._pending_lock)
-        # Queue of not-yet-sent actions, one entry per _command_interval
-        # tick. For _batch_size > 1 (LBFGSController) only ever grown by
-        # extend() (never clear()): a not-yet-consumed leftover must stay
-        # queued, not be silently discarded -- discarding it is
-        # indistinguishable downstream from the robot never having received a
-        # command for that tick. For _batch_size == 1 (MPCController) the
-        # producer still clear()s before each extend(): a full-horizon
-        # re-solve makes any unsent previous result stale, so "latest wins"
-        # is intentional there, not a leftover of the old scheme.
         self._pending_queue = deque()
         self._paced_send_error = False
-        # Backpressure diagnostics (reset per goal in _execute_paced):
-        # minimum queue depth ever observed at a consumer pop (0 means a
-        # tick found the queue empty -- see _on_send_tick) and how many pops
-        # that happened on. Both should stay at/near their initial values in
-        # normal operation; a climbing starvation count means the queue cap
-        # is too tight for the measured solve-time distribution.
         self._min_queue_depth_seen = None
         self._starvation_ticks = 0
 
-        # Per-producer-iteration timing breakdown, written in _execute_paced,
-        # read by LBFGSController.step() -> MPCDiagnostics.record_tick (see
-        # _execute_paced's own comments on each field). Defaults cover
-        # MPCController and any pre-first-iteration read.
+
         self._diag_backpressure_wait_ms = 0.0
         self._diag_perception_ms = 0.0
         self._diag_live_goal_ms = 0.0
@@ -175,23 +104,10 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_cheap_ms_before_resolve = 0.0
         self._diag_batch_wall_ms = 0.0
 
-        # Real-velocity finite-difference baseline for _debug_real_velocity_feedback
-        # (see that method's docstring). Reset per-goal in _set_target so a stale
-        # dt/velocity from a previous goal (or a long pause) never contaminates
-        # the first real-acceleration estimate of a new one.
+
         self._prev_real_velocity = None
         self._prev_real_velocity_t = None
 
-        # Diagnostic-only gap between the PREDICTED velocity/acceleration
-        # about to be fed back as current_state (_close_state_loop) and what
-        # the REAL robot velocity/acceleration was at that same instant.
-        # Computed unconditionally in _close_state_loop (not just when
-        # _debug_real_velocity_feedback is active), so this gap's growth can
-        # be measured on any run for LBFGSController's CSV -- see
-        # MPCDiagnostics.record_tick's vel/accel_input_err columns, and the
-        # per-joint pred/real columns for investigating whether the gap is a
-        # time-lag (shifted-but-similar-shaped curves) or noise (uncorrelated
-        # jitter) -- cf. debug 2026-08-18.
         self._diag_vel_input_err_max = 0.0    # rad/s
         self._diag_accel_input_err_max = 0.0  # rad/s^2
         self._diag_pred_vel = None    # list[float] rad/s, one per joint
@@ -199,95 +115,24 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_pred_acc = None    # list[float] rad/s^2, one per joint
         self._diag_real_acc = None
 
-        # Lagged comparison: is the predicted-vs-real gap above actually a
-        # TIME LAG, not noise? Diagnosed 2026-08-18
-        # (lbfgs_diag_20260818_105545.csv): cross-correlating v_pred_j*/
-        # v_real_j* per joint, 5 of 6 joints peaked at lag=+2 producer
-        # iterations (correlation 0.87-0.96) vs. 0.44-0.74 at lag=0 -- a
-        # consistent, joint-independent shift, not uncorrelated jitter.
-        # Structural explanation: pred_vel is the LAST point of the batch
-        # just resolved (_execute_paced's batch[-1] -> _state_from_action),
-        # i.e. the solver's prediction for ~batch_size*interpolation_dt
-        # (one optimization_dt) INTO THE FUTURE, plus however long that
-        # point then waits in the producer/consumer queue
-        # (queue_depth observed 1-3) before actually being sent -- while
-        # real_vel is the INSTANTANEOUS measurement taken right now. They
-        # are, by construction, two different points in time; lag=+2 rows
-        # (~480ms at this run's ~240ms mean dt_step_ms) lines up with that
-        # structural delay (one optimization_dt + queue wait), not with a
-        # joint_states transport problem (ruled out separately: no repeated/
-        # stale real_vel samples found in the CSV).
-        #
-        # _diag_lag_steps holds a short history of past pred_vel/pred_acc so
-        # each cycle can also report the gap against a PAST prediction
-        # (_diag_vel_input_err_max_lagged / _diag_accel_input_err_max_lagged),
-        # for comparison against the unlagged gap in the CSV -- diagnostic
-        # only, changes nothing about which value is actually fed back.
         self._diag_lag_steps = 2
         self._diag_pred_vel_history = deque(maxlen=self._diag_lag_steps + 1)
         self._diag_pred_acc_history = deque(maxlen=self._diag_lag_steps + 1)
         self._diag_vel_input_err_max_lagged = -1.0
         self._diag_accel_input_err_max_lagged = -1.0
 
-        # Smith predictor (dead-time compensation) -- OPT-IN alternative to
-        # both the default predicted-velocity feedback and the raw
-        # real-velocity debug flag. Investigated 2026-08-18: raw real
-        # velocity is measured NOW, but the predicted velocity we normally
-        # warm-start with represents a state ~tau ahead of now (the last
-        # point of the just-solved batch, PLUS however long it then waits in
-        # the producer/consumer queue before being sent -- see
-        # _close_state_loop's docstring). Cross-correlating pred vs real
-        # (lbfgs_diag_20260818_105545/111648/112251.csv) found a consistent
-        # ~2-resolve (~480ms) lag, matching
-        # tau = (queue_depth + batch_size) * interpolation_dt. Rather than
-        # feed back a measurement that is stale by tau (the raw-real
-        # branch), propagate it FORWARD by tau first -- the classical
-        # Smith-predictor / dead-time-compensation construction (Smith,
-        # 1957). The MPC-delay-compensation literature's more rigorous
-        # version propagates the measured state through the already-issued-
-        # but-not-yet-reflected queued commands instead of assuming constant
-        # acceleration; this implementation uses the simpler
-        # constant-acceleration extrapolation (v + a*tau), not a full
-        # forward simulation through _pending_queue.
-        #
-        # Filtered first (light EMA) because raw real_acc is noisy (finite
-        # difference of an already-noisy real_vel over an irregular dt --
-        # see _close_state_loop) and naively extrapolating noise over
-        # ~450ms amplifies it. The filter itself trades noise for its own
-        # lag, so _smith_filter_alpha is a genuine tuning knob, not a free
-        # lunch -- untested on hardware as of 2026-08-18, hence gated
-        # behind use_smith_predictor_feedback (default False) with its own
-        # diagnostic CSV columns (see MPCDiagnostics.record_tick) rather
-        # than trusted outright.
+
         self._smith_filter_alpha = 0.3
         self._smith_filt_vel = None
         self._smith_filt_acc = None
-        # Diagnostics (read by LBFGSController's CSV): the extrapolated
-        # state itself, the tau used to produce it, and its gap to the
-        # PREDICTED state (the thing it's meant to approximate) -- analogous
-        # to _diag_vel_input_err_max but for this candidate feedback source.
+
         self._diag_smith_vel = None
         self._diag_smith_acc = None
         self._diag_smith_tau = 0.0
         self._diag_vel_smith_err_max = -1.0
         self._diag_accel_smith_err_max = -1.0
 
-        # Number of actions produced per producer-loop iteration in
-        # _execute_paced (1 = no behavior change, the default -- MPCController
-        # never sets this). Set >1 (e.g. LBFGSController, to
-        # trajectory_execution_manager.interpolation_steps) when the
-        # underlying solver call (optimize_next_action()) only does real GPU
-        # work on one call out of every N and silently ignores current_state
-        # on the other N-1 (verified in solver_mpc.py: it skips
-        # warm_start_solve entirely unless
-        # trajectory_execution_manager.has_valid_next_command() is False) --
-        # in that case there is no benefit to pacing those N-1 calls to real
-        # elapsed time individually. Instead the producer bursts all N calls
-        # back-to-back whenever the queue has room (see _execute_paced) and
-        # hands the whole batch to the consumer timer to drain one-per-tick,
-        # so a slow GPU resolve only has to fit inside however long the
-        # consumer takes to drain the existing buffer, not a single
-        # _command_interval.
+
         self._batch_size = 1
 
         # Device/dtype for building tensors on the hot path.
@@ -324,10 +169,6 @@ class ReactiveController(TrajectoryPlanner):
     def build_solver(self):
         """Create and return the cuRobo reactive solver from ``self.config_wrapper``.
 
-        The shared context exposes everything needed: ``robot_config_file``,
-        ``obstacle_manager.get_scene()``, ``collision_cache``, ``_device`` /
-        ``_ops_dtype``. Implementations should also publish the solver where the
-        node expects it (e.g. ``self.node.mpc``) so world/cache updates reach it.
         """
         raise NotImplementedError
 
@@ -350,13 +191,6 @@ class ReactiveController(TrajectoryPlanner):
         computes all ``n`` actions on a single ``step()`` call and exposes a
         cheaper way to read the rest back out (see LBFGSController's override,
         which skips n-1 redundant solver-side calls this way).
-
-        Also tracks ``_diag_cheap_ms_before_resolve`` (read by
-        MPCDiagnostics.record_tick): the wall time of any calls in this batch
-        that land before whichever one turns out to be the real resolve. Only
-        meaningful with this default, per-call implementation -- an override
-        that never makes n-1 extra calls has nothing to attribute here (see
-        LBFGSController.step_batch's docstring).
         """
         batch = []
         cheap_ms_accum = 0.0
@@ -375,38 +209,19 @@ class ReactiveController(TrajectoryPlanner):
     def update_world(self, scene) -> None:
         """Push the shared Scene into this controller's collision model.
 
-        Reactive solvers each hold their own collision checker, so the node
-        delegates world updates here (instead of reaching into solver internals).
-        Default is a no-op; concrete controllers override (e.g. MPC reloads its
-        scene_collision_checker, retarget updates its IK solvers).
         """
         return None
 
     def has_solver(self) -> bool:
         """TrajectoryPlanner override: each reactive controller owns its own
-        cuRobo solver exclusively (unlike SinglePlanner's shared
-        MotionPlanner) -- the base class's default world_identity (id(self),
-        i.e. never collides with another planner) is therefore correct as-is
-        and isn't overridden here.
         """
         return self.solver is not None
 
-    # ------------------------------------------------------------------
-    # Shared cuRobo helpers (target pose + FK error) usable by every
-    # reactive controller — solver exposes tool_frames and FK either directly
-    # (MPC) or via .kinematics (retargeter).
-    # ------------------------------------------------------------------
 
     def _set_target(self, raw) -> GoalToolPose:
         """Store the target xyz (for FK error) and build the tool-pose goal.
-
-        Passes ordered_tool_frames + num_goalset like the official cuRobo reactive
-        example so the goal buffer is shaped exactly as the solver expects.
         """
-        # Single choke point for every goal change -- setup() and
-        # apply_live_goal() both land here, on both reactive controllers. A new
-        # target invalidates any hold accumulated against the previous one, so
-        # resetting here (rather than in plan()) also covers live retargeting.
+
         self._hold_count = 0
         self._prev_real_velocity = None
         self._prev_real_velocity_t = None
@@ -419,9 +234,7 @@ class ReactiveController(TrajectoryPlanner):
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
         )
-        # raw is [x, y, z, qw, qx, qy, qz] -- cuRobo's quaternion convention is
-        # WXYZ (Pose.from_list below consumes the same seven values in the same
-        # order), so raw[3:7] can be stored verbatim.
+
         self._target_quaternion = torch.tensor(
             raw[3:7], dtype=self._dtype, device=self._device
         )
@@ -460,17 +273,7 @@ class ReactiveController(TrajectoryPlanner):
             return float('inf')
 
     def _fk_orientation_error(self, current_state: JointState) -> float:
-        """Real angular distance (rad) between the current EE and the target.
-
-        Measured by FK against the goal quaternion, deliberately NOT read from
-        ``result.rotation_error``: that field is scaled by roughly 1e-3 relative
-        to the true error (verified 2026-08-07 against fk_err_m over three
-        decades) AND was written to the CSV with 5 decimals, leaving ~16
-        quantisation steps across a whole run — unusable either way.
-
-        Geodesic angle between unit quaternions: theta = 2*acos(|<q1,q2>|).
-        The absolute value takes the shorter of the two arcs, since q and -q
-        are the same rotation.
+        """Real angular distance (rad) between the current EE and the target
         """
         if self._target_quaternion is None:
             return float('inf')
@@ -488,11 +291,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def _update_hold(self) -> int:
         """Advance the consecutive-in-tolerance counter. Call once per step.
-
-        Resets to 0 the moment either error leaves tolerance -- that reset is
-        the whole point. An instantaneous test passes while the arm is merely
-        travelling through the tolerance ball; requiring N consecutive steps
-        distinguishes "converged" from "passing by".
         """
         if self._within_tolerances():
             self._hold_count += 1
@@ -502,16 +300,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def is_on_target(self) -> bool:
         """Signal (NOT a stop condition): the arm has CONVERGED on the goal.
-
-        Requires position AND orientation inside tolerance, held for
-        convergence_hold_steps consecutive steps. Reactive control keeps
-        servoing afterwards, so this still only drives the `on_target` feedback
-        flag -- it never ends the control loop, which exits on cancel or error.
-
-        Callers that end their action on this flag now get a genuine acceptance
-        criterion. Before 2026-08-07 it tested instantaneous position only, so a
-        goal could report success with the tool mis-aimed, or while merely
-        passing through the target on its way back out.
         """
         return (self._within_tolerances()
                 and self._hold_count >= self.convergence_hold_steps)
@@ -530,10 +318,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def set_live_goal(self, raw_goal) -> None:
         """Deposit a live goal update. Called from the ROS topic thread.
-
-        Only swaps a pointer under the lock — the expensive retargeting
-        (apply_live_goal, CUDA work) happens on the control-loop thread after
-        _take_live_goal() hands it off, never here.
         """
         with self._live_goal_lock:
             self._latest_goal = list(raw_goal)
@@ -541,10 +325,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def _take_live_goal(self):
         """Atomically take-and-clear the pending live goal, or None if stale.
-
-        Replaces the previous test-read-clear sequence (latest_goal is not
-        None -> read -> set to None), which raced: a goal written by the ROS
-        thread between the read and the clear was silently dropped.
         """
         with self._live_goal_lock:
             if not self._latest_goal_fresh:
@@ -556,14 +336,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def _step_guard(self):
         """gpu_lock for a step() that may capture a CUDA graph, else no lock.
-
-        The node flags exactly the step(s) that follow a graph release/rebuild
-        (see take_graph_capture_pending) as capture-pending; every other step
-        only replays an already-captured graph and doesn't need exclusivity.
-        Locking every step would starve the perception thread (its depth
-        callback does a non-blocking gpu_lock acquire and drops the frame —
-        see camera_depth_map_strategy.py), undoing perception_refresh_period.
-        cf. debug 2026-07-28.
         """
         take = getattr(self.node, 'take_graph_capture_pending', None)
         if take is not None and take():
@@ -594,9 +366,7 @@ class ReactiveController(TrajectoryPlanner):
                 setup_ok = self.setup(start_state, goal_request)
             if not setup_ok:
                 return PlannerResult(success=False, message="Failed to set reactive goal")
-            # Discard any live goal left over from a previous session — it must
-            # not be silently applied to this new one. A goal arriving AFTER
-            # this point (i.e. after setup) is still honoured normally.
+
             self._take_live_goal()
             self.is_goal_active = True
 
@@ -625,10 +395,6 @@ class ReactiveController(TrajectoryPlanner):
     def execute(self, robot_context, goal_handle=None) -> bool:
         """Dispatch to the paced (producer/consumer) or immediate servo loop.
 
-        Paced mode (self._command_interval > 0, e.g. MPCController via the
-        mpc_command_interval ROS param) decouples solve time from send
-        cadence — see _execute_paced. Every other caller (interval 0, the
-        default) gets the original behavior, untouched, via _execute_immediate.
         """
         if not self.is_goal_active or self.solver is None:
             self.node.get_logger().error(
@@ -653,10 +419,6 @@ class ReactiveController(TrajectoryPlanner):
             # from the solver's own prediction each step (see the loop below).
             current_state = self._read_state(robot_context)
 
-            # Reactive control runs CONTINUOUSLY: reaching the target is only a
-            # signal (on_target), never a stop condition. The loop ends solely on
-            # cancel (or error). Without an action handle, max_iterations is a
-            # safety cap for non-action callers.
             while self.is_goal_active:
                 if goal_handle is not None and goal_handle.is_cancel_requested:
                     self.node.get_logger().info(f"{self.get_planner_name()} cancel requested")
@@ -664,24 +426,12 @@ class ReactiveController(TrajectoryPlanner):
                 if goal_handle is None and tstep >= self.max_iterations:
                     break
 
-                # Periodically refresh the perception-based collision world so the
-                # controller reacts to obstacles seen by the cameras. Throttled
-                # (every N steps) since recomputing the ESDF is heavier than a step.
                 if (self.perception_refresh_period > 0
                         and tstep % self.perception_refresh_period == 0
                         and hasattr(self.node, 'refresh_perception_world')):
                     self.node.refresh_perception_world(active_only=True)
 
-                # Consume a pending live goal on the loop thread only, under
-                # gpu_lock: retargeting runs the solver's IK, which can capture
-                # a CUDA graph, and capture is process-global (any CUDA op on
-                # any thread during it raises cudaErrorStreamCaptureUnsupported
-                # and poisons the context). The lock is how the perception
-                # thread knows to skip its frame — same invariant as plan()'s
-                # setup() call. A raising apply_live_goal (bad pose, IK error)
-                # is narrowed to the goal itself — it must not kill the whole
-                # session, since the arm should keep servoing the previous
-                # goal instead. cf. debug 2026-07-28.
+
                 raw = self._take_live_goal()
                 if raw is not None:
                     try:
@@ -702,17 +452,6 @@ class ReactiveController(TrajectoryPlanner):
 
                 self._send_command(robot_context, action)
 
-                # Close the loop with the REAL robot position (a fast,
-                # non-blocking read of the joint_states subscriber's latest
-                # cached value — no wait, so no new lag). Purely trusting the
-                # solver's own predicted position (position-only, from
-                # _state_from_action) drifts from reality once a horizon takes
-                # real wall-clock time to execute (observed on hardware: MPC
-                # correcting toward an imagined position -> growing tracking
-                # error, unstable motion). Velocity/acceleration stay the
-                # solver's own prediction — the driver doesn't give reliable
-                # velocity feedback, and the MPC needs SOME dynamic-continuity
-                # estimate for warm-starting.
                 predicted_state = self._state_from_action(action)
                 current_state = self._close_state_loop(robot_context, predicted_state)
                 self._last_action = action
@@ -749,44 +488,12 @@ class ReactiveController(TrajectoryPlanner):
             return False
 
     def _execute_paced(self, robot_context, goal_handle, interval: float) -> bool:
-        """Producer/consumer servo loop: this loop (producer) solves as fast as
-        it can and deposits a batch of _batch_size action(s) under a lock; a
-        per-goal timer (consumer) sends the next queued action at a fixed
-        cadence, or warns and sends nothing if the queue is empty. For
-        _batch_size == 1 (MPCController) the producer clears+replaces the
-        queue every iteration — "latest wins", never blocks on room, no
-        resending stale data. For _batch_size > 1 (LBFGSController) the
-        producer instead appends and blocks (via _pending_cv) whenever the
-        queue already holds queue_max_depth items, so a full batch is always
-        delivered in order instead of being partially overwritten. Only this
-        loop calls step() (CUDA) — the timer only pops from the queue and
-        sends, so it never contends for the GPU with a slow/cold-start solve.
-        cf. debug 2026-07-17.
+        """Producer/consumer servo loop
         """
         try:
             tstep = 0
-            # Producer-iteration counter, separate from tstep: tstep advances
-            # by batch_size (4 for LBFGSController) per iteration, which made
-            # `tstep % perception_refresh_period` (2) always land on 0 --
-            # refresh_perception_world() was firing on every single batch,
-            # unthrottled, instead of every perception_refresh_period
-            # iterations as configured. Harmless while perception is inactive
-            # (current tests), but refresh_perception_world() takes a
-            # BLOCKING gpu_lock and will do real ESDF work once cameras/
-            # obstacles are live -- exactly the scenario this is being tuned
-            # for. cf. debug 2026-08-17.
             loop_iter = 0
             batch_size = max(1, int(getattr(self, '_batch_size', 1)))
-            # One spare beyond a full batch: lets the producer stay a batch
-            # ahead of the consumer without unbounded growth. This is now
-            # the SOLE pacing mechanism (see the backpressure wait below) --
-            # there is no wall-clock target to tune. Raising it trades more
-            # starvation headroom for more in-queue actuation lag (each
-            # extra slot delays an already-computed action by one
-            # _command_interval before it's sent); it does NOT stale the
-            # solver's own input state, since _close_state_loop always reads
-            # the robot's real position fresh, right before the next batch
-            # is computed, regardless of queue depth. cf. debug 2026-08-17.
             queue_max_depth = batch_size + 1
             self._step_times = []
             self._last_action = None
@@ -821,17 +528,6 @@ class ReactiveController(TrajectoryPlanner):
                     if self._paced_send_error:
                         break
 
-                    # Backpressure: block until the consumer has drained
-                    # enough room for a new batch, instead of pacing to a
-                    # wall-clock deadline (see _pending_cv's docstring in
-                    # __init__ for why a deadline can't work: production
-                    # time and the consumer's fixed per-tick drain are two
-                    # independent clocks). _on_send_tick notifies this after
-                    # every pop, so this wakes promptly when there's room;
-                    # the wait timeout is only a responsiveness safety net
-                    # for cancellation, not part of the pacing. No-op
-                    # (queue starts empty and drains faster than filled)
-                    # for MPCController's batch_size==1.
                     t_wait0 = time.monotonic()
                     with self._pending_cv:
                         while (len(self._pending_queue) >= queue_max_depth
@@ -839,12 +535,6 @@ class ReactiveController(TrajectoryPlanner):
                             if goal_handle is not None and goal_handle.is_cancel_requested:
                                 break
                             self._pending_cv.wait(timeout=0.1)
-                    # Diagnostics only (read by LBFGSController.step() -> record_tick,
-                    # see that module for why these live as plain attrs rather than
-                    # being threaded through step()'s signature: step() is the
-                    # cuRobo-solver-agnostic hook every ReactiveController subclass
-                    # implements, and only LBFGSController's CSV path cares about
-                    # this loop's internal timing breakdown). cf. debug 2026-08-18.
                     self._diag_backpressure_wait_ms = (time.monotonic() - t_wait0) * 1000.0
 
                     if not self.is_goal_active or self._paced_send_error:
@@ -880,14 +570,6 @@ class ReactiveController(TrajectoryPlanner):
                             )
 
                     st_time = time.time()
-                    # current_state is passed unchanged to every call in the
-                    # burst. Safe because it's only CONSUMED on the call(s)
-                    # that actually re-solve (verified in solver_mpc.py:
-                    # optimize_next_action skips warm_start_solve, the only
-                    # place current_state is read, whenever
-                    # trajectory_execution_manager.has_valid_next_command()
-                    # is True) -- the other calls in the batch would ignore
-                    # a "fresher" current_state just the same.
                     with self._step_guard():
                         batch = self.step_batch(current_state, batch_size)
                     if tstep > 5:
@@ -896,10 +578,6 @@ class ReactiveController(TrajectoryPlanner):
 
                     with self._pending_cv:
                         if batch_size == 1:
-                            # MPCController: re-solves the full horizon every
-                            # call, so an unsent previous result is stale, not
-                            # useful backlog -- keep "latest wins" instead of
-                            # accumulating (see docstring above).
                             self._pending_queue.clear()
                         self._pending_queue.extend(batch)
                         self._pending_cv.notify()
@@ -922,14 +600,6 @@ class ReactiveController(TrajectoryPlanner):
 
                     tstep += batch_size
 
-                    # Real-position read stays here, right after queuing the
-                    # batch and before the next one is computed — as late as
-                    # possible for freshness, feeding the NEXT iteration's
-                    # resolving call. Unaffected by queue depth: this always
-                    # reads the robot's actual current position, regardless
-                    # of how many already-computed actions are still queued
-                    # ahead of it (cf. debug 2026-08-17 — see queue_max_depth
-                    # above for why that decoupling matters).
                     predicted_state = self._state_from_action(last_action)
                     current_state = self._close_state_loop(robot_context, predicted_state)
             finally:
@@ -938,9 +608,7 @@ class ReactiveController(TrajectoryPlanner):
             robot_context.stop_robot()
 
             if self._step_times:
-                # Each recorded entry timed one producer iteration, i.e. one
-                # batch of batch_size step() calls -- divide back down to a
-                # per-step figure so this stays comparable across batch sizes.
+
                 avg_batch = sum(self._step_times) / len(self._step_times)
                 self.node.get_logger().info(
                     f"{self.get_planner_name()} stopped: {tstep} steps, "
@@ -960,15 +628,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def _on_send_tick(self, robot_context, goal_handle):
         """Consumer: send the next queued action, else warn.
-
-        Never calls step()/CUDA — only pops from the pending queue and sends.
-        Notifies _pending_cv after every pop so the producer (blocked in
-        _execute_paced waiting for queue room) wakes promptly instead of
-        polling. Any exception here is caught (never let it escape an rclpy
-        timer callback) and signaled to the producer loop via
-        _paced_send_error, which checks it every iteration and stops cleanly
-        (mirrors the immediate loop's except-block behavior: stop_robot() +
-        return False).
         """
         try:
             with self._pending_cv:
@@ -1004,9 +663,7 @@ class ReactiveController(TrajectoryPlanner):
         fb.state = "ON_TARGET" if on_target else "TRACKING"
         fb.on_target = bool(on_target)
         fb.position_error = float(err) if err != float('inf') else -1.0
-        # -1.0 is the "not measurable" sentinel, matching position_error's
-        # convention above: inf means no target set or FK failed, and a client
-        # must not read that as a perfectly-aligned 0.
+
         fb.orientation_error = float(rot_err) if rot_err != float('inf') else -1.0
         fb.hold_count = int(self.get_hold_count())
         fb.step_progression = (
@@ -1032,9 +689,6 @@ class ReactiveController(TrajectoryPlanner):
     def _read_state(self, robot_context) -> JointState:
         """Initial solver state from the robot's joint positions.
 
-        Matches the official cuRobo reactive example: joint_names are labelled and
-        velocity/acceleration are explicitly zeroed so the solver's dynamic state
-        is well-defined at start (an unlabelled/vel-less state weakens tracking).
         """
         actual_joint_pose = robot_context.get_joint_pose()
         pos = torch.tensor([actual_joint_pose], dtype=self._dtype, device=self._device)
@@ -1053,11 +707,6 @@ class ReactiveController(TrajectoryPlanner):
 
     def _state_from_action(self, action: JointState) -> JointState:
         """Build the next solver state from a commanded action (pos+vel+acc).
-
-        For a full-horizon action (position ``[1, horizon, dof]``, from MPC's
-        ``optimize_action_sequence``), only the LAST horizon point is used to
-        warm-start the next optimize call — matches cuRobo's own
-        reactive_control example's state-continuity pattern.
         """
         pos, vel, acc = action.position, getattr(action, 'velocity', None), getattr(action, 'acceleration', None)
         if pos.dim() == 3:
@@ -1075,109 +724,23 @@ class ReactiveController(TrajectoryPlanner):
         return state
 
     def _debug_real_velocity_feedback(self) -> bool:
-        """EXPERIMENT (2026-08-18, gated -- default False, does not change the
-        validated default behaviour). Testing whether feeding REAL velocity/
-        acceleration back (instead of the solver's own PREDICTED ones, see
-        _close_state_loop's docstring) prevents the runaway-velocity
-        oscillation observed when a goal is unreachable (e.g. placed in
-        collision): fk_err_m stayed pinned near-constant for the whole run
-        while v_max_dps climbed 0->39 deg/s and con_cspace_bound exploded
-        (lbfgs_diag_20260818_074717.csv) -- consistent with predicted-
-        velocity warm-start windup (the optimizer keeps carrying forward an
-        increasingly energetic initial guess with no Cartesian progress to
-        justify it). Real velocity was already tried and reverted for the
-        NORMAL reachable-goal case (see below) because the hardware safety
-        clamp throttles it below plan -- this flag re-tests the same idea
-        specifically for the stuck-goal failure mode, where the windup this
-        would suppress may outweigh that earlier problem. Do not flip this on
-        for production without confirming it doesn't reintroduce the
-        2026-0x-xx oscillation the docstring below describes.
-        """
+
         if not self.node.has_parameter('use_real_velocity_feedback'):
             self.node.declare_parameter('use_real_velocity_feedback', False)
         return bool(self.node.get_parameter('use_real_velocity_feedback').value)
 
     def _smith_predictor_feedback(self) -> bool:
-        """Opt-in (default False): feed back a Smith-predictor-style
-        extrapolation of the REAL velocity/acceleration -- filtered, then
-        propagated forward by tau -- instead of either the solver's
-        PREDICTED state (default) or the raw REAL state
-        (_debug_real_velocity_feedback). See __init__ for the rationale and
-        _close_state_loop for the computation.
 
-        UNTESTED ON HARDWARE as of 2026-08-18 -- the diagnostic CSV columns
-        (v_smith_j*_dps / a_smith_j*_dps2 / vel_smith_err_max_dps /
-        accel_smith_err_max_dps2 / smith_tau_ms) are meant to be inspected
-        first: a much smaller vel_smith_err_max_dps than vel_input_err_max_dps
-        would confirm the extrapolation is actually tracking the predicted
-        state better than raw real does, before trusting this for anything
-        beyond an A/B test. Takes priority over
-        _debug_real_velocity_feedback if both are set.
-        """
         if not self.node.has_parameter('use_smith_predictor_feedback'):
             self.node.declare_parameter('use_smith_predictor_feedback', False)
         return bool(self.node.get_parameter('use_smith_predictor_feedback').value)
 
     def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
-        """Replace the predicted POSITION with the robot's real, latest joint
-        feedback; keep the solver's own PREDICTED velocity/acceleration.
 
-        ``robot_context.get_joint_pose()`` is a plain attribute read of the
-        value already cached by the async joint_states subscriber callback —
-        no wait, so no new lag. Without this, the MPC corrects toward a
-        purely-imagined position that drifts from where the arm actually is
-        once a horizon takes real wall-clock time to execute (observed on
-        hardware: growing tracking error, unstable motion).
-
-        Velocity is intentionally kept PREDICTED, not real, even though real
-        velocity IS available (dsr_hw_interface2.cpp reads actual_joint_velocity
-        from the same real-time struct as position — verified in source).
-        Feeding the REAL velocity back here was tried and made things worse:
-        the outgoing hardware safety clamp (JointSpeedStrategy) deliberately
-        throttles commanded velocity below what the solver just planned: real
-        velocity always lags. Reporting that throttled reality back as the
-        solver's own state told it "you're going much slower than you
-        decided", which the warm-started optimizer (only 25 iterations) can't
-        reconcile each cycle without oscillating/diverging. The safety clamp
-        legitimately uses real velocity (JointSpeedStrategy._clamp_velocities)
-        — that's a downstream actuation limit, not the planner's own model of
-        its trajectory, and the two must stay decoupled.
-
-        Cross-correlating PREDICTED against REAL velocity on real hardware
-        (lbfgs_diag_20260818_105545/111648/112251.csv) found this isn't just
-        clamp-induced lag: real_vel measured NOW consistently matches
-        pred_vel from ~2 resolves ago (~480ms) far better than pred_vel from
-        THIS resolve -- because pred_vel is the last point of the batch just
-        solved, itself ~one optimization_dt ahead, plus however long that
-        point then waits in the producer/consumer queue before being sent.
-        See ``_smith_predictor_feedback`` for an opt-in third option that
-        compensates for this measured delay (filter real_vel/real_acc, then
-        extrapolate forward by tau) instead of either ignoring it
-        (predicted, default) or feeding it back stale (raw real, the
-        ``_debug_real_velocity_feedback`` flag above).
-
-        Diagnostic (always computed, independent of which branch below
-        runs): the PREDICTED and REAL velocity/acceleration, per joint, at
-        this same instant, saved to _diag_pred_vel / _diag_real_vel /
-        _diag_pred_acc / _diag_real_acc (rad/s, rad/s^2 -- lists, one entry
-        per joint) plus their max-abs-gap summaries
-        (_diag_vel_input_err_max / _diag_accel_input_err_max), all read by
-        LBFGSController's CSV. Logged per-joint (not just the gap's
-        magnitude) so the two curves can be compared directly -- a real time
-        LAG (shifted-but-similarly-shaped curves, e.g. cross-correlating at
-        a nonzero offset) and pure NOISE (uncorrelated jitter at any offset)
-        look identical in a single max-abs-gap number but require different
-        fixes. cf. debug 2026-08-18.
-        """
         real_pose = robot_context.get_joint_pose()
         pos = torch.tensor([real_pose], dtype=self._dtype, device=self._device)
         state = JointState.from_position(pos, joint_names=self.solver.joint_names)
 
-        # Real velocity/acceleration are computed unconditionally (not just
-        # when _debug_real_velocity_feedback is active) so the diagnostic
-        # comparison runs every cycle -- get_joint_velocity() is the same
-        # cheap, non-blocking cached read as get_joint_pose() above, so this
-        # adds no new lag.
         real_vel_list = robot_context.get_joint_velocity()
         real_vel = torch.tensor([real_vel_list], dtype=self._dtype, device=self._device)
         now = time.monotonic()
@@ -1203,12 +766,6 @@ class ReactiveController(TrajectoryPlanner):
         if pred_acc is not None:
             self._diag_accel_input_err_max = float((pred_acc - real_acc).abs().max().item())
 
-        # Lagged comparison (diagnostic only, see __init__): push this
-        # cycle's prediction, then -- once the history is deep enough --
-        # compare the OLDEST entry in it (_diag_lag_steps cycles ago)
-        # against THIS cycle's real measurement. A shrinking gap here
-        # relative to _diag_vel_input_err_max above is what a genuine time
-        # lag (rather than noise) looks like.
         if self._diag_pred_vel is not None:
             self._diag_pred_vel_history.append(self._diag_pred_vel)
         if self._diag_pred_acc is not None:
@@ -1224,13 +781,6 @@ class ReactiveController(TrajectoryPlanner):
                 abs(a - b) for a, b in zip(lagged_pred_acc, self._diag_real_acc)
             )
 
-        # Smith predictor (see __init__): filter real_vel/real_acc (light
-        # EMA, to avoid extrapolating raw finite-difference noise), then
-        # propagate forward by tau = (queue_depth + batch_size) *
-        # interpolation_dt -- the real, structural delay between "resolve
-        # just computed" and "corresponding real execution point". Computed
-        # unconditionally (diagnostic columns), fed back only if
-        # _smith_predictor_feedback() is enabled.
         alpha = self._smith_filter_alpha
         self._smith_filt_vel = (
             real_vel if self._smith_filt_vel is None
@@ -1249,10 +799,7 @@ class ReactiveController(TrajectoryPlanner):
         else:
             tau = 0.0
         self._diag_smith_tau = tau
-        # Constant-acceleration extrapolation over tau; acceleration itself
-        # is carried forward unchanged (zero-jerk assumption) -- see
-        # __init__ for why this is the simpler of the two literature
-        # constructions, not a full forward simulation through the queue.
+
         smith_vel = self._smith_filt_vel + self._smith_filt_acc * tau
         smith_acc = self._smith_filt_acc
         self._diag_smith_vel = smith_vel.reshape(-1).cpu().tolist()
@@ -1277,10 +824,7 @@ class ReactiveController(TrajectoryPlanner):
         """Seed the robot/visualization at the start configuration."""
         start_position = start_state.position[0].cpu().tolist()
         n = len(start_position)
-        # joint_names=None -> RobotContext resolves them itself, inside the
-        # same critical section as the command (see set_command's docstring:
-        # reading robot_strategy.get_joint_name() here first would race a
-        # concurrent strategy switch).
+
         robot_context.set_command(None, [[0.0] * n], [[0.0] * n], [start_position])
         self.node.get_logger().info(
             f"{self.get_planner_name()}: robot init'd at "
@@ -1290,17 +834,6 @@ class ReactiveController(TrajectoryPlanner):
     def _send_command(self, robot_context, action_state: JointState):
         """Push a control action to the robot.
 
-        Two shapes are supported:
-          - Single point: position ``[dof]`` or ``[1, dof]`` -> one
-            JointTrajectory point (open-loop planners, RetargetController).
-          - Full horizon: position ``[1, horizon, dof]`` (from MPC's
-            optimize_action_sequence) -> ALL horizon points are streamed as a
-            multi-point JointTrajectory. optimize_action_sequence re-optimizes
-            fully every call (slow, ~1s on this hardware); sending only a
-            single point per call left the robot idle between calls then
-            jumping to a very different velocity — a discontinuity that
-            tripped the Doosan's acceleration limit. Streaming the whole
-            horizon gives it a smooth sequence to execute in between.
         """
         pos_t, vel_t, acc_t = action_state.position, action_state.velocity, action_state.acceleration
 
@@ -1316,7 +849,4 @@ class ReactiveController(TrajectoryPlanner):
             a = acc_t[0] if (acc_t is not None and acc_t.dim() > 1) else acc_t
             acceleration = [a.cpu().tolist() if a is not None else [0.0] * len(position[0])]
 
-        # Atomic: no gap between load and send where a concurrent producer
-        # (another call site touching the same RobotContext) could overwrite
-        # the buffers first — see RobotContext.set_and_send_command.
         robot_context.set_and_send_command(None, velocity, acceleration, position)
