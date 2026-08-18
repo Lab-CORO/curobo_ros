@@ -308,6 +308,15 @@ class LBFGSController(ReactiveController):
                     cheap_ms_before_resolve=self._diag_cheap_ms_before_resolve,
                     batch_wall_ms=self._diag_batch_wall_ms,
                     loop_iter=self._diag_loop_iter,
+                    vel_input_err_max=self._diag_vel_input_err_max,
+                    accel_input_err_max=self._diag_accel_input_err_max,
+                    pred_vel=self._diag_pred_vel,
+                    real_vel=self._diag_real_vel,
+                    pred_acc=self._diag_pred_acc,
+                    real_acc=self._diag_real_acc,
+                    vel_input_err_max_lagged=self._diag_vel_input_err_max_lagged,
+                    accel_input_err_max_lagged=self._diag_accel_input_err_max_lagged,
+                    lag_steps=self._diag_lag_steps,
                 )
 
         return action

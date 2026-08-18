@@ -275,6 +275,11 @@ class MPCDiagnostics:
         backpressure_wait_ms: float = -1.0, perception_ms: float = -1.0,
         live_goal_ms: float = -1.0, cheap_ms_before_resolve: float = -1.0,
         batch_wall_ms: float = -1.0, loop_iter: int = -1,
+        vel_input_err_max: float = -1.0, accel_input_err_max: float = -1.0,
+        pred_vel: list = None, real_vel: list = None,
+        pred_acc: list = None, real_acc: list = None,
+        vel_input_err_max_lagged: float = -1.0,
+        accel_input_err_max_lagged: float = -1.0, lag_steps: int = -1,
     ):
         """One CSV row per ``optimize_next_action()`` call -- the record_tick
         counterpart to ``csv_write``'s one-row-per-horizon-solve for
@@ -303,6 +308,39 @@ class MPCDiagnostics:
         batch, attributed to the NEXT row, same as dt_step_ms itself) +
         scheduling slop. All -1 sentinel when unset (same convention as the
         queue fields above).
+
+        ``vel_input_err_max``/``accel_input_err_max`` (rad/s, rad/s^2 -- -1
+        sentinel when unset, same convention): the gap between the
+        PREDICTED velocity/acceleration and what the REAL robot
+        velocity/acceleration was at that same instant, computed every
+        cycle by ReactiveController._close_state_loop regardless of which
+        one actually gets fed back to the solver. Diagnostic for the
+        predicted-velocity loop-gain instability described there -- a
+        growing gap here corroborates it independently of v_max_dps/joint
+        sign-flips.
+
+        ``pred_vel``/``real_vel``/``pred_acc``/``real_acc`` (rad/s, rad/s^2,
+        one entry per joint, ``None`` when unset -- written as NaN):
+        per-joint breakdown behind the two gap summaries above, logged as
+        ``v_pred_j*_dps``/``v_real_j*_dps``/``a_pred_j*_dps2``/
+        ``a_real_j*_dps2``. Needed to tell a time LAG (the real curve
+        tracks the predicted one, shifted) from NOISE (uncorrelated jitter
+        at any shift) apart -- the scalar max-gap columns alone can't
+        distinguish the two. cf. debug 2026-08-18.
+
+        ``vel_input_err_max_lagged``/``accel_input_err_max_lagged`` (rad/s,
+        rad/s^2 -- -1 sentinel when unset, e.g. still within the first
+        ``lag_steps`` resolves of a goal): the SAME max-gap computation as
+        ``vel_input_err_max``/``accel_input_err_max`` above, but comparing
+        THIS cycle's real measurement against the prediction from
+        ``lag_steps`` resolves ago instead of this cycle's own prediction.
+        Confirmed 2026-08-18 (lbfgs_diag_20260818_105545.csv): cross-
+        correlating the per-joint columns above showed 5/6 joints peaking at
+        lag=+2 (corr 0.87-0.96) vs. 0.44-0.74 at lag=0 -- i.e. real_vel
+        tracks a STALE prediction, not noise. If these lagged columns come
+        out much smaller than the unlagged ones on a given run, that run
+        corroborates the same lag; if they don't shrink, the lag isn't
+        constant and ``lag_steps`` needs revisiting.
 
         Deliberately does NOT touch ``csv_write``/``horizon_diag`` or their
         state (``_csv_last_vexec``, ``_prev_horizon_q/_t``) -- those stay
@@ -344,9 +382,28 @@ class MPCDiagnostics:
              "con_self_collision", "con_scene_collision", "con_cspace_bound",
              "queue_depth", "min_queue_depth_seen", "starvation_ticks",
              "backpressure_wait_ms", "perception_ms", "live_goal_ms",
-             "cheap_ms_before_resolve", "batch_wall_ms", "loop_iter"]
+             "cheap_ms_before_resolve", "batch_wall_ms", "loop_iter",
+             "vel_input_err_max_dps", "accel_input_err_max_dps2",
+             "vel_input_err_max_lagged_dps", "accel_input_err_max_lagged_dps2",
+             "lag_steps"]
             + [f"q_j{i+1}_deg" for i in range(dof)]
-            + [f"v_j{i+1}_dps" for i in range(dof)])
+            + [f"v_j{i+1}_dps" for i in range(dof)]
+            + [f"v_pred_j{i+1}_dps" for i in range(dof)]
+            + [f"v_real_j{i+1}_dps" for i in range(dof)]
+            + [f"a_pred_j{i+1}_dps2" for i in range(dof)]
+            + [f"a_real_j{i+1}_dps2" for i in range(dof)])
+        # -1 sentinel must NOT go through deg() (would print -57.3, not -1).
+        vel_input_err_dps = vel_input_err_max if vel_input_err_max < 0 else deg(vel_input_err_max)
+        accel_input_err_dps2 = accel_input_err_max if accel_input_err_max < 0 else deg(accel_input_err_max)
+        vel_input_err_lagged_dps = (
+            vel_input_err_max_lagged if vel_input_err_max_lagged < 0 else deg(vel_input_err_max_lagged))
+        accel_input_err_lagged_dps2 = (
+            accel_input_err_max_lagged if accel_input_err_max_lagged < 0 else deg(accel_input_err_max_lagged))
+        nan_row = [float('nan')] * dof
+        pred_vel_row = [deg(x) for x in pred_vel] if pred_vel is not None else nan_row
+        real_vel_row = [deg(x) for x in real_vel] if real_vel is not None else nan_row
+        pred_acc_row = [deg(x) for x in pred_acc] if pred_acc is not None else nan_row
+        real_acc_row = [deg(x) for x in real_acc] if real_acc is not None else nan_row
         self._csv.writerow(
             [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
              f"{command_dt * 1000.0:.1f}", f"{action_dt * 1000.0:.1f}",
@@ -361,8 +418,13 @@ class MPCDiagnostics:
              str(queue_depth), str(min_queue_depth_seen), str(starvation_ticks),
              f"{backpressure_wait_ms:.1f}", f"{perception_ms:.1f}",
              f"{live_goal_ms:.1f}", f"{cheap_ms_before_resolve:.1f}",
-             f"{batch_wall_ms:.1f}", str(loop_iter)]
-            + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v])
+             f"{batch_wall_ms:.1f}", str(loop_iter),
+             f"{vel_input_err_dps:.2f}", f"{accel_input_err_dps2:.1f}",
+             f"{vel_input_err_lagged_dps:.2f}", f"{accel_input_err_lagged_dps2:.1f}",
+             str(lag_steps)]
+            + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v]
+            + [f"{x:.2f}" for x in pred_vel_row] + [f"{x:.2f}" for x in real_vel_row]
+            + [f"{x:.1f}" for x in pred_acc_row] + [f"{x:.1f}" for x in real_acc_row])
 
     # ---- RViz publishing ----
 

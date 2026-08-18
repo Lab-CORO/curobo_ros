@@ -182,6 +182,53 @@ class ReactiveController(TrajectoryPlanner):
         self._prev_real_velocity = None
         self._prev_real_velocity_t = None
 
+        # Diagnostic-only gap between the PREDICTED velocity/acceleration
+        # about to be fed back as current_state (_close_state_loop) and what
+        # the REAL robot velocity/acceleration was at that same instant.
+        # Computed unconditionally in _close_state_loop (not just when
+        # _debug_real_velocity_feedback is active), so this gap's growth can
+        # be measured on any run for LBFGSController's CSV -- see
+        # MPCDiagnostics.record_tick's vel/accel_input_err columns, and the
+        # per-joint pred/real columns for investigating whether the gap is a
+        # time-lag (shifted-but-similar-shaped curves) or noise (uncorrelated
+        # jitter) -- cf. debug 2026-08-18.
+        self._diag_vel_input_err_max = 0.0    # rad/s
+        self._diag_accel_input_err_max = 0.0  # rad/s^2
+        self._diag_pred_vel = None    # list[float] rad/s, one per joint
+        self._diag_real_vel = None
+        self._diag_pred_acc = None    # list[float] rad/s^2, one per joint
+        self._diag_real_acc = None
+
+        # Lagged comparison: is the predicted-vs-real gap above actually a
+        # TIME LAG, not noise? Diagnosed 2026-08-18
+        # (lbfgs_diag_20260818_105545.csv): cross-correlating v_pred_j*/
+        # v_real_j* per joint, 5 of 6 joints peaked at lag=+2 producer
+        # iterations (correlation 0.87-0.96) vs. 0.44-0.74 at lag=0 -- a
+        # consistent, joint-independent shift, not uncorrelated jitter.
+        # Structural explanation: pred_vel is the LAST point of the batch
+        # just resolved (_execute_paced's batch[-1] -> _state_from_action),
+        # i.e. the solver's prediction for ~batch_size*interpolation_dt
+        # (one optimization_dt) INTO THE FUTURE, plus however long that
+        # point then waits in the producer/consumer queue
+        # (queue_depth observed 1-3) before actually being sent -- while
+        # real_vel is the INSTANTANEOUS measurement taken right now. They
+        # are, by construction, two different points in time; lag=+2 rows
+        # (~480ms at this run's ~240ms mean dt_step_ms) lines up with that
+        # structural delay (one optimization_dt + queue wait), not with a
+        # joint_states transport problem (ruled out separately: no repeated/
+        # stale real_vel samples found in the CSV).
+        #
+        # _diag_lag_steps holds a short history of past pred_vel/pred_acc so
+        # each cycle can also report the gap against a PAST prediction
+        # (_diag_vel_input_err_max_lagged / _diag_accel_input_err_max_lagged),
+        # for comparison against the unlagged gap in the CSV -- diagnostic
+        # only, changes nothing about which value is actually fed back.
+        self._diag_lag_steps = 2
+        self._diag_pred_vel_history = deque(maxlen=self._diag_lag_steps + 1)
+        self._diag_pred_acc_history = deque(maxlen=self._diag_lag_steps + 1)
+        self._diag_vel_input_err_max_lagged = -1.0
+        self._diag_accel_input_err_max_lagged = -1.0
+
         # Number of actions produced per producer-loop iteration in
         # _execute_paced (1 = no behavior change, the default -- MPCController
         # never sets this). Set >1 (e.g. LBFGSController, to
@@ -320,6 +367,10 @@ class ReactiveController(TrajectoryPlanner):
         self._hold_count = 0
         self._prev_real_velocity = None
         self._prev_real_velocity_t = None
+        self._diag_pred_vel_history.clear()
+        self._diag_pred_acc_history.clear()
+        self._diag_vel_input_err_max_lagged = -1.0
+        self._diag_accel_input_err_max_lagged = -1.0
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
         )
@@ -1026,29 +1077,75 @@ class ReactiveController(TrajectoryPlanner):
         — that's a downstream actuation limit, not the planner's own model of
         its trajectory, and the two must stay decoupled.
 
-        See ``_debug_real_velocity_feedback`` for a gated, opt-in experiment
-        re-testing real velocity/acceleration specifically for the stuck-goal
-        oscillation failure mode — off by default, this docstring's reasoning
-        still holds for the normal (reachable-goal) case.
+        Diagnostic (always computed, independent of which branch below
+        runs): the PREDICTED and REAL velocity/acceleration, per joint, at
+        this same instant, saved to _diag_pred_vel / _diag_real_vel /
+        _diag_pred_acc / _diag_real_acc (rad/s, rad/s^2 -- lists, one entry
+        per joint) plus their max-abs-gap summaries
+        (_diag_vel_input_err_max / _diag_accel_input_err_max), all read by
+        LBFGSController's CSV. Logged per-joint (not just the gap's
+        magnitude) so the two curves can be compared directly -- a real time
+        LAG (shifted-but-similarly-shaped curves, e.g. cross-correlating at
+        a nonzero offset) and pure NOISE (uncorrelated jitter at any offset)
+        look identical in a single max-abs-gap number but require different
+        fixes. cf. debug 2026-08-18.
         """
         real_pose = robot_context.get_joint_pose()
         pos = torch.tensor([real_pose], dtype=self._dtype, device=self._device)
         state = JointState.from_position(pos, joint_names=self.solver.joint_names)
 
+        # Real velocity/acceleration are computed unconditionally (not just
+        # when _debug_real_velocity_feedback is active) so the diagnostic
+        # comparison runs every cycle -- get_joint_velocity() is the same
+        # cheap, non-blocking cached read as get_joint_pose() above, so this
+        # adds no new lag.
+        real_vel_list = robot_context.get_joint_velocity()
+        real_vel = torch.tensor([real_vel_list], dtype=self._dtype, device=self._device)
+        now = time.monotonic()
+        if self._prev_real_velocity is not None and self._prev_real_velocity_t is not None:
+            dt = now - self._prev_real_velocity_t
+            real_acc = (
+                (real_vel - self._prev_real_velocity) / dt
+                if dt > 1e-6 else torch.zeros_like(real_vel)
+            )
+        else:
+            real_acc = torch.zeros_like(real_vel)
+        self._prev_real_velocity = real_vel
+        self._prev_real_velocity_t = now
+
+        pred_vel = predicted_state.velocity
+        pred_acc = predicted_state.acceleration
+        self._diag_pred_vel = pred_vel.reshape(-1).cpu().tolist() if pred_vel is not None else None
+        self._diag_real_vel = real_vel.reshape(-1).cpu().tolist()
+        self._diag_pred_acc = pred_acc.reshape(-1).cpu().tolist() if pred_acc is not None else None
+        self._diag_real_acc = real_acc.reshape(-1).cpu().tolist()
+        if pred_vel is not None:
+            self._diag_vel_input_err_max = float((pred_vel - real_vel).abs().max().item())
+        if pred_acc is not None:
+            self._diag_accel_input_err_max = float((pred_acc - real_acc).abs().max().item())
+
+        # Lagged comparison (diagnostic only, see __init__): push this
+        # cycle's prediction, then -- once the history is deep enough --
+        # compare the OLDEST entry in it (_diag_lag_steps cycles ago)
+        # against THIS cycle's real measurement. A shrinking gap here
+        # relative to _diag_vel_input_err_max above is what a genuine time
+        # lag (rather than noise) looks like.
+        if self._diag_pred_vel is not None:
+            self._diag_pred_vel_history.append(self._diag_pred_vel)
+        if self._diag_pred_acc is not None:
+            self._diag_pred_acc_history.append(self._diag_pred_acc)
+        if len(self._diag_pred_vel_history) == self._diag_pred_vel_history.maxlen:
+            lagged_pred_vel = self._diag_pred_vel_history[0]
+            self._diag_vel_input_err_max_lagged = max(
+                abs(a - b) for a, b in zip(lagged_pred_vel, self._diag_real_vel)
+            )
+        if len(self._diag_pred_acc_history) == self._diag_pred_acc_history.maxlen:
+            lagged_pred_acc = self._diag_pred_acc_history[0]
+            self._diag_accel_input_err_max_lagged = max(
+                abs(a - b) for a, b in zip(lagged_pred_acc, self._diag_real_acc)
+            )
+
         if self._debug_real_velocity_feedback():
-            real_vel_list = robot_context.get_joint_velocity()
-            real_vel = torch.tensor([real_vel_list], dtype=self._dtype, device=self._device)
-            now = time.monotonic()
-            if self._prev_real_velocity is not None and self._prev_real_velocity_t is not None:
-                dt = now - self._prev_real_velocity_t
-                real_acc = (
-                    (real_vel - self._prev_real_velocity) / dt
-                    if dt > 1e-6 else torch.zeros_like(real_vel)
-                )
-            else:
-                real_acc = torch.zeros_like(real_vel)
-            self._prev_real_velocity = real_vel
-            self._prev_real_velocity_t = now
             state.velocity = real_vel
             state.acceleration = real_acc
         else:
