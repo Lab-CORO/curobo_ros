@@ -280,6 +280,9 @@ class MPCDiagnostics:
         pred_acc: list = None, real_acc: list = None,
         vel_input_err_max_lagged: float = -1.0,
         accel_input_err_max_lagged: float = -1.0, lag_steps: int = -1,
+        smith_vel: list = None, smith_acc: list = None,
+        vel_smith_err_max: float = -1.0, accel_smith_err_max: float = -1.0,
+        smith_tau: float = -1.0,
     ):
         """One CSV row per ``optimize_next_action()`` call -- the record_tick
         counterpart to ``csv_write``'s one-row-per-horizon-solve for
@@ -342,6 +345,20 @@ class MPCDiagnostics:
         corroborates the same lag; if they don't shrink, the lag isn't
         constant and ``lag_steps`` needs revisiting.
 
+        ``smith_vel``/``smith_acc`` (rad/s, rad/s^2, one entry per joint,
+        ``None`` when unset -- written as NaN), ``vel_smith_err_max``/
+        ``accel_smith_err_max`` (rad/s, rad/s^2 -- -1 sentinel when unset),
+        ``smith_tau`` (s -- -1 sentinel when unset): the Smith-predictor
+        candidate feedback (filtered real_vel/real_acc extrapolated forward
+        by tau, see ReactiveController._close_state_loop and
+        ``_smith_predictor_feedback``), its gap to the PREDICTED state, and
+        the tau used to produce it. Logged as ``v_smith_j*_dps``/
+        ``a_smith_j*_dps2``/``vel_smith_err_max_dps``/
+        ``accel_smith_err_max_dps2``/``smith_tau_ms``. A much smaller
+        vel_smith_err_max_dps than vel_input_err_max_dps on a given run is
+        what would validate the extrapolation; UNTESTED on hardware as of
+        2026-08-18.
+
         Deliberately does NOT touch ``csv_write``/``horizon_diag`` or their
         state (``_csv_last_vexec``, ``_prev_horizon_q/_t``) -- those stay
         strictly MPCController's per-horizon path. Uses its own
@@ -385,13 +402,16 @@ class MPCDiagnostics:
              "cheap_ms_before_resolve", "batch_wall_ms", "loop_iter",
              "vel_input_err_max_dps", "accel_input_err_max_dps2",
              "vel_input_err_max_lagged_dps", "accel_input_err_max_lagged_dps2",
-             "lag_steps"]
+             "lag_steps",
+             "vel_smith_err_max_dps", "accel_smith_err_max_dps2", "smith_tau_ms"]
             + [f"q_j{i+1}_deg" for i in range(dof)]
             + [f"v_j{i+1}_dps" for i in range(dof)]
             + [f"v_pred_j{i+1}_dps" for i in range(dof)]
             + [f"v_real_j{i+1}_dps" for i in range(dof)]
             + [f"a_pred_j{i+1}_dps2" for i in range(dof)]
-            + [f"a_real_j{i+1}_dps2" for i in range(dof)])
+            + [f"a_real_j{i+1}_dps2" for i in range(dof)]
+            + [f"v_smith_j{i+1}_dps" for i in range(dof)]
+            + [f"a_smith_j{i+1}_dps2" for i in range(dof)])
         # -1 sentinel must NOT go through deg() (would print -57.3, not -1).
         vel_input_err_dps = vel_input_err_max if vel_input_err_max < 0 else deg(vel_input_err_max)
         accel_input_err_dps2 = accel_input_err_max if accel_input_err_max < 0 else deg(accel_input_err_max)
@@ -399,11 +419,16 @@ class MPCDiagnostics:
             vel_input_err_max_lagged if vel_input_err_max_lagged < 0 else deg(vel_input_err_max_lagged))
         accel_input_err_lagged_dps2 = (
             accel_input_err_max_lagged if accel_input_err_max_lagged < 0 else deg(accel_input_err_max_lagged))
+        vel_smith_err_dps = vel_smith_err_max if vel_smith_err_max < 0 else deg(vel_smith_err_max)
+        accel_smith_err_dps2 = accel_smith_err_max if accel_smith_err_max < 0 else deg(accel_smith_err_max)
+        smith_tau_ms = smith_tau if smith_tau < 0 else smith_tau * 1000.0
         nan_row = [float('nan')] * dof
         pred_vel_row = [deg(x) for x in pred_vel] if pred_vel is not None else nan_row
         real_vel_row = [deg(x) for x in real_vel] if real_vel is not None else nan_row
         pred_acc_row = [deg(x) for x in pred_acc] if pred_acc is not None else nan_row
         real_acc_row = [deg(x) for x in real_acc] if real_acc is not None else nan_row
+        smith_vel_row = [deg(x) for x in smith_vel] if smith_vel is not None else nan_row
+        smith_acc_row = [deg(x) for x in smith_acc] if smith_acc is not None else nan_row
         self._csv.writerow(
             [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
              f"{command_dt * 1000.0:.1f}", f"{action_dt * 1000.0:.1f}",
@@ -421,10 +446,12 @@ class MPCDiagnostics:
              f"{batch_wall_ms:.1f}", str(loop_iter),
              f"{vel_input_err_dps:.2f}", f"{accel_input_err_dps2:.1f}",
              f"{vel_input_err_lagged_dps:.2f}", f"{accel_input_err_lagged_dps2:.1f}",
-             str(lag_steps)]
+             str(lag_steps),
+             f"{vel_smith_err_dps:.2f}", f"{accel_smith_err_dps2:.1f}", f"{smith_tau_ms:.1f}"]
             + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v]
             + [f"{x:.2f}" for x in pred_vel_row] + [f"{x:.2f}" for x in real_vel_row]
-            + [f"{x:.1f}" for x in pred_acc_row] + [f"{x:.1f}" for x in real_acc_row])
+            + [f"{x:.1f}" for x in pred_acc_row] + [f"{x:.1f}" for x in real_acc_row]
+            + [f"{x:.2f}" for x in smith_vel_row] + [f"{x:.1f}" for x in smith_acc_row])
 
     # ---- RViz publishing ----
 

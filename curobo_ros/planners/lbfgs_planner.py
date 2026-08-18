@@ -317,6 +317,11 @@ class LBFGSController(ReactiveController):
                     vel_input_err_max_lagged=self._diag_vel_input_err_max_lagged,
                     accel_input_err_max_lagged=self._diag_accel_input_err_max_lagged,
                     lag_steps=self._diag_lag_steps,
+                    smith_vel=self._diag_smith_vel,
+                    smith_acc=self._diag_smith_acc,
+                    vel_smith_err_max=self._diag_vel_smith_err_max,
+                    accel_smith_err_max=self._diag_accel_smith_err_max,
+                    smith_tau=self._diag_smith_tau,
                 )
 
         return action

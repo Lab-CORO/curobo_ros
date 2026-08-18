@@ -229,6 +229,49 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_vel_input_err_max_lagged = -1.0
         self._diag_accel_input_err_max_lagged = -1.0
 
+        # Smith predictor (dead-time compensation) -- OPT-IN alternative to
+        # both the default predicted-velocity feedback and the raw
+        # real-velocity debug flag. Investigated 2026-08-18: raw real
+        # velocity is measured NOW, but the predicted velocity we normally
+        # warm-start with represents a state ~tau ahead of now (the last
+        # point of the just-solved batch, PLUS however long it then waits in
+        # the producer/consumer queue before being sent -- see
+        # _close_state_loop's docstring). Cross-correlating pred vs real
+        # (lbfgs_diag_20260818_105545/111648/112251.csv) found a consistent
+        # ~2-resolve (~480ms) lag, matching
+        # tau = (queue_depth + batch_size) * interpolation_dt. Rather than
+        # feed back a measurement that is stale by tau (the raw-real
+        # branch), propagate it FORWARD by tau first -- the classical
+        # Smith-predictor / dead-time-compensation construction (Smith,
+        # 1957). The MPC-delay-compensation literature's more rigorous
+        # version propagates the measured state through the already-issued-
+        # but-not-yet-reflected queued commands instead of assuming constant
+        # acceleration; this implementation uses the simpler
+        # constant-acceleration extrapolation (v + a*tau), not a full
+        # forward simulation through _pending_queue.
+        #
+        # Filtered first (light EMA) because raw real_acc is noisy (finite
+        # difference of an already-noisy real_vel over an irregular dt --
+        # see _close_state_loop) and naively extrapolating noise over
+        # ~450ms amplifies it. The filter itself trades noise for its own
+        # lag, so _smith_filter_alpha is a genuine tuning knob, not a free
+        # lunch -- untested on hardware as of 2026-08-18, hence gated
+        # behind use_smith_predictor_feedback (default False) with its own
+        # diagnostic CSV columns (see MPCDiagnostics.record_tick) rather
+        # than trusted outright.
+        self._smith_filter_alpha = 0.3
+        self._smith_filt_vel = None
+        self._smith_filt_acc = None
+        # Diagnostics (read by LBFGSController's CSV): the extrapolated
+        # state itself, the tau used to produce it, and its gap to the
+        # PREDICTED state (the thing it's meant to approximate) -- analogous
+        # to _diag_vel_input_err_max but for this candidate feedback source.
+        self._diag_smith_vel = None
+        self._diag_smith_acc = None
+        self._diag_smith_tau = 0.0
+        self._diag_vel_smith_err_max = -1.0
+        self._diag_accel_smith_err_max = -1.0
+
         # Number of actions produced per producer-loop iteration in
         # _execute_paced (1 = no behavior change, the default -- MPCController
         # never sets this). Set >1 (e.g. LBFGSController, to
@@ -371,6 +414,8 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_pred_acc_history.clear()
         self._diag_vel_input_err_max_lagged = -1.0
         self._diag_accel_input_err_max_lagged = -1.0
+        self._smith_filt_vel = None
+        self._smith_filt_acc = None
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
         )
@@ -1052,6 +1097,27 @@ class ReactiveController(TrajectoryPlanner):
             self.node.declare_parameter('use_real_velocity_feedback', False)
         return bool(self.node.get_parameter('use_real_velocity_feedback').value)
 
+    def _smith_predictor_feedback(self) -> bool:
+        """Opt-in (default False): feed back a Smith-predictor-style
+        extrapolation of the REAL velocity/acceleration -- filtered, then
+        propagated forward by tau -- instead of either the solver's
+        PREDICTED state (default) or the raw REAL state
+        (_debug_real_velocity_feedback). See __init__ for the rationale and
+        _close_state_loop for the computation.
+
+        UNTESTED ON HARDWARE as of 2026-08-18 -- the diagnostic CSV columns
+        (v_smith_j*_dps / a_smith_j*_dps2 / vel_smith_err_max_dps /
+        accel_smith_err_max_dps2 / smith_tau_ms) are meant to be inspected
+        first: a much smaller vel_smith_err_max_dps than vel_input_err_max_dps
+        would confirm the extrapolation is actually tracking the predicted
+        state better than raw real does, before trusting this for anything
+        beyond an A/B test. Takes priority over
+        _debug_real_velocity_feedback if both are set.
+        """
+        if not self.node.has_parameter('use_smith_predictor_feedback'):
+            self.node.declare_parameter('use_smith_predictor_feedback', False)
+        return bool(self.node.get_parameter('use_smith_predictor_feedback').value)
+
     def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
         """Replace the predicted POSITION with the robot's real, latest joint
         feedback; keep the solver's own PREDICTED velocity/acceleration.
@@ -1076,6 +1142,19 @@ class ReactiveController(TrajectoryPlanner):
         legitimately uses real velocity (JointSpeedStrategy._clamp_velocities)
         — that's a downstream actuation limit, not the planner's own model of
         its trajectory, and the two must stay decoupled.
+
+        Cross-correlating PREDICTED against REAL velocity on real hardware
+        (lbfgs_diag_20260818_105545/111648/112251.csv) found this isn't just
+        clamp-induced lag: real_vel measured NOW consistently matches
+        pred_vel from ~2 resolves ago (~480ms) far better than pred_vel from
+        THIS resolve -- because pred_vel is the last point of the batch just
+        solved, itself ~one optimization_dt ahead, plus however long that
+        point then waits in the producer/consumer queue before being sent.
+        See ``_smith_predictor_feedback`` for an opt-in third option that
+        compensates for this measured delay (filter real_vel/real_acc, then
+        extrapolate forward by tau) instead of either ignoring it
+        (predicted, default) or feeding it back stale (raw real, the
+        ``_debug_real_velocity_feedback`` flag above).
 
         Diagnostic (always computed, independent of which branch below
         runs): the PREDICTED and REAL velocity/acceleration, per joint, at
@@ -1145,7 +1224,48 @@ class ReactiveController(TrajectoryPlanner):
                 abs(a - b) for a, b in zip(lagged_pred_acc, self._diag_real_acc)
             )
 
-        if self._debug_real_velocity_feedback():
+        # Smith predictor (see __init__): filter real_vel/real_acc (light
+        # EMA, to avoid extrapolating raw finite-difference noise), then
+        # propagate forward by tau = (queue_depth + batch_size) *
+        # interpolation_dt -- the real, structural delay between "resolve
+        # just computed" and "corresponding real execution point". Computed
+        # unconditionally (diagnostic columns), fed back only if
+        # _smith_predictor_feedback() is enabled.
+        alpha = self._smith_filter_alpha
+        self._smith_filt_vel = (
+            real_vel if self._smith_filt_vel is None
+            else alpha * real_vel + (1.0 - alpha) * self._smith_filt_vel
+        )
+        self._smith_filt_acc = (
+            real_acc if self._smith_filt_acc is None
+            else alpha * real_acc + (1.0 - alpha) * self._smith_filt_acc
+        )
+        batch_size = max(1, int(getattr(self, '_batch_size', 1)))
+        interp_dt = getattr(self, '_command_interval', 0.0)
+        if interp_dt > 0.0:
+            with self._pending_cv:
+                queue_depth = len(self._pending_queue)
+            tau = (queue_depth + batch_size) * interp_dt
+        else:
+            tau = 0.0
+        self._diag_smith_tau = tau
+        # Constant-acceleration extrapolation over tau; acceleration itself
+        # is carried forward unchanged (zero-jerk assumption) -- see
+        # __init__ for why this is the simpler of the two literature
+        # constructions, not a full forward simulation through the queue.
+        smith_vel = self._smith_filt_vel + self._smith_filt_acc * tau
+        smith_acc = self._smith_filt_acc
+        self._diag_smith_vel = smith_vel.reshape(-1).cpu().tolist()
+        self._diag_smith_acc = smith_acc.reshape(-1).cpu().tolist()
+        if pred_vel is not None:
+            self._diag_vel_smith_err_max = float((pred_vel - smith_vel).abs().max().item())
+        if pred_acc is not None:
+            self._diag_accel_smith_err_max = float((pred_acc - smith_acc).abs().max().item())
+
+        if self._smith_predictor_feedback():
+            state.velocity = smith_vel
+            state.acceleration = smith_acc
+        elif self._debug_real_velocity_feedback():
             state.velocity = real_vel
             state.acceleration = real_acc
         else:
