@@ -188,17 +188,15 @@ class LBFGSController(ReactiveController):
         # pure call-counter with no wall-clock awareness. The other calls
         # just index into the already-computed buffer (get_next_command()),
         # ignoring current_state entirely. So there is nothing to gain from
-        # spacing those calls 1 per real hardware tick, and real cost: the
-        # one resolving call (measured up to ~60ms) then has to fit inside a
-        # single interpolation_dt (30ms) instead of the full
-        # optimization_dt (120ms) it actually has before that command
-        # window is due. Batch all interpolation_steps calls into one
-        # back-to-back burst per producer iteration instead (see
-        # ReactiveController._batch_size / _execute_paced) and let the
-        # consumer's existing per-tick timer drain the resulting queue --
-        # the real solve now only needs to fit inside optimization_dt.
+        # spacing those calls 1 per real hardware tick. Batch all
+        # interpolation_steps calls into one back-to-back burst per producer
+        # iteration instead (see ReactiveController._batch_size /
+        # _execute_paced) and let the consumer's existing per-tick timer
+        # drain the resulting queue -- backpressure (queue depth, not a
+        # fixed optimization_dt window) is what now gives the one resolving
+        # call room to run long without starving the consumer. cf. debug
+        # 2026-08-17.
         self._batch_size = solver.trajectory_execution_manager.interpolation_steps
-        self._producer_min_interval = optimization_dt
         return solver
 
     def setup(self, start_state: JointState, goal_request: Any) -> bool:
@@ -238,13 +236,29 @@ class LBFGSController(ReactiveController):
         # call is that one real resolve, or one of the interpolation_steps-1
         # cheap buffer-index calls in the same batch (see ReactiveController
         # _batch_size docstring). Measured 2026-08-17: those "cheap" calls
-        # were still costing ~20ms each -- not the solve, but the FK-error
-        # and RViz-publish work below, run unconditionally on every call.
-        # The predicted-path buffer and FK-derived errors only change on a
-        # real resolve, so gating this block to it (instead of every call)
-        # cuts per-batch cost from ~4x that work down to ~1x, without losing
-        # any information -- non-resolving calls would have published/
-        # recomputed the exact same values.
+        # still cost real time even so -- optimize_next_action()
+        # unconditionally calls get_current_metrics()+_get_result(metrics),
+        # and _get_result reprocesses convergence/feasibility tensors
+        # (torch.cat, comparisons, torch.all) on the SAME cached metrics
+        # object every call, resolving or not (verified in solver_mpc.py).
+        #
+        # A same-day attempt to dodge that by calling
+        # trajectory_execution_manager.get_next_command() directly on
+        # non-resolving calls (skipping optimize_next_action() and its
+        # _get_result() entirely) crashed in practice: has_valid_next_command()
+        # only checks _current_action_trajectory, but get_next_command() reads
+        # the SEPARATE _current_joint_state_trajectory buffer, and a private
+        # flag (_mpc_warm_start_available, not visible from outside the
+        # solver) can require cold_start_solve() to run -- and repopulate
+        # that joint-state buffer -- before has_valid_next_command() is even
+        # meaningful, specifically on the first call after a new goal
+        # (setup()). optimize_next_action() checks that private flag first,
+        # internally; a caller outside the solver cannot replicate the same
+        # ordering without seeing it, so always go through
+        # optimize_next_action() and eat the _get_result() cost -- reported
+        # upstream (see the cuRobo GitHub issue) rather than worked around
+        # here. cf. debug 2026-08-17 (AttributeError: 'NoneType' object has
+        # no attribute 'position').
         is_resolving = not self.solver.trajectory_execution_manager.has_valid_next_command()
 
         t_solve = time.monotonic()

@@ -119,14 +119,37 @@ class ReactiveController(TrajectoryPlanner):
         # 2026-07-17.
         self._timer_cb_group = None
         self._pending_lock = threading.Lock()
-        # Queue of not-yet-sent actions, one entry per _command_interval tick.
-        # _batch_size==1 (the default) makes this behave exactly like the old
-        # single-slot pending_action/pending_action_fresh pair: the producer
-        # clears+replaces the whole queue every iteration ("latest wins", no
-        # resending stale data), so a not-yet-consumed leftover is discarded
-        # rather than piling up.
+        # Condition sharing _pending_lock: the consumer (_on_send_tick)
+        # notifies it after every pop, so the producer (_execute_paced) can
+        # block waiting for queue room instead of pacing itself to a
+        # wall-clock deadline. A deadline-based scheme (tried first, removed
+        # 2026-08-17) doesn't work here: the producer's batch time and the
+        # consumer's fixed per-tick drain are two independent clocks, and any
+        # wall-clock target that assumes a fixed relationship between them
+        # either starves the consumer (padding too much) or silently drops
+        # not-yet-sent actions (padding too little, requiring clear() to
+        # refill) -- see _execute_paced's backpressure wait. cf. debug
+        # 2026-08-17.
+        self._pending_cv = threading.Condition(self._pending_lock)
+        # Queue of not-yet-sent actions, one entry per _command_interval
+        # tick. For _batch_size > 1 (LBFGSController) only ever grown by
+        # extend() (never clear()): a not-yet-consumed leftover must stay
+        # queued, not be silently discarded -- discarding it is
+        # indistinguishable downstream from the robot never having received a
+        # command for that tick. For _batch_size == 1 (MPCController) the
+        # producer still clear()s before each extend(): a full-horizon
+        # re-solve makes any unsent previous result stale, so "latest wins"
+        # is intentional there, not a leftover of the old scheme.
         self._pending_queue = deque()
         self._paced_send_error = False
+        # Backpressure diagnostics (reset per goal in _execute_paced):
+        # minimum queue depth ever observed at a consumer pop (0 means a
+        # tick found the queue empty -- see _on_send_tick) and how many pops
+        # that happened on. Both should stay at/near their initial values in
+        # normal operation; a climbing starvation count means the queue cap
+        # is too tight for the measured solve-time distribution.
+        self._min_queue_depth_seen = None
+        self._starvation_ticks = 0
 
         # Number of actions produced per producer-loop iteration in
         # _execute_paced (1 = no behavior change, the default -- MPCController
@@ -139,27 +162,12 @@ class ReactiveController(TrajectoryPlanner):
         # trajectory_execution_manager.has_valid_next_command() is False) --
         # in that case there is no benefit to pacing those N-1 calls to real
         # elapsed time individually. Instead the producer bursts all N calls
-        # back-to-back once per _producer_min_interval and hands the whole
-        # batch to the consumer timer to drain one-per-tick, so a slow GPU
-        # resolve only has to fit inside N * _command_interval instead of a
-        # single _command_interval.
+        # back-to-back whenever the queue has room (see _execute_paced) and
+        # hands the whole batch to the consumer timer to drain one-per-tick,
+        # so a slow GPU resolve only has to fit inside however long the
+        # consumer takes to drain the existing buffer, not a single
+        # _command_interval.
         self._batch_size = 1
-
-        # Opt-in minimum wall-clock period between producer-loop iterations in
-        # _execute_paced (0.0 = disabled, the default -- no behavior change for
-        # MPCController, which never sets this). For _batch_size==1 solvers
-        # built on optimize_next_action(), this throttles single-call
-        # iterations to stay roughly in step with real elapsed time (cuRobo's
-        # internal command buffer, see TrajectoryExecutionManager, has no
-        # awareness of wall-clock time by itself). For _batch_size>1
-        # (LBFGSController), set this to the FULL batch period (e.g.
-        # optimization_dt = interpolation_steps * interpolation_dt) instead:
-        # one producer iteration now produces a whole batch, so it's the
-        # batch — not each individual call inside it — that must stay paced
-        # to real elapsed time. MPCController's optimize_action_sequence()
-        # re-solves fully on every call and has no such buffer to desync --
-        # hence opt-in, not a change to the base default.
-        self._producer_min_interval = 0.0
 
         # Device/dtype for building tensors on the hot path.
         self._device = getattr(config_wrapper, '_device', torch.device('cuda'))
@@ -581,12 +589,18 @@ class ReactiveController(TrajectoryPlanner):
 
     def _execute_paced(self, robot_context, goal_handle, interval: float) -> bool:
         """Producer/consumer servo loop: this loop (producer) solves as fast as
-        it can and deposits a batch of _batch_size action(s) under a lock,
-        never blocking on sending; a per-goal timer (consumer) sends the next
-        queued action at a fixed cadence, or warns and sends nothing if the
-        queue is empty (no resending stale data). Only this loop calls step()
-        (CUDA) — the timer only pops from the queue and sends, so it never
-        contends for the GPU with a slow/cold-start solve. cf. debug 2026-07-17.
+        it can and deposits a batch of _batch_size action(s) under a lock; a
+        per-goal timer (consumer) sends the next queued action at a fixed
+        cadence, or warns and sends nothing if the queue is empty. For
+        _batch_size == 1 (MPCController) the producer clears+replaces the
+        queue every iteration — "latest wins", never blocks on room, no
+        resending stale data. For _batch_size > 1 (LBFGSController) the
+        producer instead appends and blocks (via _pending_cv) whenever the
+        queue already holds queue_max_depth items, so a full batch is always
+        delivered in order instead of being partially overwritten. Only this
+        loop calls step() (CUDA) — the timer only pops from the queue and
+        sends, so it never contends for the GPU with a slow/cold-start solve.
+        cf. debug 2026-07-17.
         """
         try:
             tstep = 0
@@ -602,15 +616,29 @@ class ReactiveController(TrajectoryPlanner):
             # for. cf. debug 2026-08-17.
             loop_iter = 0
             batch_size = max(1, int(getattr(self, '_batch_size', 1)))
+            # One spare beyond a full batch: lets the producer stay a batch
+            # ahead of the consumer without unbounded growth. This is now
+            # the SOLE pacing mechanism (see the backpressure wait below) --
+            # there is no wall-clock target to tune. Raising it trades more
+            # starvation headroom for more in-queue actuation lag (each
+            # extra slot delays an already-computed action by one
+            # _command_interval before it's sent); it does NOT stale the
+            # solver's own input state, since _close_state_loop always reads
+            # the robot's real position fresh, right before the next batch
+            # is computed, regardless of queue depth. cf. debug 2026-08-17.
+            queue_max_depth = batch_size + 1
             self._step_times = []
             self._last_action = None
             self._last_log_time = 0.0
             with self._pending_lock:
                 self._pending_queue.clear()
             self._paced_send_error = False
+            self._min_queue_depth_seen = None
+            self._starvation_ticks = 0
             self.node.get_logger().info(
                 f"Starting {self.get_planner_name()} servo loop "
-                f"(paced, interval={interval}s, batch={batch_size})"
+                f"(paced, interval={interval}s, batch={batch_size}, "
+                f"queue_max_depth={queue_max_depth})"
             )
 
             current_state = self._read_state(robot_context)
@@ -622,19 +650,6 @@ class ReactiveController(TrajectoryPlanner):
                 callback_group=self._timer_cb_group,
             )
 
-            # Absolute-deadline anchor for the padding sleep below, instead of
-            # a relative "sleep(target - elapsed_this_iteration)" that resets
-            # its reference point every loop. A relative scheme silently
-            # excludes whatever runs AFTER the sleep (_close_state_loop's
-            # real-position read, kept there deliberately for freshness — see
-            # its call site below) from the budget: that cost becomes pure
-            # add-on every cycle instead of being amortized. Measured
-            # 2026-08-17: this is why _producer_min_interval=120ms
-            # (LBFGSController) was landing at ~124ms mean with a long tail
-            # (up to ~380ms), which the consumer's fixed 30ms send-tick can't
-            # absorb -- see "command tick out of time" in _on_send_tick.
-            next_deadline = time.time()
-
             try:
                 while self.is_goal_active:
                     if goal_handle is not None and goal_handle.is_cancel_requested:
@@ -645,30 +660,37 @@ class ReactiveController(TrajectoryPlanner):
                     if self._paced_send_error:
                         break
 
-                    # Diagnostic-only phase timers (2026-08-17): dt_step_ms
-                    # was landing >120ms on ~50% of LBFGSController batches
-                    # even with solve_ms averaging ~35ms (85ms of nominal
-                    # slack), including tail spikes to 350-400ms. That's too
-                    # much to be sleep-scheduling jitter alone. Rather than
-                    # keep guessing, log a phase breakdown whenever an
-                    # iteration overruns badly, so the next run's log points
-                    # at the actual culprit (candidates: refresh_perception_
-                    # world's blocking gpu_lock, live-goal apply, or the
-                    # step() batch itself).
-                    iter_top = time.time()
-                    perc_ms = 0.0
+                    # Backpressure: block until the consumer has drained
+                    # enough room for a new batch, instead of pacing to a
+                    # wall-clock deadline (see _pending_cv's docstring in
+                    # __init__ for why a deadline can't work: production
+                    # time and the consumer's fixed per-tick drain are two
+                    # independent clocks). _on_send_tick notifies this after
+                    # every pop, so this wakes promptly when there's room;
+                    # the wait timeout is only a responsiveness safety net
+                    # for cancellation, not part of the pacing. No-op
+                    # (queue starts empty and drains faster than filled)
+                    # for MPCController's batch_size==1.
+                    with self._pending_cv:
+                        while (len(self._pending_queue) >= queue_max_depth
+                               and self.is_goal_active and not self._paced_send_error):
+                            if goal_handle is not None and goal_handle.is_cancel_requested:
+                                break
+                            self._pending_cv.wait(timeout=0.1)
+
+                    if not self.is_goal_active or self._paced_send_error:
+                        continue
+                    if goal_handle is not None and goal_handle.is_cancel_requested:
+                        continue
+
                     if (self.perception_refresh_period > 0
                             and loop_iter % self.perception_refresh_period == 0
                             and hasattr(self.node, 'refresh_perception_world')):
-                        t_perc = time.time()
                         self.node.refresh_perception_world()
-                        perc_ms = (time.time() - t_perc) * 1000.0
                     loop_iter += 1
 
                     # Under gpu_lock, failure narrowed to the goal — see
                     # _execute_immediate for why.
-                    live_goal_ms = 0.0
-                    t_live = time.time()
                     raw = self._take_live_goal()
                     if raw is not None:
                         try:
@@ -680,7 +702,6 @@ class ReactiveController(TrajectoryPlanner):
                                 f"({e}) - keeping previous goal",
                                 throttle_duration_sec=1.0,
                             )
-                    live_goal_ms = (time.time() - t_live) * 1000.0
 
                     st_time = time.time()
                     # current_state is passed unchanged to every call in the
@@ -692,29 +713,21 @@ class ReactiveController(TrajectoryPlanner):
                     # is True) -- the other calls in the batch would ignore
                     # a "fresher" current_state just the same.
                     batch = []
-                    # Per-call timing (diagnostic, 2026-08-17): the CSV only
-                    # ever recorded solve_ms for the ONE resolving call
-                    # (~35ms measured) -- the other batch_size-1 calls' cost
-                    # was invisible, yet dt_step_ms averages ~120ms, an ~85ms
-                    # gap unaccounted for. Timing each call here (not inside
-                    # step()) answers whether the non-resolving calls are
-                    # genuinely cheap post-gating (see lbfgs_planner.py's
-                    # is_resolving change) or still costing real time in
-                    # optimize_next_action() itself (CUDA graph replay,
-                    # Python/GIL overhead) -- gating only removed the FK +
-                    # RViz-publish work, not the solver call.
-                    call_ms = []
                     with self._step_guard():
                         for _ in range(batch_size):
-                            t_call = time.time()
                             batch.append(self.step(current_state))
-                            call_ms.append((time.time() - t_call) * 1000.0)
                     if tstep > 5:
                         self._step_times.append(time.time() - st_time)
 
-                    with self._pending_lock:
-                        self._pending_queue.clear()
+                    with self._pending_cv:
+                        if batch_size == 1:
+                            # MPCController: re-solves the full horizon every
+                            # call, so an unsent previous result is stale, not
+                            # useful backlog -- keep "latest wins" instead of
+                            # accumulating (see docstring above).
+                            self._pending_queue.clear()
                         self._pending_queue.extend(batch)
+                        self._pending_cv.notify()
 
                     last_action = batch[-1]
                     self._last_action = last_action
@@ -729,64 +742,16 @@ class ReactiveController(TrajectoryPlanner):
 
                     tstep += batch_size
 
-                    # Pad to next_deadline (an absolute, self-correcting
-                    # schedule -- see its definition above) so batches into a
-                    # fixed-size internal command buffer (e.g.
-                    # optimize_next_action) stay roughly in step with real
-                    # elapsed time -- see _producer_min_interval's docstring
-                    # in __init__. No-op (interval 0.0) for MPCController.
-                    # This MUST happen BEFORE _close_state_loop below, not
-                    # after: _close_state_loop reads the robot's REAL
-                    # position, and that reading feeds the NEXT iteration's
-                    # resolving call. Reading it here-then-sleeping left it up
-                    # to _producer_min_interval stale by the time it was
-                    # actually used -- fine at 30ms (batch_size==1),
-                    # destabilizing at 120ms (LBFGSController's
-                    # batch_size==4): the resolve anchors to a position the
-                    # arm had already moved away from, which (with no cspace
-                    # anchor under run_ik=False) let the redundant J4/J6 pair
-                    # wind up chasing it. cf. debug 2026-08-17.
-                    if self._producer_min_interval > 0.0:
-                        next_deadline += self._producer_min_interval
-                        remaining = next_deadline - time.time()
-                        if remaining > 0.0:
-                            time.sleep(remaining)
-                        else:
-                            # Fell behind by more than one period (e.g. a
-                            # slow resolve) -- resync instead of trying to
-                            # "catch up" with back-to-back unpaced
-                            # iterations, which would defeat the whole point
-                            # of pacing to real elapsed time.
-                            next_deadline = time.time()
-
-                    t_close = time.time()
+                    # Real-position read stays here, right after queuing the
+                    # batch and before the next one is computed — as late as
+                    # possible for freshness, feeding the NEXT iteration's
+                    # resolving call. Unaffected by queue depth: this always
+                    # reads the robot's actual current position, regardless
+                    # of how many already-computed actions are still queued
+                    # ahead of it (cf. debug 2026-08-17 — see queue_max_depth
+                    # above for why that decoupling matters).
                     predicted_state = self._state_from_action(last_action)
                     current_state = self._close_state_loop(robot_context, predicted_state)
-                    close_ms = (time.time() - t_close) * 1000.0
-
-                    if self._producer_min_interval > 0.0:
-                        total_ms = (time.time() - iter_top) * 1000.0
-                        target_ms = self._producer_min_interval * 1000.0
-                        # ANY overrun costs a missed consumer tick when
-                        # batch_size * _command_interval == _producer_min_interval
-                        # (LBFGSController's case: the queue is drained
-                        # exactly as fast as it's filled, zero slack) -- so
-                        # this must fire on every overrun, not just severe
-                        # ones. The old >1.5x gate (180ms) never caught the
-                        # ~121-145ms overruns that make up roughly half of
-                        # all batches, which is why it logged nothing while
-                        # the warning kept firing on hardware. cf. debug
-                        # 2026-08-17 (Guillaume caught this).
-                        if total_ms > target_ms:
-                            self.node.get_logger().warn(
-                                f"{self.get_planner_name()}: batch overran "
-                                f"({total_ms:.0f}ms vs {target_ms:.0f}ms target) -- "
-                                f"per_call_ms={[round(c) for c in call_ms]} "
-                                f"perception={perc_ms:.0f}ms "
-                                f"live_goal={live_goal_ms:.0f}ms "
-                                f"close_state_loop={close_ms:.0f}ms",
-                                throttle_duration_sec=1.0,
-                            )
             finally:
                 self.node.destroy_timer(timer)
 
@@ -801,6 +766,8 @@ class ReactiveController(TrajectoryPlanner):
                     f"{self.get_planner_name()} stopped: {tstep} steps, "
                     f"avg time={avg_batch * 1000 / batch_size:.1f}ms/step"
                     + (f" ({avg_batch * 1000:.1f}ms/batch of {batch_size})" if batch_size > 1 else "")
+                    + f", min_queue_depth_seen={self._min_queue_depth_seen}, "
+                    f"starvation_ticks={self._starvation_ticks}"
                 )
 
             return not self._paced_send_error
@@ -815,16 +782,24 @@ class ReactiveController(TrajectoryPlanner):
         """Consumer: send the next queued action, else warn.
 
         Never calls step()/CUDA — only pops from the pending queue and sends.
-        Any exception here is caught (never let it escape an rclpy timer
-        callback) and signaled to the producer loop via _paced_send_error,
-        which checks it every iteration and stops cleanly (mirrors the
-        immediate loop's except-block behavior: stop_robot() + return False).
+        Notifies _pending_cv after every pop so the producer (blocked in
+        _execute_paced waiting for queue room) wakes promptly instead of
+        polling. Any exception here is caught (never let it escape an rclpy
+        timer callback) and signaled to the producer loop via
+        _paced_send_error, which checks it every iteration and stops cleanly
+        (mirrors the immediate loop's except-block behavior: stop_robot() +
+        return False).
         """
         try:
-            with self._pending_lock:
+            with self._pending_cv:
+                depth = len(self._pending_queue)
+                if self._min_queue_depth_seen is None or depth < self._min_queue_depth_seen:
+                    self._min_queue_depth_seen = depth
                 action = self._pending_queue.popleft() if self._pending_queue else None
+                self._pending_cv.notify()
 
             if action is None:
+                self._starvation_ticks += 1
                 self.node.get_logger().warn(
                     f"{self.get_planner_name()}: command tick out of time - nothing sent",
                     throttle_duration_sec=1.0,
