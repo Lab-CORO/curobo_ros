@@ -8,6 +8,7 @@ import rclpy
 from scipy.spatial.transform import Rotation
 from tf2_ros import TransformException
 
+import cv2
 import torch
 import numpy as np
 
@@ -49,6 +50,26 @@ class DepthMapCameraStrategy(CameraStrategy):
 
         self.depth_map = None
         self.intrinsics = None
+
+        # Mapper's fixed GPU projection resolution (see ObstacleManager.
+        # _load_perception_params / gen_traj.launch.py's mapper_image_width/
+        # height comment): every depth frame integrated into the shared TSDF
+        # must match this exact (H, W). ObstacleManager declares these params
+        # before any camera strategy is constructed (config_wrapper.py Phase 4
+        # runs before Phase 5), so they're always already declared here.
+        self._target_image_height = (
+            node.get_parameter('mapper_image_height').value
+            if node.has_parameter('mapper_image_height') else 480)
+        self._target_image_width = (
+            node.get_parameter('mapper_image_width').value
+            if node.has_parameter('mapper_image_width') else 640)
+        # Set on the first frame whose native resolution doesn't match the
+        # mapper's target: caches the scaled intrinsics (recomputing a tensor
+        # every frame would be wasted GPU-adjacent work) and gates the
+        # one-time startup warning below.
+        self._resize_scale = None  # (sx, sy) once known to differ from 1.0
+        self._resize_warned = False
+        self._scaled_intrinsics = None
 
         # Try to use intrinsics from config first
         self.intrinsics = self._parse_intrinsics(intrinsics)
@@ -114,6 +135,41 @@ class DepthMapCameraStrategy(CameraStrategy):
                 self.node.get_logger().warn(f"Unsupported depth encoding: {msg.encoding}, trying 32FC1")
                 depth_img_float = self.bridge.imgmsg_to_cv2(msg, "32FC1")
 
+            # The Mapper's GPU projection kernel is allocated once for a fixed
+            # (mapper_image_height, mapper_image_width) shared by every camera
+            # (see the comment at __init__). A camera whose native resolution
+            # doesn't match must be resized before integration, or
+            # mapper.integrate() raises a shape-mismatch error later.
+            native_h, native_w = depth_img_float.shape[:2]
+            if native_h != self._target_image_height or native_w != self._target_image_width:
+                if not self._resize_warned:
+                    self.node.get_logger().warn(
+                        f"Camera '{self.name}' publishes depth at "
+                        f"{native_w}x{native_h}, but the mapper is configured for "
+                        f"{self._target_image_width}x{self._target_image_height} "
+                        "(mapper_image_width/mapper_image_height, shared by all "
+                        "cameras). Every frame from this camera will be resized "
+                        "(and its intrinsics rescaled) to match before "
+                        "integration.")
+                    self._resize_warned = True
+                if self._scaled_intrinsics is None or self._resize_scale != (native_w, native_h):
+                    sx = self._target_image_width / native_w
+                    sy = self._target_image_height / native_h
+                    self._resize_scale = (native_w, native_h)
+                    scaled = self.intrinsics.clone()
+                    scaled[0, 0] *= sx  # fx
+                    scaled[0, 2] *= sx  # cx
+                    scaled[1, 1] *= sy  # fy
+                    scaled[1, 2] *= sy  # cy
+                    self._scaled_intrinsics = scaled
+                depth_img_float = cv2.resize(
+                    depth_img_float,
+                    (self._target_image_width, self._target_image_height),
+                    interpolation=cv2.INTER_NEAREST)
+                effective_intrinsics = self._scaled_intrinsics
+            else:
+                effective_intrinsics = self.intrinsics
+
             # Resolve the camera pose as a plain CPU list; GPU conversion is deferred
             # to the locked section below.
             pose_list = None
@@ -173,7 +229,8 @@ class DepthMapCameraStrategy(CameraStrategy):
                 # paired rgb image (zero buffer — no colour for collision mapping).
                 depth_b = depth_tensor.unsqueeze(0) if depth_tensor.ndim == 2 else depth_tensor
                 intrinsics_b = (
-                    self.intrinsics.unsqueeze(0) if self.intrinsics.ndim == 2 else self.intrinsics)
+                    effective_intrinsics.unsqueeze(0)
+                    if effective_intrinsics.ndim == 2 else effective_intrinsics)
                 rgb_b = torch.zeros(
                     (depth_b.shape[0], depth_b.shape[1], depth_b.shape[2], 3),
                     dtype=torch.uint8, device=self.tensor_args.device)
