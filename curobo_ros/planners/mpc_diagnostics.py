@@ -280,9 +280,13 @@ class MPCDiagnostics:
         pred_acc: list = None, real_acc: list = None,
         vel_input_err_max_lagged: float = -1.0,
         accel_input_err_max_lagged: float = -1.0, lag_steps: int = -1,
-        smith_vel: list = None, smith_acc: list = None,
-        vel_smith_err_max: float = -1.0, accel_smith_err_max: float = -1.0,
-        smith_tau: float = -1.0,
+        extrap_vel: list = None, extrap_acc: list = None,
+        vel_extrap_err_max: float = -1.0, accel_extrap_err_max: float = -1.0,
+        extrap_tau: float = -1.0,
+        input_vel: list = None, input_acc: list = None,
+        output_vel: list = None, output_acc: list = None,
+        output_t: float = None,
+        windup_active: bool = False, windup_clamp_ratio: float = -1.0,
     ):
         """One CSV row per ``optimize_next_action()`` call -- the record_tick
         counterpart to ``csv_write``'s one-row-per-horizon-solve for
@@ -345,19 +349,47 @@ class MPCDiagnostics:
         corroborates the same lag; if they don't shrink, the lag isn't
         constant and ``lag_steps`` needs revisiting.
 
-        ``smith_vel``/``smith_acc`` (rad/s, rad/s^2, one entry per joint,
-        ``None`` when unset -- written as NaN), ``vel_smith_err_max``/
-        ``accel_smith_err_max`` (rad/s, rad/s^2 -- -1 sentinel when unset),
-        ``smith_tau`` (s -- -1 sentinel when unset): the Smith-predictor
-        candidate feedback (filtered real_vel/real_acc extrapolated forward
-        by tau, see ReactiveController._close_state_loop and
-        ``_smith_predictor_feedback``), its gap to the PREDICTED state, and
-        the tau used to produce it. Logged as ``v_smith_j*_dps``/
-        ``a_smith_j*_dps2``/``vel_smith_err_max_dps``/
-        ``accel_smith_err_max_dps2``/``smith_tau_ms``. A much smaller
-        vel_smith_err_max_dps than vel_input_err_max_dps on a given run is
+        ``extrap_vel``/``extrap_acc`` (rad/s, rad/s^2, one entry per joint,
+        ``None`` when unset -- written as NaN), ``vel_extrap_err_max``/
+        ``accel_extrap_err_max`` (rad/s, rad/s^2 -- -1 sentinel when unset),
+        ``extrap_tau`` (s -- -1 sentinel when unset): the extrapolated
+        candidate feedback (filtered real_vel extrapolated forward by tau
+        using the solver's own pred_acc as slope, see
+        ReactiveController._close_state_loop and
+        ``_extrapolated_velocity_feedback``), its gap to the PREDICTED state,
+        and the tau used to produce it. Logged as ``v_extrap_j*_dps``/
+        ``a_extrap_j*_dps2``/``vel_extrap_err_max_dps``/
+        ``accel_extrap_err_max_dps2``/``extrap_tau_ms``. A much smaller
+        vel_extrap_err_max_dps than vel_input_err_max_dps on a given run is
         what would validate the extrapolation; UNTESTED on hardware as of
         2026-08-18.
+
+        ``input_vel``/``input_acc`` (rad/s, rad/s^2, one entry per joint):
+        the velocity/acceleration actually chosen by the feedback-source
+        selection in ``_close_state_loop`` (predicted / real / extrapolated,
+        whichever is active) and fed back as the next warm start -- logged as
+        ``v_input_j*_dps``/``a_input_j*_dps2``.
+
+        ``output_vel``/``output_acc`` (rad/s, rad/s^2, one entry per joint),
+        ``output_t`` (``time.monotonic()`` of that write): the command
+        actually sent to the robot this tick
+        (``ReactiveController._send_command``) -- logged as
+        ``v_output_j*_dps``/``a_output_j*_dps2``. In paced mode
+        ``_send_command`` runs on the timer thread while this method runs on
+        the producer thread, so ``output_vel``/``output_acc`` are not
+        guaranteed contemporaneous with this row -- ``output_age_ms``
+        (``now - output_t``) makes a stale read visible instead of silently
+        misreading queue lag as a v_output/v_input phase shift. Together with
+        ``input_vel``/``input_acc`` and ``pred_vel``/``real_vel``/
+        ``extrap_vel`` above, these give 5 per-joint series to visually
+        distinguish what's physically applied, what loops back into the solver,
+        the raw solver prediction, the real measurement, and the
+        extrapolation candidate.
+
+        ``windup_active``/``windup_clamp_ratio``: whether the anti-windup
+        guard (``ReactiveController._apply_anti_windup_guard``) clamped the
+        warm-start velocity this tick, and the ratio by which the chosen
+        velocity's norm exceeded the clamped one (-1 when inactive/unset).
 
         Deliberately does NOT touch ``csv_write``/``horizon_diag`` or their
         state (``_csv_last_vexec``, ``_prev_horizon_q/_t``) -- those stay
@@ -403,15 +435,21 @@ class MPCDiagnostics:
              "vel_input_err_max_dps", "accel_input_err_max_dps2",
              "vel_input_err_max_lagged_dps", "accel_input_err_max_lagged_dps2",
              "lag_steps",
-             "vel_smith_err_max_dps", "accel_smith_err_max_dps2", "smith_tau_ms"]
+             "vel_extrap_err_max_dps", "accel_extrap_err_max_dps2", "extrap_tau_ms",
+             "output_age_ms",
+             "windup_active", "windup_clamp_ratio"]
             + [f"q_j{i+1}_deg" for i in range(dof)]
             + [f"v_j{i+1}_dps" for i in range(dof)]
             + [f"v_pred_j{i+1}_dps" for i in range(dof)]
             + [f"v_real_j{i+1}_dps" for i in range(dof)]
             + [f"a_pred_j{i+1}_dps2" for i in range(dof)]
             + [f"a_real_j{i+1}_dps2" for i in range(dof)]
-            + [f"v_smith_j{i+1}_dps" for i in range(dof)]
-            + [f"a_smith_j{i+1}_dps2" for i in range(dof)])
+            + [f"v_extrap_j{i+1}_dps" for i in range(dof)]
+            + [f"a_extrap_j{i+1}_dps2" for i in range(dof)]
+            + [f"v_output_j{i+1}_dps" for i in range(dof)]
+            + [f"a_output_j{i+1}_dps2" for i in range(dof)]
+            + [f"v_input_j{i+1}_dps" for i in range(dof)]
+            + [f"a_input_j{i+1}_dps2" for i in range(dof)])
         # -1 sentinel must NOT go through deg() (would print -57.3, not -1).
         vel_input_err_dps = vel_input_err_max if vel_input_err_max < 0 else deg(vel_input_err_max)
         accel_input_err_dps2 = accel_input_err_max if accel_input_err_max < 0 else deg(accel_input_err_max)
@@ -419,16 +457,21 @@ class MPCDiagnostics:
             vel_input_err_max_lagged if vel_input_err_max_lagged < 0 else deg(vel_input_err_max_lagged))
         accel_input_err_lagged_dps2 = (
             accel_input_err_max_lagged if accel_input_err_max_lagged < 0 else deg(accel_input_err_max_lagged))
-        vel_smith_err_dps = vel_smith_err_max if vel_smith_err_max < 0 else deg(vel_smith_err_max)
-        accel_smith_err_dps2 = accel_smith_err_max if accel_smith_err_max < 0 else deg(accel_smith_err_max)
-        smith_tau_ms = smith_tau if smith_tau < 0 else smith_tau * 1000.0
+        vel_extrap_err_dps = vel_extrap_err_max if vel_extrap_err_max < 0 else deg(vel_extrap_err_max)
+        accel_extrap_err_dps2 = accel_extrap_err_max if accel_extrap_err_max < 0 else deg(accel_extrap_err_max)
+        extrap_tau_ms = extrap_tau if extrap_tau < 0 else extrap_tau * 1000.0
+        output_age_ms = (now - output_t) * 1000.0 if output_t is not None else -1.0
         nan_row = [float('nan')] * dof
         pred_vel_row = [deg(x) for x in pred_vel] if pred_vel is not None else nan_row
         real_vel_row = [deg(x) for x in real_vel] if real_vel is not None else nan_row
         pred_acc_row = [deg(x) for x in pred_acc] if pred_acc is not None else nan_row
         real_acc_row = [deg(x) for x in real_acc] if real_acc is not None else nan_row
-        smith_vel_row = [deg(x) for x in smith_vel] if smith_vel is not None else nan_row
-        smith_acc_row = [deg(x) for x in smith_acc] if smith_acc is not None else nan_row
+        extrap_vel_row = [deg(x) for x in extrap_vel] if extrap_vel is not None else nan_row
+        extrap_acc_row = [deg(x) for x in extrap_acc] if extrap_acc is not None else nan_row
+        output_vel_row = [deg(x) for x in output_vel] if output_vel is not None else nan_row
+        output_acc_row = [deg(x) for x in output_acc] if output_acc is not None else nan_row
+        input_vel_row = [deg(x) for x in input_vel] if input_vel is not None else nan_row
+        input_acc_row = [deg(x) for x in input_acc] if input_acc is not None else nan_row
         self._csv.writerow(
             [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
              f"{command_dt * 1000.0:.1f}", f"{action_dt * 1000.0:.1f}",
@@ -447,11 +490,15 @@ class MPCDiagnostics:
              f"{vel_input_err_dps:.2f}", f"{accel_input_err_dps2:.1f}",
              f"{vel_input_err_lagged_dps:.2f}", f"{accel_input_err_lagged_dps2:.1f}",
              str(lag_steps),
-             f"{vel_smith_err_dps:.2f}", f"{accel_smith_err_dps2:.1f}", f"{smith_tau_ms:.1f}"]
+             f"{vel_extrap_err_dps:.2f}", f"{accel_extrap_err_dps2:.1f}", f"{extrap_tau_ms:.1f}",
+             f"{output_age_ms:.1f}",
+             str(int(windup_active)), f"{windup_clamp_ratio:.3f}"]
             + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v]
             + [f"{x:.2f}" for x in pred_vel_row] + [f"{x:.2f}" for x in real_vel_row]
             + [f"{x:.1f}" for x in pred_acc_row] + [f"{x:.1f}" for x in real_acc_row]
-            + [f"{x:.2f}" for x in smith_vel_row] + [f"{x:.1f}" for x in smith_acc_row])
+            + [f"{x:.2f}" for x in extrap_vel_row] + [f"{x:.1f}" for x in extrap_acc_row]
+            + [f"{x:.2f}" for x in output_vel_row] + [f"{x:.1f}" for x in output_acc_row]
+            + [f"{x:.2f}" for x in input_vel_row] + [f"{x:.1f}" for x in input_acc_row])
 
     # ---- RViz publishing ----
 

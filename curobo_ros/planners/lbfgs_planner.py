@@ -184,11 +184,18 @@ class LBFGSController(ReactiveController):
                     vel_input_err_max_lagged=self._diag_vel_input_err_max_lagged,
                     accel_input_err_max_lagged=self._diag_accel_input_err_max_lagged,
                     lag_steps=self._diag_lag_steps,
-                    smith_vel=self._diag_smith_vel,
-                    smith_acc=self._diag_smith_acc,
-                    vel_smith_err_max=self._diag_vel_smith_err_max,
-                    accel_smith_err_max=self._diag_accel_smith_err_max,
-                    smith_tau=self._diag_smith_tau,
+                    extrap_vel=self._diag_extrap_vel,
+                    extrap_acc=self._diag_extrap_acc,
+                    vel_extrap_err_max=self._diag_vel_extrap_err_max,
+                    accel_extrap_err_max=self._diag_accel_extrap_err_max,
+                    extrap_tau=self._diag_extrap_tau,
+                    input_vel=self._diag_input_vel,
+                    input_acc=self._diag_input_acc,
+                    output_vel=self._diag_output_vel,
+                    output_acc=self._diag_output_acc,
+                    output_t=self._diag_output_t,
+                    windup_active=self._diag_windup_active,
+                    windup_clamp_ratio=self._diag_windup_clamp_ratio,
                 )
 
         return action

@@ -124,14 +124,27 @@ class ReactiveController(TrajectoryPlanner):
 
         self._smith_filter_alpha = 0.3
         self._smith_filt_vel = None
-        self._smith_filt_acc = None
 
-        self._diag_smith_vel = None
-        self._diag_smith_acc = None
-        self._diag_smith_tau = 0.0
-        self._diag_vel_smith_err_max = -1.0
-        self._diag_accel_smith_err_max = -1.0
+        self._diag_extrap_vel = None
+        self._diag_extrap_acc = None
+        self._diag_extrap_tau = 0.0
+        self._diag_vel_extrap_err_max = -1.0
+        self._diag_accel_extrap_err_max = -1.0
 
+        self._diag_input_vel = None
+        self._diag_input_acc = None
+        self._diag_output_vel = None
+        self._diag_output_acc = None
+        self._diag_output_t = None
+
+        # Anti-windup guard (opt-in, see _close_state_loop): tracks whether the
+        # FK position error is still improving, to clamp the warm-start
+        # velocity's growth when it isn't (see enable_anti_windup / plan Partie 2).
+        self._windup_error_history = deque(maxlen=3)
+        self._windup_best_error = None
+        self._prev_fed_back_velocity = None
+        self._diag_windup_active = False
+        self._diag_windup_clamp_ratio = -1.0
 
         self._batch_size = 1
 
@@ -230,7 +243,9 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_vel_input_err_max_lagged = -1.0
         self._diag_accel_input_err_max_lagged = -1.0
         self._smith_filt_vel = None
-        self._smith_filt_acc = None
+        self._windup_error_history.clear()
+        self._windup_best_error = None
+        self._prev_fed_back_velocity = None
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
         )
@@ -729,11 +744,17 @@ class ReactiveController(TrajectoryPlanner):
             self.node.declare_parameter('use_real_velocity_feedback', False)
         return bool(self.node.get_parameter('use_real_velocity_feedback').value)
 
-    def _smith_predictor_feedback(self) -> bool:
+    def _extrapolated_velocity_feedback(self) -> bool:
 
-        if not self.node.has_parameter('use_smith_predictor_feedback'):
-            self.node.declare_parameter('use_smith_predictor_feedback', False)
-        return bool(self.node.get_parameter('use_smith_predictor_feedback').value)
+        if not self.node.has_parameter('use_extrapolated_velocity_feedback'):
+            self.node.declare_parameter('use_extrapolated_velocity_feedback', False)
+        return bool(self.node.get_parameter('use_extrapolated_velocity_feedback').value)
+
+    def _anti_windup_enabled(self) -> bool:
+
+        if not self.node.has_parameter('enable_anti_windup'):
+            self.node.declare_parameter('enable_anti_windup', False)
+        return bool(self.node.get_parameter('enable_anti_windup').value)
 
     def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
 
@@ -786,10 +807,6 @@ class ReactiveController(TrajectoryPlanner):
             real_vel if self._smith_filt_vel is None
             else alpha * real_vel + (1.0 - alpha) * self._smith_filt_vel
         )
-        self._smith_filt_acc = (
-            real_acc if self._smith_filt_acc is None
-            else alpha * real_acc + (1.0 - alpha) * self._smith_filt_acc
-        )
         batch_size = max(1, int(getattr(self, '_batch_size', 1)))
         interp_dt = getattr(self, '_command_interval', 0.0)
         if interp_dt > 0.0:
@@ -798,27 +815,103 @@ class ReactiveController(TrajectoryPlanner):
             tau = (queue_depth + batch_size) * interp_dt
         else:
             tau = 0.0
-        self._diag_smith_tau = tau
+        self._diag_extrap_tau = tau
 
-        smith_vel = self._smith_filt_vel + self._smith_filt_acc * tau
-        smith_acc = self._smith_filt_acc
-        self._diag_smith_vel = smith_vel.reshape(-1).cpu().tolist()
-        self._diag_smith_acc = smith_acc.reshape(-1).cpu().tolist()
+        # pred_acc is the solver's own (smooth) acceleration output -- used as
+        # the extrapolation slope instead of a filtered real_acc, since
+        # real_acc (2nd derivative of a measured position) is the noisiest
+        # quantity in the loop. See plan Partie 1.
+        pred_acc_for_extrap = pred_acc if pred_acc is not None else torch.zeros_like(real_vel)
+        extrap_vel = self._smith_filt_vel + pred_acc_for_extrap * tau
+        extrap_acc = pred_acc_for_extrap
+        self._diag_extrap_vel = extrap_vel.reshape(-1).cpu().tolist()
+        self._diag_extrap_acc = extrap_acc.reshape(-1).cpu().tolist()
         if pred_vel is not None:
-            self._diag_vel_smith_err_max = float((pred_vel - smith_vel).abs().max().item())
+            self._diag_vel_extrap_err_max = float((pred_vel - extrap_vel).abs().max().item())
         if pred_acc is not None:
-            self._diag_accel_smith_err_max = float((pred_acc - smith_acc).abs().max().item())
+            self._diag_accel_extrap_err_max = float((pred_acc - extrap_acc).abs().max().item())
 
-        if self._smith_predictor_feedback():
-            state.velocity = smith_vel
-            state.acceleration = smith_acc
+        if self._extrapolated_velocity_feedback():
+            state.velocity = extrap_vel
+            state.acceleration = extrap_acc
         elif self._debug_real_velocity_feedback():
             state.velocity = real_vel
             state.acceleration = real_acc
         else:
             state.velocity = predicted_state.velocity
             state.acceleration = predicted_state.acceleration
+
+        self._diag_input_vel = state.velocity.reshape(-1).cpu().tolist()
+        self._diag_input_acc = (
+            state.acceleration.reshape(-1).cpu().tolist()
+            if state.acceleration is not None else None
+        )
+
+        self._apply_anti_windup_guard(state)
+
         return state
+
+    def _apply_anti_windup_guard(self, state: JointState) -> None:
+        """Clamp the warm-start velocity's growth when the FK position error
+        has stopped improving (opt-in, ``enable_anti_windup``).
+
+        Runs *after* the feedback-source selection above, on whatever
+        velocity/acceleration was chosen (predicted / real / extrapolated) --
+        it protects the warm-start regardless of feedback source. Guards
+        against the case where the Cartesian goal is structurally unreachable
+        (e.g. inside an obstacle): the solver keeps nudging toward it every
+        resolve, reuses the previous resolve's velocity as its warm start,
+        and with nothing tying that velocity to actual progress it grows
+        resolve after resolve (~1.5x measured) -- see plan Partie 2.
+
+        The error history is checked over a small window (not step-to-step)
+        so oscillation noise in the FK error doesn't spuriously trip the
+        guard: growth is only clamped once ``_windup_error_history`` is full
+        (its maxlen consecutive ticks) and none of those ticks improved on
+        ``_windup_best_error``.
+
+        The clamp rescales the chosen velocity's MAGNITUDE down to
+        ``||v_prev|| * growth_cap`` but keeps its direction -- deliberately
+        NOT ``state.velocity = v_prev`` (a literal reading of the plan's
+        formula): since ``_prev_fed_back_velocity`` is updated to the
+        post-clamp value every tick, an unconditional freeze to the exact
+        previous vector would pin both magnitude AND direction indefinitely
+        once tripped, with no release path except a new FK-error minimum --
+        exactly the "coupure brutale" the plan says this guard must avoid,
+        just delayed by one tick instead of instant. Rescaling only the norm
+        still caps growth while letting the solver keep steering.
+        """
+        if not self._anti_windup_enabled() or state.velocity is None:
+            self._diag_windup_active = False
+            return
+
+        growth_cap = 1.0
+        err = self._last_position_error
+        self._windup_error_history.append(err)
+
+        if self._windup_best_error is None or err < self._windup_best_error:
+            self._windup_best_error = err
+            self._windup_error_history.clear()
+            progressing = True
+        else:
+            progressing = False
+
+        v_prev = self._prev_fed_back_velocity
+        self._diag_windup_active = False
+        self._diag_windup_clamp_ratio = -1.0
+
+        if (v_prev is not None and not progressing
+                and len(self._windup_error_history) >= self._windup_error_history.maxlen):
+            v_chosen_norm = float(torch.linalg.norm(state.velocity).item())
+            v_prev_norm = float(torch.linalg.norm(v_prev).item())
+            if v_chosen_norm > v_prev_norm * growth_cap and v_chosen_norm > 1e-9:
+                state.velocity = state.velocity * (v_prev_norm * growth_cap / v_chosen_norm)
+                self._diag_windup_active = True
+                self._diag_windup_clamp_ratio = (
+                    v_chosen_norm / v_prev_norm if v_prev_norm > 1e-9 else -1.0
+                )
+
+        self._prev_fed_back_velocity = state.velocity.detach().clone()
 
     def _init_robot_at_start(self, robot_context, start_state: JointState):
         """Seed the robot/visualization at the start configuration."""
@@ -848,5 +941,18 @@ class ReactiveController(TrajectoryPlanner):
             velocity = [v.cpu().tolist() if v is not None else [0.0] * len(position[0])]
             a = acc_t[0] if (acc_t is not None and acc_t.dim() > 1) else acc_t
             acceleration = [a.cpu().tolist() if a is not None else [0.0] * len(position[0])]
+
+        # Generic capture point (any reactive controller, immediate or paced
+        # sends): the command actually pushed to the robot this call, for the
+        # v_output/a_output diagnostic columns (see plan Partie 3). Take the
+        # last point of a full-horizon action, or the single point sent.
+        # Timestamped (_diag_output_t) because in paced mode this write
+        # happens on the timer thread while record_tick reads it from the
+        # producer thread -- output_age_ms (in mpc_diagnostics.py) lets a
+        # reader tell a contemporaneous v_output from a stale one instead of
+        # silently misreading queue lag as a v_output/v_input phase shift.
+        self._diag_output_vel = velocity[-1]
+        self._diag_output_acc = acceleration[-1]
+        self._diag_output_t = time.monotonic()
 
         robot_context.set_and_send_command(None, velocity, acceleration, position)
