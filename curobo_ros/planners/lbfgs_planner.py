@@ -193,6 +193,7 @@ class LBFGSController(ReactiveController):
                     input_acc=self._diag_input_acc,
                     output_vel=self._diag_output_vel,
                     output_acc=self._diag_output_acc,
+                    output_t=self._diag_output_t,
                     windup_active=self._diag_windup_active,
                     windup_clamp_ratio=self._diag_windup_clamp_ratio,
                 )

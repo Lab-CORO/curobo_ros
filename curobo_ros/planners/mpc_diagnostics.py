@@ -285,6 +285,7 @@ class MPCDiagnostics:
         extrap_tau: float = -1.0,
         input_vel: list = None, input_acc: list = None,
         output_vel: list = None, output_acc: list = None,
+        output_t: float = None,
         windup_active: bool = False, windup_clamp_ratio: float = -1.0,
     ):
         """One CSV row per ``optimize_next_action()`` call -- the record_tick
@@ -369,10 +370,16 @@ class MPCDiagnostics:
         whichever is active) and fed back as the next warm start -- logged as
         ``v_input_j*_dps``/``a_input_j*_dps2``.
 
-        ``output_vel``/``output_acc`` (rad/s, rad/s^2, one entry per joint):
-        the command actually sent to the robot this tick
+        ``output_vel``/``output_acc`` (rad/s, rad/s^2, one entry per joint),
+        ``output_t`` (``time.monotonic()`` of that write): the command
+        actually sent to the robot this tick
         (``ReactiveController._send_command``) -- logged as
-        ``v_output_j*_dps``/``a_output_j*_dps2``. Together with
+        ``v_output_j*_dps``/``a_output_j*_dps2``. In paced mode
+        ``_send_command`` runs on the timer thread while this method runs on
+        the producer thread, so ``output_vel``/``output_acc`` are not
+        guaranteed contemporaneous with this row -- ``output_age_ms``
+        (``now - output_t``) makes a stale read visible instead of silently
+        misreading queue lag as a v_output/v_input phase shift. Together with
         ``input_vel``/``input_acc`` and ``pred_vel``/``real_vel``/
         ``extrap_vel`` above, these give 5 per-joint series to visually
         distinguish what's physically applied, what loops back into the solver,
@@ -429,6 +436,7 @@ class MPCDiagnostics:
              "vel_input_err_max_lagged_dps", "accel_input_err_max_lagged_dps2",
              "lag_steps",
              "vel_extrap_err_max_dps", "accel_extrap_err_max_dps2", "extrap_tau_ms",
+             "output_age_ms",
              "windup_active", "windup_clamp_ratio"]
             + [f"q_j{i+1}_deg" for i in range(dof)]
             + [f"v_j{i+1}_dps" for i in range(dof)]
@@ -452,6 +460,7 @@ class MPCDiagnostics:
         vel_extrap_err_dps = vel_extrap_err_max if vel_extrap_err_max < 0 else deg(vel_extrap_err_max)
         accel_extrap_err_dps2 = accel_extrap_err_max if accel_extrap_err_max < 0 else deg(accel_extrap_err_max)
         extrap_tau_ms = extrap_tau if extrap_tau < 0 else extrap_tau * 1000.0
+        output_age_ms = (now - output_t) * 1000.0 if output_t is not None else -1.0
         nan_row = [float('nan')] * dof
         pred_vel_row = [deg(x) for x in pred_vel] if pred_vel is not None else nan_row
         real_vel_row = [deg(x) for x in real_vel] if real_vel is not None else nan_row
@@ -482,6 +491,7 @@ class MPCDiagnostics:
              f"{vel_input_err_lagged_dps:.2f}", f"{accel_input_err_lagged_dps2:.1f}",
              str(lag_steps),
              f"{vel_extrap_err_dps:.2f}", f"{accel_extrap_err_dps2:.1f}", f"{extrap_tau_ms:.1f}",
+             f"{output_age_ms:.1f}",
              str(int(windup_active)), f"{windup_clamp_ratio:.3f}"]
             + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v]
             + [f"{x:.2f}" for x in pred_vel_row] + [f"{x:.2f}" for x in real_vel_row]

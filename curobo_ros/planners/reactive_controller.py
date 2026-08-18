@@ -135,6 +135,7 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_input_acc = None
         self._diag_output_vel = None
         self._diag_output_acc = None
+        self._diag_output_t = None
 
         # Anti-windup guard (opt-in, see _close_state_loop): tracks whether the
         # FK position error is still improving, to clamp the warm-start
@@ -868,6 +869,17 @@ class ReactiveController(TrajectoryPlanner):
         guard: growth is only clamped once ``_windup_error_history`` is full
         (its maxlen consecutive ticks) and none of those ticks improved on
         ``_windup_best_error``.
+
+        The clamp rescales the chosen velocity's MAGNITUDE down to
+        ``||v_prev|| * growth_cap`` but keeps its direction -- deliberately
+        NOT ``state.velocity = v_prev`` (a literal reading of the plan's
+        formula): since ``_prev_fed_back_velocity`` is updated to the
+        post-clamp value every tick, an unconditional freeze to the exact
+        previous vector would pin both magnitude AND direction indefinitely
+        once tripped, with no release path except a new FK-error minimum --
+        exactly the "coupure brutale" the plan says this guard must avoid,
+        just delayed by one tick instead of instant. Rescaling only the norm
+        still caps growth while letting the solver keep steering.
         """
         if not self._anti_windup_enabled() or state.velocity is None:
             self._diag_windup_active = False
@@ -892,8 +904,8 @@ class ReactiveController(TrajectoryPlanner):
                 and len(self._windup_error_history) >= self._windup_error_history.maxlen):
             v_chosen_norm = float(torch.linalg.norm(state.velocity).item())
             v_prev_norm = float(torch.linalg.norm(v_prev).item())
-            if v_chosen_norm > v_prev_norm * growth_cap:
-                state.velocity = v_prev * growth_cap
+            if v_chosen_norm > v_prev_norm * growth_cap and v_chosen_norm > 1e-9:
+                state.velocity = state.velocity * (v_prev_norm * growth_cap / v_chosen_norm)
                 self._diag_windup_active = True
                 self._diag_windup_clamp_ratio = (
                     v_chosen_norm / v_prev_norm if v_prev_norm > 1e-9 else -1.0
@@ -934,7 +946,13 @@ class ReactiveController(TrajectoryPlanner):
         # sends): the command actually pushed to the robot this call, for the
         # v_output/a_output diagnostic columns (see plan Partie 3). Take the
         # last point of a full-horizon action, or the single point sent.
+        # Timestamped (_diag_output_t) because in paced mode this write
+        # happens on the timer thread while record_tick reads it from the
+        # producer thread -- output_age_ms (in mpc_diagnostics.py) lets a
+        # reader tell a contemporaneous v_output from a stale one instead of
+        # silently misreading queue lag as a v_output/v_input phase shift.
         self._diag_output_vel = velocity[-1]
         self._diag_output_acc = acceleration[-1]
+        self._diag_output_t = time.monotonic()
 
         robot_context.set_and_send_command(None, velocity, acceleration, position)
