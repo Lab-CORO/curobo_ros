@@ -513,3 +513,30 @@ class SinglePlanner(TrajectoryPlanner):
             'voxel_size',
             'collision_activation_distance',
         ]
+
+    # ------------------------------------------------------------------
+    # World/collision-model propagation (TrajectoryPlanner overrides)
+    # ------------------------------------------------------------------
+    # All SinglePlanner subclasses (ClassicPlanner, MultiPointPlanner,
+    # JointSpacePlanner) share ONE class-level MotionPlanner instance (see
+    # set_motion_planner/_shared_motion_planner above) -- these three
+    # overrides teach the base TrajectoryPlanner interface that fact, so
+    # unified_planner_node.update_all_solvers_world never needs an
+    # isinstance(planner, SinglePlanner) special case: it can just ask any
+    # planner has_solver()/world_identity() and call update_world().
+
+    def has_solver(self) -> bool:
+        return self.motion_planner is not None
+
+    def update_world(self, scene) -> None:
+        if self.motion_planner is not None:
+            self.motion_planner.update_world(scene)
+
+    def world_identity(self):
+        # id() of the SHARED class-level instance, not id(self) -- every
+        # SinglePlanner subclass instance must collapse onto this one value
+        # so update_all_solvers_world's dedup only pushes the scene into the
+        # shared MotionPlanner once, not once per wrapper class. None is a
+        # valid (if arbitrary) identity here: has_solver() already gates out
+        # the not-yet-built case before a caller would compare identities.
+        return id(self.motion_planner)

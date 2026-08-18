@@ -146,3 +146,52 @@ class TrajectoryPlanner(ABC):
             List of parameter names
         """
         return []
+
+    # ------------------------------------------------------------------
+    # World/collision-model propagation
+    # ------------------------------------------------------------------
+    # These three let a caller (unified_planner_node.update_all_solvers_world)
+    # push scene updates to "whichever planners currently have a live solver
+    # that needs it" WITHOUT knowing about SinglePlanner/ReactiveController at
+    # all -- no isinstance checks, no per-subclass special-casing outside this
+    # class hierarchy. Added 2026-08-18 after update_all_solvers_world was
+    # found pushing a scene update to solvers that were warmed up earlier in
+    # the session but aren't the one actually driving the robot (~49% of a
+    # perception refresh's cost, see that method's own history/docstring).
+
+    def has_solver(self) -> bool:
+        """Whether this planner's underlying cuRobo solver has been built yet.
+
+        Default False: a bare TrajectoryPlanner has no solver concept of its
+        own. SinglePlanner/ReactiveController each override this against
+        their own solver reference.
+        """
+        return False
+
+    def update_world(self, scene) -> None:
+        """Push a scene update into this planner's collision model.
+
+        Default no-op: a bare TrajectoryPlanner has nothing to update.
+        SinglePlanner/ReactiveController override this.
+        """
+        return None
+
+    def world_identity(self):
+        """Hashable identity of the underlying solver instance this planner
+        actually pushes update_world() calls into.
+
+        Two planners that return the SAME identity are backed by ONE solver:
+        updating either one updates both, so a caller iterating many planners
+        (update_all_solvers_world) must call update_world() on only ONE of
+        them, and can compare identities to decide "is this the currently
+        active planner's solver" without any isinstance check.
+
+        Default: this planner's own identity -- correct for any planner that
+        owns its solver exclusively (every ReactiveController). SinglePlanner
+        overrides this: ALL its subclasses (ClassicPlanner, MultiPointPlanner,
+        JointSpacePlanner) share one class-level MotionPlanner instance (see
+        SinglePlanner.set_motion_planner), so they must all collapse onto the
+        SAME identity or update_all_solvers_world would push the identical
+        scene into that one shared solver three times per refresh.
+        """
+        return id(self)

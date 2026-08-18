@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import torch
 import ros2_numpy as rnp
@@ -290,6 +291,14 @@ class ObstacleManager:
             f"-> time_decay={time_decay:.4f}"
         )
 
+    def _debug_perception_timing(self) -> bool:
+        """Reuses the node-wide `lbfgs_debug` flag rather than adding a new
+        param -- this is diagnostic instrumentation for the same 2026-08-18
+        investigation (dt_step_ms breakdown), not a separate feature."""
+        if not self.node.has_parameter('lbfgs_debug'):
+            self.node.declare_parameter('lbfgs_debug', False)
+        return bool(self.node.get_parameter('lbfgs_debug').value)
+
     def refresh_esdf(self) -> bool:
         """Recompute the ESDF from the Mapper and stage it into the Scene.
 
@@ -298,6 +307,8 @@ class ObstacleManager:
         """
         if self.mapper is None:
             return False
+        debug = self._debug_perception_timing()
+        t0 = time.monotonic() if debug else None
         try:
             vg = self.mapper.compute_esdf()
         except Exception as e:
@@ -305,6 +316,11 @@ class ObstacleManager:
                 f"compute_esdf failed: {e}", throttle_duration_sec=5.0
             )
             return False
+        if debug:
+            self.node.get_logger().info(
+                f"Mapper.compute_esdf()={(time.monotonic()-t0)*1000.0:.1f}ms "
+                "(native cuRobo BlockSparseESDFIntegrator, not curobo_ros code)"
+            )
         if vg is None:
             return False
         # Sanity-check the perception ESDF before it reaches the collision
@@ -312,7 +328,14 @@ class ObstacleManager:
         # the collision cache was sized for) makes CuRobo's collision kernel read
         # out of bounds → GPU illegal access → host SIGSEGV (exit -11). Reject it
         # here rather than crash the whole node mid-plan.
-        if not self._inspect_esdf(vg):
+        t0 = time.monotonic() if debug else None
+        ok = self._inspect_esdf(vg)
+        if debug:
+            self.node.get_logger().info(
+                f"_inspect_esdf()={(time.monotonic()-t0)*1000.0:.1f}ms (our code, "
+                "forces a device sync via .item())"
+            )
+        if not ok:
             return False
         # Single perception voxel grid in the Scene (replaces any previous one).
         self.scene.voxel = [vg]
