@@ -287,6 +287,25 @@ class RobotContext:
                 return [0.0] * self.description.dof
             return self.robot_strategy.get_joint_velocity()
 
+    def get_joint_velocity_filtered(self):
+        """Moving-average-filtered joint velocity (driver feedback), if the
+        active strategy provides one — else zeros. See JointCommandStrategy.
+        """
+        with self.strategy_lock:
+            if self.robot_strategy is None:
+                return [0.0] * self.description.dof
+            return self.robot_strategy.get_joint_velocity_filtered()
+
+    def get_joint_acceleration_filtered(self):
+        """Moving-average-filtered joint acceleration (driver feedback), if
+        the active strategy provides one — else zeros. See
+        JointCommandStrategy.
+        """
+        with self.strategy_lock:
+            if self.robot_strategy is None:
+                return [0.0] * self.description.dof
+            return self.robot_strategy.get_joint_acceleration_filtered()
+
     def get_joint_name(self):
         with self.strategy_lock:
             if self.robot_strategy is None:

@@ -121,9 +121,13 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_vel_input_err_max_lagged = -1.0
         self._diag_accel_input_err_max_lagged = -1.0
 
+        # Measured resolve-to-resolve period, used to ground the
+        # extrapolation's tau instead of queue_depth (which saturates at
+        # batch_size+1 under backpressure and so UNDERSTATES the real lag
+        # exactly when the solver is falling behind -- see _close_state_loop).
+        self._prev_resolve_t = None
+        self._resolve_dt_history = deque(maxlen=10)
 
-        self._smith_filter_alpha = 0.3
-        self._smith_filt_vel = None
 
         self._diag_extrap_vel = None
         self._diag_extrap_acc = None
@@ -238,11 +242,12 @@ class ReactiveController(TrajectoryPlanner):
         self._hold_count = 0
         self._prev_real_velocity = None
         self._prev_real_velocity_t = None
+        self._prev_resolve_t = None
+        self._resolve_dt_history.clear()
         self._diag_pred_vel_history.clear()
         self._diag_pred_acc_history.clear()
         self._diag_vel_input_err_max_lagged = -1.0
         self._diag_accel_input_err_max_lagged = -1.0
-        self._smith_filt_vel = None
         self._windup_error_history.clear()
         self._windup_best_error = None
         self._prev_fed_back_velocity = None
@@ -741,7 +746,7 @@ class ReactiveController(TrajectoryPlanner):
     def _debug_real_velocity_feedback(self) -> bool:
 
         if not self.node.has_parameter('use_real_velocity_feedback'):
-            self.node.declare_parameter('use_real_velocity_feedback', False)
+            self.node.declare_parameter('use_real_velocity_feedback', True)
         return bool(self.node.get_parameter('use_real_velocity_feedback').value)
 
     def _extrapolated_velocity_feedback(self) -> bool:
@@ -756,6 +761,16 @@ class ReactiveController(TrajectoryPlanner):
             self.node.declare_parameter('enable_anti_windup', False)
         return bool(self.node.get_parameter('enable_anti_windup').value)
 
+    def _extrap_accel_real_blend(self) -> float:
+        """Weight of the grounded, filtered real acceleration in the
+        extrapolation's acceleration term (0 = pure pred_acc, as before;
+        1 = pure real_acc_filtered). Default 0.5: an even split, meant as a
+        starting point to tune against hardware CSVs, not a validated value.
+        """
+        if not self.node.has_parameter('extrap_accel_real_blend'):
+            self.node.declare_parameter('extrap_accel_real_blend', 0.5)
+        return float(self.node.get_parameter('extrap_accel_real_blend').value)
+
     def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
 
         real_pose = robot_context.get_joint_pose()
@@ -764,6 +779,8 @@ class ReactiveController(TrajectoryPlanner):
 
         real_vel_list = robot_context.get_joint_velocity()
         real_vel = torch.tensor([real_vel_list], dtype=self._dtype, device=self._device)
+        filt_vel_list = robot_context.get_joint_velocity_filtered()
+        filt_vel = torch.tensor([filt_vel_list], dtype=self._dtype, device=self._device)
         now = time.monotonic()
         if self._prev_real_velocity is not None and self._prev_real_velocity_t is not None:
             dt = now - self._prev_real_velocity_t
@@ -776,8 +793,15 @@ class ReactiveController(TrajectoryPlanner):
         self._prev_real_velocity = real_vel
         self._prev_real_velocity_t = now
 
+        if self._prev_resolve_t is not None:
+            resolve_dt = now - self._prev_resolve_t
+            if resolve_dt > 1e-6:
+                self._resolve_dt_history.append(resolve_dt)
+        self._prev_resolve_t = now
+
         pred_vel = predicted_state.velocity
         pred_acc = predicted_state.acceleration
+
         self._diag_pred_vel = pred_vel.reshape(-1).cpu().tolist() if pred_vel is not None else None
         self._diag_real_vel = real_vel.reshape(-1).cpu().tolist()
         self._diag_pred_acc = pred_acc.reshape(-1).cpu().tolist() if pred_acc is not None else None
@@ -802,28 +826,46 @@ class ReactiveController(TrajectoryPlanner):
                 abs(a - b) for a, b in zip(lagged_pred_acc, self._diag_real_acc)
             )
 
-        alpha = self._smith_filter_alpha
-        self._smith_filt_vel = (
-            real_vel if self._smith_filt_vel is None
-            else alpha * real_vel + (1.0 - alpha) * self._smith_filt_vel
-        )
-        batch_size = max(1, int(getattr(self, '_batch_size', 1)))
-        interp_dt = getattr(self, '_command_interval', 0.0)
-        if interp_dt > 0.0:
-            with self._pending_cv:
-                queue_depth = len(self._pending_queue)
-            tau = (queue_depth + batch_size) * interp_dt
+        # tau = lag_steps * measured resolve period, NOT queue_depth-based:
+        # queue_depth is backpressure-capped at batch_size+1 (see the pacing
+        # loop), so it SATURATES -- and therefore understates the real lag --
+        # exactly when the solver falls behind (slow solve_ms). lag_steps=2
+        # is the same constant already used for the lagged-error diagnostic
+        # above; anchoring tau on the actually-measured resolve_dt instead of
+        # a live queue counter removes an independent, jittery source of
+        # noise on the pred_acc*tau term below.
+        if self._resolve_dt_history:
+            avg_resolve_dt = sum(self._resolve_dt_history) / len(self._resolve_dt_history)
         else:
-            tau = 0.0
+            batch_size = max(1, int(getattr(self, '_batch_size', 1)))
+            interp_dt = getattr(self, '_command_interval', 0.0)
+            avg_resolve_dt = batch_size * interp_dt if interp_dt > 0.0 else 0.0
+        tau = self._diag_lag_steps * avg_resolve_dt
         self._diag_extrap_tau = tau
 
-        # pred_acc is the solver's own (smooth) acceleration output -- used as
-        # the extrapolation slope instead of a filtered real_acc, since
-        # real_acc (2nd derivative of a measured position) is the noisiest
-        # quantity in the loop. See plan Partie 1.
+        # filt_vel is a moving average over the raw ~100Hz joint_states feed,
+        # computed in JointSpeedStrategy (see callback_joint_pose) -- moved
+        # there because a per-resolve EMA here only ever sampled whichever
+        # single 100Hz sample happened to be latest at resolve time (~240ms),
+        # discarding the rest of the stream between reads.
+        #
+        # Acceleration: blend pred_acc (solver's own, smooth but entirely
+        # self-referential -- it's fed back as the state the solver believes
+        # itself to be in, which then shapes the NEXT pred_acc, closing a
+        # positive-feedback loop with no correction toward reality) with
+        # real_acc_filtered (grounded: finite difference of raw ~100Hz
+        # velocity, moving-averaged in JointSpeedStrategy -- much less noisy
+        # than the old per-resolve real_acc). The SAME blended value is used
+        # both as the extrapolation slope and as the acceleration fed back,
+        # so velocity and acceleration are no longer internally inconsistent
+        # (previously: filt_vel was grounded but extrap_acc was 100%
+        # solver-derived).
+        real_acc_filt_list = robot_context.get_joint_acceleration_filtered()
+        real_acc_filt = torch.tensor([real_acc_filt_list], dtype=self._dtype, device=self._device)
         pred_acc_for_extrap = pred_acc if pred_acc is not None else torch.zeros_like(real_vel)
-        extrap_vel = self._smith_filt_vel + pred_acc_for_extrap * tau
-        extrap_acc = pred_acc_for_extrap
+        blend = self._extrap_accel_real_blend()
+        extrap_acc = (1.0 - blend) * pred_acc_for_extrap + blend * real_acc_filt
+        extrap_vel = filt_vel + extrap_acc * tau
         self._diag_extrap_vel = extrap_vel.reshape(-1).cpu().tolist()
         self._diag_extrap_acc = extrap_acc.reshape(-1).cpu().tolist()
         if pred_vel is not None:

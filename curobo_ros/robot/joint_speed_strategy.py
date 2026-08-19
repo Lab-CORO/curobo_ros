@@ -1,5 +1,6 @@
 import math
 import time
+from collections import deque
 
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
@@ -49,6 +50,12 @@ class JointSpeedStrategy(JointCommandStrategy):
                               ~4x the fastest M1013 axis)
       feedback_reject_limit   (consecutive rejected samples before the gate
                               gives up and accepts anyway — default 3)
+      velocity_filter_window  (int, number of joint_states samples averaged
+                              into get_joint_velocity_filtered() AND
+                              get_joint_acceleration_filtered() — a plain
+                              moving average over the raw ~100Hz feedback,
+                              not the per-resolve EMA that used to live in
+                              ReactiveController. Default 10.)
     '''
 
     def __init__(self, node, dt, description=None):
@@ -109,6 +116,34 @@ class JointSpeedStrategy(JointCommandStrategy):
         # wasn't reliable was wrong — verified against the driver source.)
         self.joint_pose = [0.0] * self.dof
         self.joint_velocity = [0.0] * self.dof
+
+        # Plain moving average over the raw ~100Hz joint_states feedback,
+        # computed here (at the source's real rate) rather than in
+        # ReactiveController._close_state_loop, which only samples whatever
+        # self.joint_velocity holds at its own ~4-8Hz resolve rate — most of
+        # the 100Hz stream was never seen by that per-resolve EMA.
+        velocity_filter_window = int(self.params.get('velocity_filter_window', 10))
+        self._velocity_window = deque(maxlen=max(1, velocity_filter_window))
+        self.joint_velocity_filtered = [0.0] * self.dof
+
+        # Same idea, one derivative up: acceleration from a finite difference
+        # of the FILTERED velocity above, taken over a ~velocity_filter_window
+        # long baseline (oldest vs. newest sample currently in the history),
+        # not a raw sample-to-sample diff at the ~10ms message rate. This is
+        # what grounds ReactiveController's extrapolated acceleration against
+        # reality instead of it being a pure mirror of the solver's own
+        # pred_acc.
+        #
+        # Differentiating at dt~10ms amplifies velocity measurement noise by
+        # ~1/dt (a modest +-0.01 rad/s of encoder noise becomes +-1 rad/s^2 =
+        # +-57 dps^2 PER SAMPLE) -- a 10-sample moving average on that only
+        # cuts the noise by sqrt(10)~3.16x, nowhere near enough. Stretching
+        # the baseline to ~velocity_filter_window samples (~100ms at 100Hz,
+        # instead of ~10ms) divides that amplification by the same factor
+        # the window would have averaged over anyway, without adding much
+        # extra lag since it's already differencing the smoothed signal.
+        self._filt_vel_history = deque(maxlen=max(1, velocity_filter_window) + 1)
+        self.joint_acceleration_filtered = [0.0] * self.dof
 
         # Plausibility gate on the feedback above (callback_joint_pose).
         self._feedback_max_speed_rad_s = math.radians(
@@ -246,6 +281,14 @@ class JointSpeedStrategy(JointCommandStrategy):
         with self.buffer_lock:
             return list(self.joint_velocity)
 
+    def get_joint_velocity_filtered(self):
+        with self.buffer_lock:
+            return list(self.joint_velocity_filtered)
+
+    def get_joint_acceleration_filtered(self):
+        with self.buffer_lock:
+            return list(self.joint_acceleration_filtered)
+
     def stop_robot(self):
         with self.buffer_lock:
             self.vel_command = []
@@ -277,6 +320,20 @@ class JointSpeedStrategy(JointCommandStrategy):
             self._last_good_time = now
             if msg.velocity:
                 self.joint_velocity = list(msg.velocity[:n])
+                self._velocity_window.append(self.joint_velocity)
+                self.joint_velocity_filtered = [
+                    sum(samples) / len(self._velocity_window)
+                    for samples in zip(*self._velocity_window)
+                ]
+                self._filt_vel_history.append((self.joint_velocity_filtered, now))
+                if len(self._filt_vel_history) == self._filt_vel_history.maxlen:
+                    baseline_vel, baseline_t = self._filt_vel_history[0]
+                    dt = now - baseline_t
+                    if dt > 1e-6:
+                        self.joint_acceleration_filtered = [
+                            (v - bv) / dt
+                            for v, bv in zip(self.joint_velocity_filtered, baseline_vel)
+                        ]
             if msg.name:
                 self.joint_names = list(msg.name[:n])
 

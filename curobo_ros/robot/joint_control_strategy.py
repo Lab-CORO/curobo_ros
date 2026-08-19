@@ -92,6 +92,20 @@ class JointCommandStrategy(ABC):
         """
         return [0.0] * self.dof
 
+    def get_joint_velocity_filtered(self):
+        """Moving-average-filtered joint velocity, if this strategy provides
+        one (e.g. JointSpeedStrategy averages over the raw ~100Hz
+        joint_states feedback). Default: same as get_joint_velocity().
+        """
+        return self.get_joint_velocity()
+
+    def get_joint_acceleration_filtered(self):
+        """Moving-average-filtered joint acceleration (finite difference of
+        raw velocity samples), if this strategy provides one. Default:
+        zeros — mirrors get_joint_velocity()'s default.
+        """
+        return [0.0] * self.dof
+
     @abstractmethod
     def get_joint_pose(self):
         ...
