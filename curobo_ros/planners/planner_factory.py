@@ -9,8 +9,9 @@ and manage their lifecycle.
 from typing import Dict, Optional
 from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
-from .mpc_planner import MPCController
+from .mppi_planner import MPPIController
 from .lbfgs_planner import LBFGSController
+from .base_planner import BaseController
 from .retarget_controller import RetargetController
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
@@ -30,10 +31,16 @@ class PlannerFactory:
 
     # Single source of truth: (internal_key, class, enum_id, display_name)
     # enum_id matches SetPlanner.Request constants (0=CLASSIC, 1=MPC, …)
+    # 'mpc' stays the catalog key/enum for the MPPI-backed controller (rather
+    # than a new 'mppi' key) so callers already passing planner_type='mpc' or
+    # reading node.mpc (ReactiveController.build_solver, config_wrapper_motion.py)
+    # keep working unchanged -- LBFGS already has its own 'lbfgs' key/node.lbfgs,
+    # so 'mpc' unambiguously means "the other reactive controller" now.
     _PLANNER_CATALOG = [
         ('classic',     ClassicPlanner,    0, 'Classic'),
-        ('mpc',         MPCController,      1, 'MPC'),
+        ('mpc',         MPPIController,     1, 'MPC'),
         ('lbfgs',       LBFGSController,    2, 'LBFGS'),  # was BATCH/unimplemented
+        ('base',        BaseController,     3, 'Base'),  # was CONSTRAINED/unimplemented
         ('multi_point', MultiPointPlanner, 4, 'Multi Point'),
         ('joint_space', JointSpacePlanner, 5, 'Joint Space'),
         ('retarget',    RetargetController, 6, 'Motion Retargeting'),
@@ -43,7 +50,8 @@ class PlannerFactory:
     _PLANNER_REGISTRY = {key: cls for key, cls, _, _ in _PLANNER_CATALOG}
     _PLANNER_REGISTRY.update({
         'motion_gen':               ClassicPlanner,  # Alias
-        'model_predictive_control': MPCController,    # Alias
+        'model_predictive_control': MPPIController,  # Alias
+        'mppi':                     MPPIController,  # Alias
         'motion_retargeting':       RetargetController,  # Alias
         'teleop':                   RetargetController,  # Alias
     })

@@ -29,8 +29,8 @@ rollout:
       activation_distance: [0.01, 0.01, 0.01, 0.01, 0.01]  # torque
 
       squared_l2_regularization_weight:
-        - 0.01     # velocity
-        - 10000.0 # acceleration
+        - 10.0    # velocity
+        - 100.0 # acceleration
         - 10.0    # jerk
         - 0.0     # torque smooth
         - 0.0     # energy smooth
@@ -43,7 +43,7 @@ rollout:
       cost_type: STATE
       retime_weights: false
       retime_regularization_weights: true
-      cspace_target_weight: 1000.0
+      cspace_target_weight: 0.0
       cspace_non_terminal_weight_factor: 0.05
 
     tool_pose_cfg:
@@ -79,7 +79,7 @@ optimizer:
   history: 27
   inner_iters: 25
   last_best: 10
-  line_search_scale: [0.0, 0.1, 0.5, 1.0]
+  line_search_scale: [0.01, 0.1, 0.5, 1.0]
   line_search_type: approx_wolfe
   num_iters: 50
   num_problems: 1

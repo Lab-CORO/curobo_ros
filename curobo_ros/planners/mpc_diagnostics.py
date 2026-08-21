@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
 Per-step diagnostic CSV, cost/horizon introspection, and RViz publishing for
-MPCController — split out of mpc_planner.py so step() stays about control,
-not I/O. Every method here is read-only with respect to control: it observes
-a solve after the fact and never feeds anything back into the solver or
-_v_bc. Built once in MPCController.build_solver(), alongside the solver it
-observes (same lifetime — a solver rebuild gets a fresh MPCDiagnostics too).
+MPPIController (also used by LBFGSController's own record_tick path) —
+originally split out of mpc_planner.py so step() stays about control, not
+I/O; mpc_planner.py has since been split into mppi_planner.py/lbfgs_planner.py.
+Every method here is read-only with respect to control: it observes a solve
+after the fact and never feeds anything back into the solver or _v_bc. Built
+once in MPPIController.build_solver(), alongside the solver it observes (same
+lifetime — a solver rebuild gets a fresh MPCDiagnostics too).
 """
 
 import math
@@ -22,7 +24,7 @@ from curobo_ros.core.diagnostics import open_diag_csv
 
 
 class MPCDiagnostics:
-    """Diagnostics + RViz publishing for one MPCController solver instance.
+    """Diagnostics + RViz publishing for one MPPIController solver instance.
 
     ``fk_position_error`` / ``fk_orientation_error`` are the owning
     controller's bound methods (``ReactiveController._fk_position_error`` /
@@ -33,14 +35,15 @@ class MPCDiagnostics:
 
     ``executed_idx`` (the index into the plan the arm will actually have
     reached before the next window replaces it) is a per-step value computed
-    once in ``MPCController.step()`` and passed explicitly into every method
+    once in ``MPPIController.step()`` and passed explicitly into every method
     that needs it, rather than read from shared mutable state — the same
     value is needed by both ``horizon_diag`` and ``csv_write`` and must stay
     consistent between them for one step.
     """
 
     def __init__(self, node, solver, path_frame, step_dt,
-                 fk_position_error, fk_orientation_error, csv_prefix: str = "mpc_diag"):
+                 fk_position_error, fk_orientation_error, csv_prefix: str = "mpc_diag",
+                 cspace_reg_weights=None):
         self.node = node
         self.solver = solver
         self._path_frame = path_frame
@@ -48,6 +51,12 @@ class MPCDiagnostics:
         self._fk_position_error = fk_position_error
         self._fk_orientation_error = fk_orientation_error
         self._csv_prefix = csv_prefix
+        # (w_vel, w_acc, w_jerk) from cost_cfg.cspace_cfg.squared_l2_regularization_weight
+        # (indices 0/1/2 -- see the YAML's own comment on that field), or None if
+        # the caller didn't have it available. Used by cost_breakdown() to log a
+        # cost_cspace_vel/acc/jerk decomposition -- see that method's docstring
+        # for why this is a Python-side PROXY, not cuRobo's actual fused cost.
+        self._cspace_reg_weights = cspace_reg_weights
 
         # Predicted end-effector path (current MPC horizon), for RViz
         # (nav_msgs/Path renders natively, no custom plugin needed).
@@ -72,7 +81,7 @@ class MPCDiagnostics:
         self._prev_horizon_t = None
         # record_tick's own previous-velocity baseline (one-point-per-call
         # model, LBFGSController) -- deliberately separate from
-        # _csv_last_vexec (csv_write's own baseline, MPCController's
+        # _csv_last_vexec (csv_write's own baseline, MPPIController's
         # per-horizon model) so the two continuity computations can never
         # perturb each other even if both ran against the same solver.
         self._tick_last_v = None
@@ -222,7 +231,8 @@ class MPCDiagnostics:
              "vexec_max_dps",
              "accel_win_max_dps2", "accel_boundary_dps2", "vbc_max_dps",
              "pose_pos_err_m", "pose_rot_err_rad", "cost_tool_pose_pos", "cost_tool_pose_orient",
-             "cost_cspace", "con_self_collision", "con_scene_collision", "con_cspace_bound",
+             "cost_cspace", "cost_cspace_vel", "cost_cspace_acc", "cost_cspace_jerk",
+             "con_self_collision", "con_scene_collision", "con_cspace_bound",
              # exec_fk_*: FK error of the point actually executed before the next
              # resolve (should track fk_err_m -- if it doesn't, the command
              # window is desynced from the state estimate). term_fk_*: FK error
@@ -256,6 +266,9 @@ class MPCDiagnostics:
              f"{breakdown.get('cost_tool_pose_pos', float('nan')):.4f}",
              f"{breakdown.get('cost_tool_pose_orient', float('nan')):.4f}",
              f"{breakdown.get('cost_cspace', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace_vel', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace_acc', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace_jerk', float('nan')):.4f}",
              f"{breakdown.get('con_self_collision', float('nan')):.4f}",
              f"{breakdown.get('con_scene_collision', float('nan')):.4f}",
              f"{breakdown.get('con_cspace_bound', float('nan')):.4f}",
@@ -275,18 +288,6 @@ class MPCDiagnostics:
         backpressure_wait_ms: float = -1.0, perception_ms: float = -1.0,
         live_goal_ms: float = -1.0, cheap_ms_before_resolve: float = -1.0,
         batch_wall_ms: float = -1.0, loop_iter: int = -1,
-        vel_input_err_max: float = -1.0, accel_input_err_max: float = -1.0,
-        pred_vel: list = None, real_vel: list = None,
-        pred_acc: list = None, real_acc: list = None,
-        vel_input_err_max_lagged: float = -1.0,
-        accel_input_err_max_lagged: float = -1.0, lag_steps: int = -1,
-        extrap_vel: list = None, extrap_acc: list = None,
-        vel_extrap_err_max: float = -1.0, accel_extrap_err_max: float = -1.0,
-        extrap_tau: float = -1.0,
-        input_vel: list = None, input_acc: list = None,
-        output_vel: list = None, output_acc: list = None,
-        output_t: float = None,
-        windup_active: bool = False, windup_clamp_ratio: float = -1.0,
     ):
         """One CSV row per ``optimize_next_action()`` call -- the record_tick
         counterpart to ``csv_write``'s one-row-per-horizon-solve for
@@ -316,84 +317,9 @@ class MPCDiagnostics:
         scheduling slop. All -1 sentinel when unset (same convention as the
         queue fields above).
 
-        ``vel_input_err_max``/``accel_input_err_max`` (rad/s, rad/s^2 -- -1
-        sentinel when unset, same convention): the gap between the
-        PREDICTED velocity/acceleration and what the REAL robot
-        velocity/acceleration was at that same instant, computed every
-        cycle by ReactiveController._close_state_loop regardless of which
-        one actually gets fed back to the solver. Diagnostic for the
-        predicted-velocity loop-gain instability described there -- a
-        growing gap here corroborates it independently of v_max_dps/joint
-        sign-flips.
-
-        ``pred_vel``/``real_vel``/``pred_acc``/``real_acc`` (rad/s, rad/s^2,
-        one entry per joint, ``None`` when unset -- written as NaN):
-        per-joint breakdown behind the two gap summaries above, logged as
-        ``v_pred_j*_dps``/``v_real_j*_dps``/``a_pred_j*_dps2``/
-        ``a_real_j*_dps2``. Needed to tell a time LAG (the real curve
-        tracks the predicted one, shifted) from NOISE (uncorrelated jitter
-        at any shift) apart -- the scalar max-gap columns alone can't
-        distinguish the two. cf. debug 2026-08-18.
-
-        ``vel_input_err_max_lagged``/``accel_input_err_max_lagged`` (rad/s,
-        rad/s^2 -- -1 sentinel when unset, e.g. still within the first
-        ``lag_steps`` resolves of a goal): the SAME max-gap computation as
-        ``vel_input_err_max``/``accel_input_err_max`` above, but comparing
-        THIS cycle's real measurement against the prediction from
-        ``lag_steps`` resolves ago instead of this cycle's own prediction.
-        Confirmed 2026-08-18 (lbfgs_diag_20260818_105545.csv): cross-
-        correlating the per-joint columns above showed 5/6 joints peaking at
-        lag=+2 (corr 0.87-0.96) vs. 0.44-0.74 at lag=0 -- i.e. real_vel
-        tracks a STALE prediction, not noise. If these lagged columns come
-        out much smaller than the unlagged ones on a given run, that run
-        corroborates the same lag; if they don't shrink, the lag isn't
-        constant and ``lag_steps`` needs revisiting.
-
-        ``extrap_vel``/``extrap_acc`` (rad/s, rad/s^2, one entry per joint,
-        ``None`` when unset -- written as NaN), ``vel_extrap_err_max``/
-        ``accel_extrap_err_max`` (rad/s, rad/s^2 -- -1 sentinel when unset),
-        ``extrap_tau`` (s -- -1 sentinel when unset): the extrapolated
-        candidate feedback (filtered real_vel extrapolated forward by tau
-        using the solver's own pred_acc as slope, see
-        ReactiveController._close_state_loop and
-        ``_extrapolated_velocity_feedback``), its gap to the PREDICTED state,
-        and the tau used to produce it. Logged as ``v_extrap_j*_dps``/
-        ``a_extrap_j*_dps2``/``vel_extrap_err_max_dps``/
-        ``accel_extrap_err_max_dps2``/``extrap_tau_ms``. A much smaller
-        vel_extrap_err_max_dps than vel_input_err_max_dps on a given run is
-        what would validate the extrapolation; UNTESTED on hardware as of
-        2026-08-18.
-
-        ``input_vel``/``input_acc`` (rad/s, rad/s^2, one entry per joint):
-        the velocity/acceleration actually chosen by the feedback-source
-        selection in ``_close_state_loop`` (predicted / real / extrapolated,
-        whichever is active) and fed back as the next warm start -- logged as
-        ``v_input_j*_dps``/``a_input_j*_dps2``.
-
-        ``output_vel``/``output_acc`` (rad/s, rad/s^2, one entry per joint),
-        ``output_t`` (``time.monotonic()`` of that write): the command
-        actually sent to the robot this tick
-        (``ReactiveController._send_command``) -- logged as
-        ``v_output_j*_dps``/``a_output_j*_dps2``. In paced mode
-        ``_send_command`` runs on the timer thread while this method runs on
-        the producer thread, so ``output_vel``/``output_acc`` are not
-        guaranteed contemporaneous with this row -- ``output_age_ms``
-        (``now - output_t``) makes a stale read visible instead of silently
-        misreading queue lag as a v_output/v_input phase shift. Together with
-        ``input_vel``/``input_acc`` and ``pred_vel``/``real_vel``/
-        ``extrap_vel`` above, these give 5 per-joint series to visually
-        distinguish what's physically applied, what loops back into the solver,
-        the raw solver prediction, the real measurement, and the
-        extrapolation candidate.
-
-        ``windup_active``/``windup_clamp_ratio``: whether the anti-windup
-        guard (``ReactiveController._apply_anti_windup_guard``) clamped the
-        warm-start velocity this tick, and the ratio by which the chosen
-        velocity's norm exceeded the clamped one (-1 when inactive/unset).
-
         Deliberately does NOT touch ``csv_write``/``horizon_diag`` or their
         state (``_csv_last_vexec``, ``_prev_horizon_q/_t``) -- those stay
-        strictly MPCController's per-horizon path. Uses its own
+        strictly MPPIController's per-horizon path. Uses its own
         ``_tick_last_v`` baseline instead (see __init__).
         """
         if self._csv is None:
@@ -428,50 +354,13 @@ class MPCDiagnostics:
             ["t_s", "dt_step_ms", "solve_ms", "command_dt_ms", "action_dt_ms",
              "fk_err_m", "fk_rot_err_deg", "v_max_dps", "accel_step_dps2",
              "cost_tool_pose_pos", "cost_tool_pose_orient", "cost_cspace",
+             "cost_cspace_vel", "cost_cspace_acc", "cost_cspace_jerk",
              "con_self_collision", "con_scene_collision", "con_cspace_bound",
              "queue_depth", "min_queue_depth_seen", "starvation_ticks",
              "backpressure_wait_ms", "perception_ms", "live_goal_ms",
-             "cheap_ms_before_resolve", "batch_wall_ms", "loop_iter",
-             "vel_input_err_max_dps", "accel_input_err_max_dps2",
-             "vel_input_err_max_lagged_dps", "accel_input_err_max_lagged_dps2",
-             "lag_steps",
-             "vel_extrap_err_max_dps", "accel_extrap_err_max_dps2", "extrap_tau_ms",
-             "output_age_ms",
-             "windup_active", "windup_clamp_ratio"]
+             "cheap_ms_before_resolve", "batch_wall_ms", "loop_iter"]
             + [f"q_j{i+1}_deg" for i in range(dof)]
-            + [f"v_j{i+1}_dps" for i in range(dof)]
-            + [f"v_pred_j{i+1}_dps" for i in range(dof)]
-            + [f"v_real_j{i+1}_dps" for i in range(dof)]
-            + [f"a_pred_j{i+1}_dps2" for i in range(dof)]
-            + [f"a_real_j{i+1}_dps2" for i in range(dof)]
-            + [f"v_extrap_j{i+1}_dps" for i in range(dof)]
-            + [f"a_extrap_j{i+1}_dps2" for i in range(dof)]
-            + [f"v_output_j{i+1}_dps" for i in range(dof)]
-            + [f"a_output_j{i+1}_dps2" for i in range(dof)]
-            + [f"v_input_j{i+1}_dps" for i in range(dof)]
-            + [f"a_input_j{i+1}_dps2" for i in range(dof)])
-        # -1 sentinel must NOT go through deg() (would print -57.3, not -1).
-        vel_input_err_dps = vel_input_err_max if vel_input_err_max < 0 else deg(vel_input_err_max)
-        accel_input_err_dps2 = accel_input_err_max if accel_input_err_max < 0 else deg(accel_input_err_max)
-        vel_input_err_lagged_dps = (
-            vel_input_err_max_lagged if vel_input_err_max_lagged < 0 else deg(vel_input_err_max_lagged))
-        accel_input_err_lagged_dps2 = (
-            accel_input_err_max_lagged if accel_input_err_max_lagged < 0 else deg(accel_input_err_max_lagged))
-        vel_extrap_err_dps = vel_extrap_err_max if vel_extrap_err_max < 0 else deg(vel_extrap_err_max)
-        accel_extrap_err_dps2 = accel_extrap_err_max if accel_extrap_err_max < 0 else deg(accel_extrap_err_max)
-        extrap_tau_ms = extrap_tau if extrap_tau < 0 else extrap_tau * 1000.0
-        output_age_ms = (now - output_t) * 1000.0 if output_t is not None else -1.0
-        nan_row = [float('nan')] * dof
-        pred_vel_row = [deg(x) for x in pred_vel] if pred_vel is not None else nan_row
-        real_vel_row = [deg(x) for x in real_vel] if real_vel is not None else nan_row
-        pred_acc_row = [deg(x) for x in pred_acc] if pred_acc is not None else nan_row
-        real_acc_row = [deg(x) for x in real_acc] if real_acc is not None else nan_row
-        extrap_vel_row = [deg(x) for x in extrap_vel] if extrap_vel is not None else nan_row
-        extrap_acc_row = [deg(x) for x in extrap_acc] if extrap_acc is not None else nan_row
-        output_vel_row = [deg(x) for x in output_vel] if output_vel is not None else nan_row
-        output_acc_row = [deg(x) for x in output_acc] if output_acc is not None else nan_row
-        input_vel_row = [deg(x) for x in input_vel] if input_vel is not None else nan_row
-        input_acc_row = [deg(x) for x in input_acc] if input_acc is not None else nan_row
+            + [f"v_j{i+1}_dps" for i in range(dof)])
         self._csv.writerow(
             [f"{now - self._csv_t0:.3f}", f"{dt_step_ms:.1f}", f"{solve_ms:.1f}",
              f"{command_dt * 1000.0:.1f}", f"{action_dt * 1000.0:.1f}",
@@ -480,25 +369,17 @@ class MPCDiagnostics:
              f"{breakdown.get('cost_tool_pose_pos', float('nan')):.4f}",
              f"{breakdown.get('cost_tool_pose_orient', float('nan')):.4f}",
              f"{breakdown.get('cost_cspace', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace_vel', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace_acc', float('nan')):.4f}",
+             f"{breakdown.get('cost_cspace_jerk', float('nan')):.4f}",
              f"{breakdown.get('con_self_collision', float('nan')):.4f}",
              f"{breakdown.get('con_scene_collision', float('nan')):.4f}",
              f"{breakdown.get('con_cspace_bound', float('nan')):.4f}",
              str(queue_depth), str(min_queue_depth_seen), str(starvation_ticks),
              f"{backpressure_wait_ms:.1f}", f"{perception_ms:.1f}",
              f"{live_goal_ms:.1f}", f"{cheap_ms_before_resolve:.1f}",
-             f"{batch_wall_ms:.1f}", str(loop_iter),
-             f"{vel_input_err_dps:.2f}", f"{accel_input_err_dps2:.1f}",
-             f"{vel_input_err_lagged_dps:.2f}", f"{accel_input_err_lagged_dps2:.1f}",
-             str(lag_steps),
-             f"{vel_extrap_err_dps:.2f}", f"{accel_extrap_err_dps2:.1f}", f"{extrap_tau_ms:.1f}",
-             f"{output_age_ms:.1f}",
-             str(int(windup_active)), f"{windup_clamp_ratio:.3f}"]
-            + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v]
-            + [f"{x:.2f}" for x in pred_vel_row] + [f"{x:.2f}" for x in real_vel_row]
-            + [f"{x:.1f}" for x in pred_acc_row] + [f"{x:.1f}" for x in real_acc_row]
-            + [f"{x:.2f}" for x in extrap_vel_row] + [f"{x:.1f}" for x in extrap_acc_row]
-            + [f"{x:.2f}" for x in output_vel_row] + [f"{x:.1f}" for x in output_acc_row]
-            + [f"{x:.2f}" for x in input_vel_row] + [f"{x:.1f}" for x in input_acc_row])
+             f"{batch_wall_ms:.1f}", str(loop_iter)]
+            + [f"{deg(x):.2f}" for x in q] + [f"{deg(x):.2f}" for x in v])
 
     # ---- RViz publishing ----
 
@@ -574,7 +455,7 @@ class MPCDiagnostics:
 
         Color reflects whether the solver actually accepted the goal: red when
         applied (tracking normally), orange when IK failed and the arm is only
-        pose-tracking (may not move) — see MPCController._apply_goal's warn
+        pose-tracking (may not move) — see MPPIController._apply_goal's warn
         path. Without this, the marker showed a goal as "set" even when the
         controller wasn't really tracking it, which is a bad debugging trap.
         cf. debug 2026-07-28.
@@ -619,7 +500,7 @@ class MPCDiagnostics:
         been REMOVED. Do not reintroduce compute_metrics_from_action on a
         use_cuda_graph=True rollout shared with the optimizer.
 
-        Costs are recovered safely instead: MPCController.build_solver()
+        Costs are recovered safely instead: MPPIController.build_solver()
         injects a cost_cfg (mirroring the active branch's
         tool_pose_cfg/cspace_cfg) into the METRICS rollout's config (see
         _build_metrics_rollout_cfg) — a fixed-batch-size rollout, never
@@ -628,7 +509,26 @@ class MPCDiagnostics:
         (`_current_metrics`) already populated during that solve — no
         rebatch, no graph, no extra GPU call. Validated in sandbox: identical
         cost values to the removed dangerous path, zero CUDA errors across
-        use_cuda_graph=True runs."""
+        use_cuda_graph=True runs.
+
+        ``cost_cspace_vel``/``cost_cspace_acc``/``cost_cspace_jerk``: cuRobo's
+        cost_cspace above is a SINGLE value fused inside one CUDA kernel
+        (StateCSpaceFunction: bound-limit activation + regularization +
+        cspace-target tracking, all summed internally) — there is no cuRobo
+        API that returns per-term sub-totals from it, and recomputing them
+        exactly would mean re-invoking the cost module with per-term weight
+        masks, i.e. extra GPU calls per solve on top of the ones this method
+        already goes out of its way to avoid (see the crash-safety note
+        above). So these three are a Python-side PROXY, not a decomposition
+        of cost_cspace itself: w_term * sum(term**2) over the horizon and
+        every dof, using result.robot_state_sequence (already FK'd/populated
+        by every solve, see horizon_diag/publish_full_predicted_path) and the
+        SAME per-term weights (w_vel, w_acc, w_jerk) as
+        cost_cfg.cspace_cfg.squared_l2_regularization_weight[0:3] — i.e. only
+        the regularization component of cost_cspace, not its bound-limit or
+        target-tracking components. Omitted (dict key absent, logged as NaN
+        downstream) if the caller didn't pass cspace_reg_weights to __init__
+        or the state sequence doesn't carry that derivative."""
         try:
             m = self.solver.trajectory_execution_manager.get_current_metrics()
             if m is None:
@@ -646,6 +546,23 @@ class MPCDiagnostics:
                     out["con_cspace_bound"] = float(val.sum().item())
                 else:
                     out[f"con_{name}"] = float(val.sum().item())
+
+            if self._cspace_reg_weights is not None:
+                try:
+                    state_seq = getattr(result, 'robot_state_sequence', None)
+                    js = state_seq.joint_state if state_seq is not None else None
+                    w_vel, w_acc, w_jerk = self._cspace_reg_weights
+                    if js is not None and js.velocity is not None:
+                        out["cost_cspace_vel"] = float(w_vel * (js.velocity ** 2).sum().item())
+                    if js is not None and js.acceleration is not None:
+                        out["cost_cspace_acc"] = float(w_acc * (js.acceleration ** 2).sum().item())
+                    if js is not None and js.jerk is not None:
+                        out["cost_cspace_jerk"] = float(w_jerk * (js.jerk ** 2).sum().item())
+                except Exception as e:
+                    self.node.get_logger().warn(
+                        f"[MPC DIAG] cost_cspace_vel/acc/jerk proxy failed: {e}",
+                        throttle_duration_sec=5.0)
+
             return out
         except Exception as e:
             self.node.get_logger().warn(f"[MPC DIAG] cost breakdown failed: {e}", throttle_duration_sec=5.0)

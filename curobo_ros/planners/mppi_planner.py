@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
+"""
+MPPI reactive controller — cuRobo v2's ``ModelPredictiveControl`` driven via
+``optimize_action_sequence()``, which re-solves on EVERY call (unlike
+LBFGSController's ``optimize_next_action()``, which amortizes the solve over
+``interpolation_steps`` calls — see lbfgs_planner.py's module docstring and
+solver_mpc.py). MPPI's particle-sampling solve is cheap enough per call to
+afford resolving every tick; LBFGS's iterative gradient solve is not.
 
+Because every call is a fresh solve from a full window (``command_start_idx``
+.. ``command_end_idx``) rather than a single popped point, the state fed back
+each tick needs its own velocity-continuity bookkeeping (``_v_bc``,
+``_executed_idx`` below) instead of relying on cuRobo's internal
+TrajectoryExecutionManager pointer the way LBFGS does.
+"""
 
-import copy
 import math
 import time
 from typing import Any
 
 import torch
-import yaml
 
-from curobo.content import get_task_configs_path
 from curobo.types import JointState, GoalToolPose, Pose
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
-from curobo.model_predictive_control import (
-    ModelPredictiveControl,
-    ModelPredictiveControlCfg,
-)
-from curobo._src.util.config_io import resolve_config, join_path
-from curobo._src.util.config_io import Loader as _CUROBO_YAML_LOADER
+from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
+from .mpc_common import _load_mpc_config, _build_metrics_rollout_cfg, _extract_cspace_reg_weights
 from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 
@@ -56,30 +62,6 @@ from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 _VBC_CAP_DPS = 120.0
 
 
-def _load_mpc_config(config_path: str) -> dict:
-    """Load an MPC cost/optimizer YAML (see config/mpc/{mppi,lbfgs}_mpc.yaml).
-
-    NOT routed through cuRobo's resolve_config/get_task_configs_path: these
-    are our own files (paths come from the mpc_mppi_config_file /
-    mpc_lbfgs_config_file ROS params), not cuRobo package-relative ones.
-
-    Loaded with cuRobo's own patched Loader (config_io.py), not plain
-    yaml.safe_load -- PyYAML's default float resolver requires a decimal
-    point in the mantissa, so exponent notation like "1e-3" (no dot) silently
-    parses as the STRING '1e-3' instead of a float. That reached a CUDA line
-    search kernel launch and crashed with "TypeError: the argument is of
-    unsupported type: <class 'str'>" (debug 2026-08-14,
-    lbfgs_mpc.yaml's line_search_wolfe_c_1). cuRobo's stock YAMLs use the same
-    "1e-3" spelling and only work because config_io.py patches this loader's
-    float regex at import time; reusing it here (rather than yaml.safe_load)
-    keeps our hand-edited files forgiving of the same spelling."""
-    with open(config_path, 'r') as f:
-        cfg = yaml.load(f, Loader=_CUROBO_YAML_LOADER)
-    if not isinstance(cfg, dict):
-        raise ValueError(f"MPC config file did not parse to a dict: {config_path}")
-    return cfg
-
-
 def _build_mppi_transition_model(step_dt: float, horizon: int, interpolation_steps: int = 4) -> dict:
     return {
         "transition_model_cfg": {
@@ -111,44 +93,11 @@ def _build_mppi_optimizer_config(config_path: str, num_iters: int, num_particles
     return cfg
 
 
-def _build_lbfgs_optimizer_config(config_path: str) -> dict:
-    """Load the LBFGS cost/optimizer config from YAML (see config/mpc/lbfgs_mpc.yaml
-    and the mpc_lbfgs_config_file ROS param). Unlike the MPPI branch, nothing is
-    overridden after loading -- num_iters/inner_iters and every cost/constraint
-    weight come straight from the file."""
-    return _load_mpc_config(config_path)
-
-
-def _build_metrics_rollout_cfg(cost_cfg_source: dict) -> dict:
-    """metrics_base.yml (the default metrics_rollout) has NO cost_cfg — only
-    constraint_cfg + convergence_cfg — so get_current_metrics() never exposes
-    weighted COST magnitudes, only constraint violations. Mirror the ACTIVE
-    branch's tool_pose_cfg/cspace_cfg into a copy of metrics_base.yml's own
-    cost_cfg so the metrics rollout (fixed batch size, no cuda-graph rebatch)
-    computes them too, safe to read via get_current_metrics() every solve.
-
-    CRASH-SAFETY (cf. debug 2026-07-20): a prior version instead called
-    compute_metrics_from_action() on the OPTIMIZATION rollout (use_cuda_graph=True,
-    shared with the optimizer) to get these same magnitudes — its rebatch
-    (num_particles -> 1) under a captured graph triggered a device-side assert
-    that corrupted the whole CUDA context. This metrics-rollout approach avoids
-    that entirely: validated in sandbox with use_cuda_graph=True, identical cost
-    values to the removed dangerous path, zero CUDA errors."""
-    metrics_cfg = copy.deepcopy(
-        resolve_config(join_path(get_task_configs_path(), "metrics_base.yml"))
-    )
-    metrics_cfg["rollout"]["cost_cfg"] = {
-        "tool_pose_cfg": copy.deepcopy(cost_cfg_source["tool_pose_cfg"]),
-        "cspace_cfg": copy.deepcopy(cost_cfg_source["cspace_cfg"]),
-    }
-    return metrics_cfg
-
-
-class MPCController(ReactiveController):
-    """Closed-loop MPC built on cuRobo ``ModelPredictiveControl`` (v2)."""
+class MPPIController(ReactiveController):
+    """Closed-loop MPPI built on cuRobo ``ModelPredictiveControl`` (v2)."""
 
     def get_planner_name(self) -> str:
-        return "Model Predictive Control (MPC)"
+        return "MPPI Model Predictive Control"
 
     def get_config_parameters(self) -> list:
         return ['convergence_threshold', 'convergence_threshold_rad',
@@ -163,12 +112,7 @@ class MPCController(ReactiveController):
         horizon = node.get_parameter('mpc_horizon_steps').get_parameter_value().integer_value
         warm_iters = node.get_parameter('mpc_warm_start_iters').get_parameter_value().integer_value
         cold_iters = node.get_parameter('mpc_cold_start_iters').get_parameter_value().integer_value
-        solver_type = node.get_parameter('mpc_solver_type').get_parameter_value().string_value
 
-        # Common kwargs for both branches. The REAL production collision scene
-        # (obstacle_manager) must be preserved — do not copy the scene_model=None
-        # from the standalone script.
-        #
         # Built WITHOUT the perception voxel layer on purpose: handing a live
         # ESDF layer to the constructor makes cuRobo alias the solver's collision
         # buffer onto our tensor, and the first update_world then clears it to
@@ -186,42 +130,36 @@ class MPCController(ReactiveController):
             cold_start_optimization_num_iters=cold_iters,
         )
 
-        self._use_mppi_acceleration = (solver_type == 'mppi_acceleration')
         self._vel_feedback_alpha = node.get_parameter('mpc_vel_feedback_alpha').get_parameter_value().double_value
         self._step_dt = step_dt  # For debug CSV (point-to-point interval in the loop)
         # Fixed-interval command pacing (s); 0.0 = off. Read by the servo loop
         # (ReactiveController.execute) to hold each command window for its full
         # execution duration before re-solving. See mpc_command_interval param.
         self._command_interval = node.get_parameter('mpc_command_interval').get_parameter_value().double_value
-        if self._use_mppi_acceleration:
-            num_particles = node.get_parameter('mpc_mppi_num_particles').get_parameter_value().integer_value
-            mppi_config_path = node.get_parameter('mpc_mppi_config_file').get_parameter_value().string_value
-            mppi_optimizer_cfg = _build_mppi_optimizer_config(mppi_config_path, warm_iters, num_particles)
-            # cspace_regularization_weight lives at the top level of the YAML
-            # (see its comment there) but is a create()-level kwarg, not part of
-            # an optimizer_configs entry -- pop it off before handing the rest
-            # of the dict (rollout/optimizer only) to optimizer_configs.
-            cspace_regularization_weight = mppi_optimizer_cfg.pop("cspace_regularization_weight")
-            # NO num_control_points here: it writes n_knots (B-spline concept).
-            # The horizon lives in the transition_model dict we provide.
-            cfg = ModelPredictiveControlCfg.create(
-                optimizer_configs=[mppi_optimizer_cfg],
-                transition_model=_build_mppi_transition_model(step_dt, horizon),
-                squared_l2_regularization_weight=cspace_regularization_weight,
-                metrics_rollout=_build_metrics_rollout_cfg(mppi_optimizer_cfg["rollout"]["cost_cfg"]),
-                **base_kwargs,
-            )
-        else:
-            lbfgs_config_path = node.get_parameter('mpc_lbfgs_config_file').get_parameter_value().string_value
-            lbfgs_optimizer_cfg = _build_lbfgs_optimizer_config(lbfgs_config_path)
-            cfg = ModelPredictiveControlCfg.create(
-                optimizer_configs=[lbfgs_optimizer_cfg],
-                num_control_points=horizon,
-                metrics_rollout=_build_metrics_rollout_cfg(
-                    lbfgs_optimizer_cfg["rollout"]["cost_cfg"]
-                ),
-                **base_kwargs,
-            )
+
+        num_particles = node.get_parameter('mpc_mppi_num_particles').get_parameter_value().integer_value
+        mppi_config_path = node.get_parameter('mpc_mppi_config_file').get_parameter_value().string_value
+        mppi_optimizer_cfg = _build_mppi_optimizer_config(mppi_config_path, warm_iters, num_particles)
+        # cspace_regularization_weight lives at the top level of the YAML
+        # (see its comment there) but is a create()-level kwarg, not part of
+        # an optimizer_configs entry -- pop it off before handing the rest
+        # of the dict (rollout/optimizer only) to optimizer_configs.
+        cspace_regularization_weight = mppi_optimizer_cfg.pop("cspace_regularization_weight")
+        # NOT the same field as cspace_regularization_weight just popped above
+        # (that one is the transition-model-level term, a create()-level
+        # kwarg) -- this is the PER-ROLLOUT cost_cfg.cspace_cfg field, the one
+        # actually mirrored into the metrics rollout by _build_metrics_rollout_cfg
+        # below, so it's what get_current_metrics()/cost_breakdown() sees.
+        cspace_reg_weights = _extract_cspace_reg_weights(mppi_optimizer_cfg["rollout"]["cost_cfg"])
+        # NO num_control_points here: it writes n_knots (B-spline concept).
+        # The horizon lives in the transition_model dict we provide.
+        cfg = ModelPredictiveControlCfg.create(
+            optimizer_configs=[mppi_optimizer_cfg],
+            transition_model=_build_mppi_transition_model(step_dt, horizon),
+            squared_l2_regularization_weight=cspace_regularization_weight,
+            metrics_rollout=_build_metrics_rollout_cfg(mppi_optimizer_cfg["rollout"]["cost_cfg"]),
+            **base_kwargs,
+        )
         solver = ModelPredictiveControl(cfg)
 
         node.mpc = solver
@@ -230,11 +168,13 @@ class MPCController(ReactiveController):
         self._diag = MPCDiagnostics(
             node, solver, cw.base_link, step_dt,
             self._fk_position_error, self._fk_orientation_error,
+            cspace_reg_weights=cspace_reg_weights,
         )
         node.get_logger().info(
-            f"MPC solver built: solver_type={solver_type}, optimization_dt={step_dt}s, "
-            f"horizon={horizon}, warm_start_iters={warm_iters}, cold_start_iters={cold_iters}, "
-            f"robot={cw.robot_config_file}, collision_cache={cw.collision_cache}"
+            f"MPPI solver built: optimization_dt={step_dt}s, horizon={horizon}, "
+            f"warm_start_iters={warm_iters}, cold_start_iters={cold_iters}, "
+            f"num_particles={num_particles}, robot={cw.robot_config_file}, "
+            f"collision_cache={cw.collision_cache}"
         )
         return solver
 
@@ -256,7 +196,7 @@ class MPCController(ReactiveController):
             p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z,
         ]
         self.node.get_logger().info(
-            f"MPC: new goal received - position=({raw[0]:.4f}, {raw[1]:.4f}, {raw[2]:.4f})m "
+            f"MPPI: new goal received - position=({raw[0]:.4f}, {raw[1]:.4f}, {raw[2]:.4f})m "
             f"orientation(wxyz)=({raw[3]:.4f}, {raw[4]:.4f}, {raw[5]:.4f}, {raw[6]:.4f})"
         )
         goal = self._set_target(raw)
@@ -275,22 +215,18 @@ class MPCController(ReactiveController):
 
         # Velocity continuity: the next solve starts from the velocity this
         # window will actually have reached (see the sampling index below), so
-        # the MPC's assumed state matches the arm's real one. Previously gated
-        # to _use_mppi_acceleration only; solver_mpc.optimize_action_sequence
-        # -> _solve_impl -> update_current_state feeds current_state.velocity
-        # into the shared goal_registry_manager/rollout params for BOTH
-        # optimizer backends (only self.optimizer.optimize itself differs
-        # between MPPI and LBFGS), so lbfgs_bspline needs this exactly as much
-        # as mppi_acceleration does. Without it, LBFGS was warm-started every
-        # cycle from _state_from_action's seq.position[:, -1, :] (reactive_
-        # controller.py) -- the plan's LAST horizon point -- while paced
-        # sending only ever executes the first k = round(command_interval /
-        # step_dt) - 1 points, so the solver's assumed starting velocity never
-        # matched what the arm actually reached. That produced large
-        # plan-to-plan boundary jumps (accel_boundary_dps2) even though each
-        # individual plan window stayed smooth (accel_win_max_dps2 clean),
-        # and vbc_max_dps read 0.0 on every row because _v_bc was never
-        # assigned for this solver.
+        # the MPC's assumed state matches the arm's real one. solver_mpc's
+        # optimize_action_sequence -> _solve_impl -> update_current_state feeds
+        # current_state.velocity into the shared goal_registry_manager/rollout
+        # params. Without it, MPPI was warm-started every cycle from
+        # _state_from_action's seq.position[:, -1, :] (reactive_controller.py)
+        # -- the plan's LAST horizon point -- while paced sending only ever
+        # executes the first k = round(command_interval / step_dt) - 1 points,
+        # so the solver's assumed starting velocity never matched what the arm
+        # actually reached. That produced large plan-to-plan boundary jumps
+        # (accel_boundary_dps2) even though each individual plan window stayed
+        # smooth (accel_win_max_dps2 clean), and vbc_max_dps read 0.0 on every
+        # row because _v_bc was never assigned.
         if self._v_bc is None:
             self._v_bc = torch.zeros_like(current_state.position)
         current_state = current_state.clone()
@@ -323,7 +259,7 @@ class MPCController(ReactiveController):
         try:
             if not torch.equal(state_in.position, current_state.position):
                 self.node.get_logger().warn(
-                    "MPC: the solver mutated the state it was given "
+                    "MPPI: the solver mutated the state it was given "
                     f"(in={[round(math.degrees(v), 2) for v in state_in.position.reshape(-1).tolist()]} "
                     f"out={[round(math.degrees(v), 2) for v in current_state.position.reshape(-1).tolist()]}) "
                     "- diagnostics use the input snapshot",
@@ -345,8 +281,6 @@ class MPCController(ReactiveController):
             # 6->80 deg/s runaway of debug 2026-07-15. Measured 2026-08-07:
             # plan point 15 = 17.7 deg/s vs the arm's real peak 11.3, while
             # plan point 7 = 11.0 — the executed point matches reality.
-            # Previously gated to _use_mppi_acceleration only -- see the read
-            # side above for why LBFGS needs this identically.
             npts = seq.velocity.shape[1]
             if self._command_interval > 0.0 and self._step_dt > 0.0:
                 k = int(round(self._command_interval / self._step_dt)) - 1
@@ -405,7 +339,7 @@ class MPCController(ReactiveController):
 
     def apply_live_goal(self, raw_goal) -> bool:
         self.node.get_logger().info(
-            f"MPC: live goal received - position=({raw_goal[0]:.4f}, {raw_goal[1]:.4f}, "
+            f"MPPI: live goal received - position=({raw_goal[0]:.4f}, {raw_goal[1]:.4f}, "
             f"{raw_goal[2]:.4f})m orientation(wxyz)=({raw_goal[3]:.4f}, {raw_goal[4]:.4f}, "
             f"{raw_goal[5]:.4f}, {raw_goal[6]:.4f})"
         )
@@ -416,7 +350,7 @@ class MPCController(ReactiveController):
         return applied
 
     def update_world(self, scene) -> None:
-        """Reload the shared Scene into the MPC's collision checker.
+        """Reload the shared Scene into the MPPI's collision checker.
 
         MPCSolver has no ``update_world``; the collision scene is owned by its
         ``scene_collision_checker`` (a SceneCollision).
@@ -435,14 +369,12 @@ class MPCController(ReactiveController):
             self.solver.update_goal_tool_poses(goal, run_ik=False)  # Cartesian goal (disables joint tracking)
             self.solver.update_goal_state(goal_js)                  # joint goal
             self.solver.enable_joint_position_tracking()            # re-enable joint tracking
-            self.node.get_logger().info("MPC: goal_state set via multi-seed IK (joint tracking on)")
+            self.node.get_logger().info("MPPI: goal_state set via multi-seed IK (joint tracking on)")
             return True
 
         self.solver.update_goal_tool_poses(goal, run_ik=False)
-        self.node.get_logger().warn("MPC: IK failed for goal pose - pose-only tracking (arm may not move)")
+        self.node.get_logger().warn("MPPI: IK failed for goal pose - pose-only tracking (arm may not move)")
         return False
-
-
 
     def _ensure_ik_solver(self):
         """Lazily build a multi-seed IK solver to convert the Cartesian goal
@@ -466,7 +398,7 @@ class MPCController(ReactiveController):
                 use_cuda_graph=False,
             )
             self._ik_solver = InverseKinematics(cfg)
-            self.node.get_logger().info("MPC: IK solver for goal-state built (self-collision only)")
+            self.node.get_logger().info("MPPI: IK solver for goal-state built (self-collision only)")
         return self._ik_solver
 
     def _solve_goal_state(self, raw, current_js=None):
@@ -492,7 +424,7 @@ class MPCController(ReactiveController):
             result = ik.solve_pose(goal_tool_poses=goal, current_state=seed_state)
             torch.cuda.synchronize()
             if not bool(result.success.reshape(-1)[0].item()):
-                self.node.get_logger().warn("MPC: IK goal-state: no successful solution")
+                self.node.get_logger().warn("MPPI: IK goal-state: no successful solution")
                 return None
             sol = result.solution.reshape(-1, self.solver.action_dim)[0:1].clone()  # best seed [1, dof]
             # Log the found solution + joint offset from current pose.
@@ -503,10 +435,10 @@ class MPCController(ReactiveController):
                 seed_info = f"seed=current(deg={[round(math.degrees(v),1) for v in cur]}) offset_max={dmax:.0f}deg"
             else:
                 seed_info = "seed=random"
-            self.node.get_logger().info(f"MPC: IK goal-state(deg)={sol_deg}  {seed_info}")
+            self.node.get_logger().info(f"MPPI: IK goal-state(deg)={sol_deg}  {seed_info}")
             return JointState.from_position(sol, joint_names=self.solver.joint_names)
         except Exception as e:
-            self.node.get_logger().error(f"MPC goal IK failed: {e}")
+            self.node.get_logger().error(f"MPPI goal IK failed: {e}")
             return None
 
     def _debug_enabled(self) -> bool:
@@ -521,7 +453,3 @@ class MPCController(ReactiveController):
         if getattr(self, '_diag', None) is not None:
             self._diag.csv_close()
         super().cancel()
-
-
-# Backwards-compatible alias (old name still used by some imports / docs).
-MPCPlanner = MPCController

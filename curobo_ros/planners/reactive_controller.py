@@ -104,52 +104,6 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_cheap_ms_before_resolve = 0.0
         self._diag_batch_wall_ms = 0.0
 
-
-        self._prev_real_velocity = None
-        self._prev_real_velocity_t = None
-
-        self._diag_vel_input_err_max = 0.0    # rad/s
-        self._diag_accel_input_err_max = 0.0  # rad/s^2
-        self._diag_pred_vel = None    # list[float] rad/s, one per joint
-        self._diag_real_vel = None
-        self._diag_pred_acc = None    # list[float] rad/s^2, one per joint
-        self._diag_real_acc = None
-
-        self._diag_lag_steps = 2
-        self._diag_pred_vel_history = deque(maxlen=self._diag_lag_steps + 1)
-        self._diag_pred_acc_history = deque(maxlen=self._diag_lag_steps + 1)
-        self._diag_vel_input_err_max_lagged = -1.0
-        self._diag_accel_input_err_max_lagged = -1.0
-
-        # Measured resolve-to-resolve period, used to ground the
-        # extrapolation's tau instead of queue_depth (which saturates at
-        # batch_size+1 under backpressure and so UNDERSTATES the real lag
-        # exactly when the solver is falling behind -- see _close_state_loop).
-        self._prev_resolve_t = None
-        self._resolve_dt_history = deque(maxlen=10)
-
-
-        self._diag_extrap_vel = None
-        self._diag_extrap_acc = None
-        self._diag_extrap_tau = 0.0
-        self._diag_vel_extrap_err_max = -1.0
-        self._diag_accel_extrap_err_max = -1.0
-
-        self._diag_input_vel = None
-        self._diag_input_acc = None
-        self._diag_output_vel = None
-        self._diag_output_acc = None
-        self._diag_output_t = None
-
-        # Anti-windup guard (opt-in, see _close_state_loop): tracks whether the
-        # FK position error is still improving, to clamp the warm-start
-        # velocity's growth when it isn't (see enable_anti_windup / plan Partie 2).
-        self._windup_error_history = deque(maxlen=3)
-        self._windup_best_error = None
-        self._prev_fed_back_velocity = None
-        self._diag_windup_active = False
-        self._diag_windup_clamp_ratio = -1.0
-
         self._batch_size = 1
 
         # Device/dtype for building tensors on the hot path.
@@ -240,17 +194,6 @@ class ReactiveController(TrajectoryPlanner):
         """
 
         self._hold_count = 0
-        self._prev_real_velocity = None
-        self._prev_real_velocity_t = None
-        self._prev_resolve_t = None
-        self._resolve_dt_history.clear()
-        self._diag_pred_vel_history.clear()
-        self._diag_pred_acc_history.clear()
-        self._diag_vel_input_err_max_lagged = -1.0
-        self._diag_accel_input_err_max_lagged = -1.0
-        self._windup_error_history.clear()
-        self._windup_best_error = None
-        self._prev_fed_back_velocity = None
         self._target_position = torch.tensor(
             raw[0:3], dtype=self._dtype, device=self._device
         )
@@ -743,217 +686,14 @@ class ReactiveController(TrajectoryPlanner):
             state.acceleration = acc
         return state
 
-    def _debug_real_velocity_feedback(self) -> bool:
-
-        if not self.node.has_parameter('use_real_velocity_feedback'):
-            self.node.declare_parameter('use_real_velocity_feedback', True)
-        return bool(self.node.get_parameter('use_real_velocity_feedback').value)
-
-    def _extrapolated_velocity_feedback(self) -> bool:
-
-        if not self.node.has_parameter('use_extrapolated_velocity_feedback'):
-            self.node.declare_parameter('use_extrapolated_velocity_feedback', False)
-        return bool(self.node.get_parameter('use_extrapolated_velocity_feedback').value)
-
-    def _anti_windup_enabled(self) -> bool:
-
-        if not self.node.has_parameter('enable_anti_windup'):
-            self.node.declare_parameter('enable_anti_windup', False)
-        return bool(self.node.get_parameter('enable_anti_windup').value)
-
-    def _extrap_accel_real_blend(self) -> float:
-        """Weight of the grounded, filtered real acceleration in the
-        extrapolation's acceleration term (0 = pure pred_acc, as before;
-        1 = pure real_acc_filtered). Default 0.5: an even split, meant as a
-        starting point to tune against hardware CSVs, not a validated value.
-        """
-        if not self.node.has_parameter('extrap_accel_real_blend'):
-            self.node.declare_parameter('extrap_accel_real_blend', 0.5)
-        return float(self.node.get_parameter('extrap_accel_real_blend').value)
-
     def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
 
         real_pose = robot_context.get_joint_pose()
         pos = torch.tensor([real_pose], dtype=self._dtype, device=self._device)
         state = JointState.from_position(pos, joint_names=self.solver.joint_names)
-
-        real_vel_list = robot_context.get_joint_velocity()
-        real_vel = torch.tensor([real_vel_list], dtype=self._dtype, device=self._device)
-        filt_vel_list = robot_context.get_joint_velocity_filtered()
-        filt_vel = torch.tensor([filt_vel_list], dtype=self._dtype, device=self._device)
-        now = time.monotonic()
-        if self._prev_real_velocity is not None and self._prev_real_velocity_t is not None:
-            dt = now - self._prev_real_velocity_t
-            real_acc = (
-                (real_vel - self._prev_real_velocity) / dt
-                if dt > 1e-6 else torch.zeros_like(real_vel)
-            )
-        else:
-            real_acc = torch.zeros_like(real_vel)
-        self._prev_real_velocity = real_vel
-        self._prev_real_velocity_t = now
-
-        if self._prev_resolve_t is not None:
-            resolve_dt = now - self._prev_resolve_t
-            if resolve_dt > 1e-6:
-                self._resolve_dt_history.append(resolve_dt)
-        self._prev_resolve_t = now
-
-        pred_vel = predicted_state.velocity
-        pred_acc = predicted_state.acceleration
-
-        self._diag_pred_vel = pred_vel.reshape(-1).cpu().tolist() if pred_vel is not None else None
-        self._diag_real_vel = real_vel.reshape(-1).cpu().tolist()
-        self._diag_pred_acc = pred_acc.reshape(-1).cpu().tolist() if pred_acc is not None else None
-        self._diag_real_acc = real_acc.reshape(-1).cpu().tolist()
-        if pred_vel is not None:
-            self._diag_vel_input_err_max = float((pred_vel - real_vel).abs().max().item())
-        if pred_acc is not None:
-            self._diag_accel_input_err_max = float((pred_acc - real_acc).abs().max().item())
-
-        if self._diag_pred_vel is not None:
-            self._diag_pred_vel_history.append(self._diag_pred_vel)
-        if self._diag_pred_acc is not None:
-            self._diag_pred_acc_history.append(self._diag_pred_acc)
-        if len(self._diag_pred_vel_history) == self._diag_pred_vel_history.maxlen:
-            lagged_pred_vel = self._diag_pred_vel_history[0]
-            self._diag_vel_input_err_max_lagged = max(
-                abs(a - b) for a, b in zip(lagged_pred_vel, self._diag_real_vel)
-            )
-        if len(self._diag_pred_acc_history) == self._diag_pred_acc_history.maxlen:
-            lagged_pred_acc = self._diag_pred_acc_history[0]
-            self._diag_accel_input_err_max_lagged = max(
-                abs(a - b) for a, b in zip(lagged_pred_acc, self._diag_real_acc)
-            )
-
-        # tau = lag_steps * measured resolve period, NOT queue_depth-based:
-        # queue_depth is backpressure-capped at batch_size+1 (see the pacing
-        # loop), so it SATURATES -- and therefore understates the real lag --
-        # exactly when the solver falls behind (slow solve_ms). lag_steps=2
-        # is the same constant already used for the lagged-error diagnostic
-        # above; anchoring tau on the actually-measured resolve_dt instead of
-        # a live queue counter removes an independent, jittery source of
-        # noise on the pred_acc*tau term below.
-        if self._resolve_dt_history:
-            avg_resolve_dt = sum(self._resolve_dt_history) / len(self._resolve_dt_history)
-        else:
-            batch_size = max(1, int(getattr(self, '_batch_size', 1)))
-            interp_dt = getattr(self, '_command_interval', 0.0)
-            avg_resolve_dt = batch_size * interp_dt if interp_dt > 0.0 else 0.0
-        tau = self._diag_lag_steps * avg_resolve_dt
-        self._diag_extrap_tau = tau
-
-        # filt_vel is a moving average over the raw ~100Hz joint_states feed,
-        # computed in JointSpeedStrategy (see callback_joint_pose) -- moved
-        # there because a per-resolve EMA here only ever sampled whichever
-        # single 100Hz sample happened to be latest at resolve time (~240ms),
-        # discarding the rest of the stream between reads.
-        #
-        # Acceleration: blend pred_acc (solver's own, smooth but entirely
-        # self-referential -- it's fed back as the state the solver believes
-        # itself to be in, which then shapes the NEXT pred_acc, closing a
-        # positive-feedback loop with no correction toward reality) with
-        # real_acc_filtered (grounded: finite difference of raw ~100Hz
-        # velocity, moving-averaged in JointSpeedStrategy -- much less noisy
-        # than the old per-resolve real_acc). The SAME blended value is used
-        # both as the extrapolation slope and as the acceleration fed back,
-        # so velocity and acceleration are no longer internally inconsistent
-        # (previously: filt_vel was grounded but extrap_acc was 100%
-        # solver-derived).
-        real_acc_filt_list = robot_context.get_joint_acceleration_filtered()
-        real_acc_filt = torch.tensor([real_acc_filt_list], dtype=self._dtype, device=self._device)
-        pred_acc_for_extrap = pred_acc if pred_acc is not None else torch.zeros_like(real_vel)
-        blend = self._extrap_accel_real_blend()
-        extrap_acc = (1.0 - blend) * pred_acc_for_extrap + blend * real_acc_filt
-        extrap_vel = filt_vel + extrap_acc * tau
-        self._diag_extrap_vel = extrap_vel.reshape(-1).cpu().tolist()
-        self._diag_extrap_acc = extrap_acc.reshape(-1).cpu().tolist()
-        if pred_vel is not None:
-            self._diag_vel_extrap_err_max = float((pred_vel - extrap_vel).abs().max().item())
-        if pred_acc is not None:
-            self._diag_accel_extrap_err_max = float((pred_acc - extrap_acc).abs().max().item())
-
-        if self._extrapolated_velocity_feedback():
-            state.velocity = extrap_vel
-            state.acceleration = extrap_acc
-        elif self._debug_real_velocity_feedback():
-            state.velocity = real_vel
-            state.acceleration = real_acc
-        else:
-            state.velocity = predicted_state.velocity
-            state.acceleration = predicted_state.acceleration
-
-        self._diag_input_vel = state.velocity.reshape(-1).cpu().tolist()
-        self._diag_input_acc = (
-            state.acceleration.reshape(-1).cpu().tolist()
-            if state.acceleration is not None else None
-        )
-
-        self._apply_anti_windup_guard(state)
-
+        state.velocity = predicted_state.velocity
+        state.acceleration = predicted_state.acceleration
         return state
-
-    def _apply_anti_windup_guard(self, state: JointState) -> None:
-        """Clamp the warm-start velocity's growth when the FK position error
-        has stopped improving (opt-in, ``enable_anti_windup``).
-
-        Runs *after* the feedback-source selection above, on whatever
-        velocity/acceleration was chosen (predicted / real / extrapolated) --
-        it protects the warm-start regardless of feedback source. Guards
-        against the case where the Cartesian goal is structurally unreachable
-        (e.g. inside an obstacle): the solver keeps nudging toward it every
-        resolve, reuses the previous resolve's velocity as its warm start,
-        and with nothing tying that velocity to actual progress it grows
-        resolve after resolve (~1.5x measured) -- see plan Partie 2.
-
-        The error history is checked over a small window (not step-to-step)
-        so oscillation noise in the FK error doesn't spuriously trip the
-        guard: growth is only clamped once ``_windup_error_history`` is full
-        (its maxlen consecutive ticks) and none of those ticks improved on
-        ``_windup_best_error``.
-
-        The clamp rescales the chosen velocity's MAGNITUDE down to
-        ``||v_prev|| * growth_cap`` but keeps its direction -- deliberately
-        NOT ``state.velocity = v_prev`` (a literal reading of the plan's
-        formula): since ``_prev_fed_back_velocity`` is updated to the
-        post-clamp value every tick, an unconditional freeze to the exact
-        previous vector would pin both magnitude AND direction indefinitely
-        once tripped, with no release path except a new FK-error minimum --
-        exactly the "coupure brutale" the plan says this guard must avoid,
-        just delayed by one tick instead of instant. Rescaling only the norm
-        still caps growth while letting the solver keep steering.
-        """
-        if not self._anti_windup_enabled() or state.velocity is None:
-            self._diag_windup_active = False
-            return
-
-        growth_cap = 1.0
-        err = self._last_position_error
-        self._windup_error_history.append(err)
-
-        if self._windup_best_error is None or err < self._windup_best_error:
-            self._windup_best_error = err
-            self._windup_error_history.clear()
-            progressing = True
-        else:
-            progressing = False
-
-        v_prev = self._prev_fed_back_velocity
-        self._diag_windup_active = False
-        self._diag_windup_clamp_ratio = -1.0
-
-        if (v_prev is not None and not progressing
-                and len(self._windup_error_history) >= self._windup_error_history.maxlen):
-            v_chosen_norm = float(torch.linalg.norm(state.velocity).item())
-            v_prev_norm = float(torch.linalg.norm(v_prev).item())
-            if v_chosen_norm > v_prev_norm * growth_cap and v_chosen_norm > 1e-9:
-                state.velocity = state.velocity * (v_prev_norm * growth_cap / v_chosen_norm)
-                self._diag_windup_active = True
-                self._diag_windup_clamp_ratio = (
-                    v_chosen_norm / v_prev_norm if v_prev_norm > 1e-9 else -1.0
-                )
-
-        self._prev_fed_back_velocity = state.velocity.detach().clone()
 
     def _init_robot_at_start(self, robot_context, start_state: JointState):
         """Seed the robot/visualization at the start configuration."""
@@ -983,18 +723,5 @@ class ReactiveController(TrajectoryPlanner):
             velocity = [v.cpu().tolist() if v is not None else [0.0] * len(position[0])]
             a = acc_t[0] if (acc_t is not None and acc_t.dim() > 1) else acc_t
             acceleration = [a.cpu().tolist() if a is not None else [0.0] * len(position[0])]
-
-        # Generic capture point (any reactive controller, immediate or paced
-        # sends): the command actually pushed to the robot this call, for the
-        # v_output/a_output diagnostic columns (see plan Partie 3). Take the
-        # last point of a full-horizon action, or the single point sent.
-        # Timestamped (_diag_output_t) because in paced mode this write
-        # happens on the timer thread while record_tick reads it from the
-        # producer thread -- output_age_ms (in mpc_diagnostics.py) lets a
-        # reader tell a contemporaneous v_output from a stale one instead of
-        # silently misreading queue lag as a v_output/v_input phase shift.
-        self._diag_output_vel = velocity[-1]
-        self._diag_output_acc = acceleration[-1]
-        self._diag_output_t = time.monotonic()
 
         robot_context.set_and_send_command(None, velocity, acceleration, position)
