@@ -12,7 +12,9 @@ Reactive controllers (closed-loop control loop) — base ``ReactiveController``:
 - MPPIController: MPPI built on cuRobo ModelPredictiveControl, via
   optimize_action_sequence() + hand-rolled pacing (registered as 'mpc' in
   PlannerFactory — see planner_factory.py for why)
-- LBFGSController: LBFGS+B-spline MPC built directly on cuRobo's optimize_next_action() API
+- LBFGSController: thin wrapper around cuRobo's stock ModelPredictiveControl
+  (optimize_action_sequence(), plan/execute-with-overlap scheme -- see
+  lbfgs_planner.py's module docstring)
 - RetargetController: teleop pose-stream following (cuRobo MotionRetargeter, IK-based)
 
 Both planner families consume the node's single shared context (robot, obstacles,
@@ -25,7 +27,6 @@ from .reactive_controller import ReactiveController
 from .classic_planner import ClassicPlanner
 from .mppi_planner import MPPIController
 from .lbfgs_planner import LBFGSController
-from .base_planner import BaseController
 from .retarget_controller import RetargetController
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
@@ -40,7 +41,6 @@ __all__ = [
     'ClassicPlanner',
     'MPPIController',
     'LBFGSController',
-    'BaseController',
     'RetargetController',
     'MultiPointPlanner',
     'JointSpacePlanner',

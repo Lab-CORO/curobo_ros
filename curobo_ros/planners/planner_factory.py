@@ -11,7 +11,6 @@ from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
 from .mppi_planner import MPPIController
 from .lbfgs_planner import LBFGSController
-from .base_planner import BaseController
 from .retarget_controller import RetargetController
 from .multi_point_planner import MultiPointPlanner
 from .joint_space_planner import JointSpacePlanner
@@ -40,7 +39,6 @@ class PlannerFactory:
         ('classic',     ClassicPlanner,    0, 'Classic'),
         ('mpc',         MPPIController,     1, 'MPC'),
         ('lbfgs',       LBFGSController,    2, 'LBFGS'),  # was BATCH/unimplemented
-        ('base',        BaseController,     3, 'Base'),  # was CONSTRAINED/unimplemented
         ('multi_point', MultiPointPlanner, 4, 'Multi Point'),
         ('joint_space', JointSpacePlanner, 5, 'Joint Space'),
         ('retarget',    RetargetController, 6, 'Motion Retargeting'),

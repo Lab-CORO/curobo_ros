@@ -220,7 +220,6 @@ class UnifiedPlannerNode(Node):
         self.motion_gen = None      # legacy alias, kept for older code paths
         self.mpc = None             # reactive: ModelPredictiveControl (MPCController)
         self.lbfgs = None           # reactive: ModelPredictiveControl (LBFGSController)
-        self.base = None            # reactive: ModelPredictiveControl (BaseController)
         self.retargeter = None      # reactive: MotionRetargeter (teleop)
 
         # Which solver currently owns the single live CUDA graph. Two captured
@@ -337,8 +336,6 @@ class UnifiedPlannerNode(Node):
             self._warmup_mpc()
         elif planner_type == 'lbfgs':
             self._warmup_lbfgs()
-        elif planner_type == 'base':
-            self._warmup_base()
         elif planner_type in ('retarget', 'motion_retargeting', 'teleop'):
             self._warmup_reactive('retarget')
         elif planner_type in ('classic', 'multi_point', 'joint_space',
@@ -385,7 +382,7 @@ class UnifiedPlannerNode(Node):
         """Build a reactive controller's solver on demand from the shared context.
 
         Each reactive controller's build_solver() publishes its solver where the
-        node expects it (self.mpc / self.lbfgs / self.base / self.retargeter).
+        node expects it (self.mpc / self.lbfgs / self.retargeter).
         """
         self._ensure_ground_plane()
         self.planner_manager.get_planner(key).ensure_solver()
@@ -406,14 +403,6 @@ class UnifiedPlannerNode(Node):
             return
         self.get_logger().info("  -> Initializing LBFGS solver...")
         self._warmup_reactive('lbfgs')
-
-    def _warmup_base(self):
-        """Warm up the BaseController's ModelPredictiveControl solver on demand."""
-        if self.base is not None:
-            self.get_logger().info("  -> Base solver already initialized (cache)")
-            return
-        self.get_logger().info("  -> Initializing Base solver...")
-        self._warmup_reactive('base')
 
     def update_all_solvers_world(self, scene=None, active_only=False):
         """Propagate scene updates to all initialized solvers.
@@ -584,8 +573,6 @@ class UnifiedPlannerNode(Node):
                 self.planner_manager.get_planner('mpc').rebuild_solver()
             if self.lbfgs is not None:
                 self.planner_manager.get_planner('lbfgs').rebuild_solver()
-            if self.base is not None:
-                self.planner_manager.get_planner('base').rebuild_solver()
             if self.retargeter is not None:
                 self.planner_manager.get_planner('retarget').rebuild_solver()
 
@@ -977,7 +964,6 @@ class UnifiedPlannerNode(Node):
                     self._safe_reset_graph(getattr(self.motion_planner, name, None))
             self._safe_reset_graph(self.mpc)
             self._safe_reset_graph(self.lbfgs)
-            self._safe_reset_graph(self.base)
             self._safe_reset_graph(self.retargeter)
             # Every solver now holds no graph — its next call captures.
             self._set_graph_capture_pending()

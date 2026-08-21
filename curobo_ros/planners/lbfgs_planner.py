@@ -1,29 +1,155 @@
 #!/usr/bin/env python3
 """
-LBFGS reactive controller — cuRobo v2's own ``optimize_next_action()`` API,
-followed as documented rather than reproduced by hand.
+LBFGS reactive controller -- the thinnest possible ROS wrapper around
+cuRobo's stock ``ModelPredictiveControl``, kept as close as this framework
+allows to cuRobo's own getting-started example
+(``curobo.examples.getting_started.reactive_control``).
 
-``lbfgs_solve_mode`` (ROS param, read once in ``build_solver()``) switches the
-solver call between:
+No custom optimizer YAML (``optimizer_configs`` keeps cuRobo's default
+``mpc/lbfgs_mpc.yml``).
 
-- ``'next_action'`` (default): ``optimize_next_action()``, amortized over
-  ``interpolation_steps`` calls -- see the module docstring's discussion
-  above and mpc_diagnostics.py's record_tick docstring.
-- ``'action_sequence'``: ``optimize_action_sequence()``, which re-solves on
-  EVERY call and returns the whole near-term window instead of one popped
-  point -- the same API MPPIController uses (mppi_planner.py). Provided
-  for A/B comparison against the 'next_action' path; deliberately does NOT
-  reproduce MPPIController's ``_v_bc``/``executed_idx`` velocity-continuity
-  feedback (current_state is passed through as-is from
-  ReactiveController._close_state_loop), so it may be less stable under
-  sustained motion -- see mppi_planner.py's module docstring for why that
-  feedback exists there. Not meant to switch mid-goal: the two modes leave
-  cuRobo's TrajectoryExecutionManager in incompatible internal states
-  (a dense pre-sampled pointer buffer vs. nothing to resume from), so
-  picking a new mode requires a fresh build_solver() (rebuild_solver() /
-  new planner selection), not just a live ros2 param set.
+Replaces an earlier ``LBFGSController`` built on ``optimize_next_action()``
+with an amortized-solve producer/consumer loop (``lbfgs_solve_mode``,
+``MPCDiagnostics``, ``mpc_common.py``'s custom optimizer YAML loading). That
+version is gone, not kept as an option: it does not share this file's
+plan/execute-with-overlap scheme or its state-feedback fix (see below), and
+carrying both would mean maintaining two different answers to the same
+correctness bugs this docstring documents finding and fixing.
+
+Execution: hand the robot a trajectory SEGMENT, not one point
+--------------------------------------------------------------
+The arm is driven through leeloo's ``execute_trajectory`` node, which pops one
+point per ``command_period`` tick (0.08 s, control.launch.py:332) and forwards
+ONLY ``point.velocities`` to the Doosan's ``speedj_rt``. ``point.positions`` is
+never read (execute_trajectory.cpp:89-99): the arm integrates a velocity
+stream and there is no position servo anywhere in the chain. Two more
+behaviours of that node matter here:
+
+- ``this->trajectory = *msg;`` (line 191) -- each publish REPLACES the queue.
+- an empty queue commands ``vel[i] = 0.0`` (lines 62-83) -- an immediate stop.
+
+So publishing a ONE-point trajectory per cycle (an earlier version of this
+file) means any publish jitter leaves the queue empty for a tick and stops the
+arm dead for 80 ms before it resumes. ``step()`` therefore returns a 3D
+``JointState`` -- a whole segment -- which ``_send_command``
+(reactive_controller.py:715) publishes as a multi-point trajectory, giving the
+node a buffer to chew through. MPPIController already does this
+(``action = seq.clone()``, mppi_planner.py:271).
+
+Plan / execute, with an overlap
+-------------------------------
+``lbfgs_command_points`` (ROS param, default 4) points are published per solve,
+but the next segment is published after only ``(n-1) * interpolation_dt`` --
+one point EARLY. So point ``n-1`` is never played: it is the spare that keeps
+the node's queue non-empty if a publish runs late, which is what prevents the
+zero-velocity stop. The arm executes points ``0 .. n-2`` before the queue is
+replaced.
+
+Waiting for that execution is what makes the whole scheme work, and it is the
+piece an earlier version was missing.
+
+State feedback -- ONE source of truth, and wait for it to be true
+------------------------------------------------------------------
+cuRobo's example has NO robot: ``current_state`` is entirely one plan point
+(position, velocity and acceleration all from ``action_sequence``), so it is
+self-consistent by construction and a lag cannot exist. That is why the example
+never exhibits the failures below -- one source of truth versus two, not
+simulation versus hardware.
+
+Three things were measured on this arm before arriving at the scheme above:
+
+- Feeding the prediction back WITHOUT waiting for it to be executed is
+  open-loop in position and drifts: joint 1 commanded 31.93 -> 50.34 deg while
+  the arm reached 34.25, i.e. ~12% of the commanded motion, predicted FK error
+  converging to 0.00000 m against a real 0.22370 m (base_diag_20260820_172914).
+- Mixing sources -- measured position with the PLAN's velocity -- is worse:
+  "you are at q_real, moving at v(q_pred)" is a state the arm was never in.
+  Harmless while the arm tracks (lag ~1.8 deg), amplifying when it cannot. On
+  an in-obstacle goal the lag grew 0 -> 9 -> 22 -> 54 -> 92 deg and commanded
+  velocity 1.3 -> 73.6 deg/s in five seconds, with the PLAN's own FK error
+  growing 0.56 -> 1.09 m (base_diag_20260820_175022).
+- Feeding measured position with ZERO velocity is self-consistent and does stop
+  the amplification (that same goal then oscillated in a bounded way, lag
+  1.61 deg, v_exec capped at 8.4 deg/s) -- but it re-plans from rest every
+  cycle, and since only the first points of an acceleration ramp are ever
+  executed, the arm never leaves the start of the ramp: v_exec 0.10 deg/s and
+  0.07 deg of motion in 3.8 s (base_diag_20260820_181919). Paralysis.
+
+Both failures share one root cause: not waiting for the segment to be executed.
+Wait for it, and plan point ``n-2`` IS the arm's state -- measurement and
+prediction agree, so there is no inconsistency to exploit, and velocity carries
+forward instead of restarting from rest. So ``_close_state_loop`` returns that
+plan point whole (position, velocity, acceleration -- one source).
+
+The cost is that this is open-loop in position between solves: nothing corrects
+an execution failure. It rests on the arm actually executing what it is handed,
+which measured true here (lag 0.02 deg reachable, 1.61 deg in-obstacle). The
+CSV logs measured ``q_real_*`` against fed-back ``q_pred_*`` precisely so that
+assumption stays falsifiable.
+
+The frozen prefix, and why the feedback is a DELTA
+---------------------------------------------------
+Every plan begins with a prefix of ``command_start_idx + 1`` points (5 here)
+that the optimizer never touches: it dead-reckons the state that was handed in,
+integrating its velocity AND acceleration. Measured from a moving state, v in
+dps at idx 0..5::
+
+    16.1439 16.0658 15.9876 15.9095 15.8313 15.7290   <- coasting, decelerating
+
+The acceleration term matters: it is what sizes the fictional coast the segment
+is offset by, and therefore what the absolute feedback below double-counted.
+From rest the prefix is flat, and identically so on every solve -- a structural
+property, not a start-up artefact::
+
+    solve 1: v at idx 0,1,2,3,4,5,6,8,12 = 0.000 0.000 0.000 0.000 0.000 0.155 0.618 2.473 6.547
+    solve 5: v at idx 0,1,2,3,4,5,6,8,12 = 0.000 0.000 0.000 0.000 0.000 0.160 0.638 2.553 6.740
+
+That is what ``command_start_idx`` (== ``interpolation_steps``) skips, and it
+is why ``result.action_sequence`` equals
+``robot_state_sequence[command_start_idx:command_end_idx]`` rather than
+starting at ``current_state``. Two consequences, both measured:
+
+- Publishing from index 0 publishes only the frozen prefix. From rest that is
+  a perfect fixed point -- the state fed back is bit-identical to the state
+  fed in, so every solve returns the same plan. Closed loop over 25 cycles:
+  ``full[1..4]`` travel 0.0000 deg, ``full[5..8]`` travel ~83 deg. On hardware
+  this was 17 s of frozen, bit-identical rows (base_diag_20260821_063052).
+  The earlier "measured position + zero velocity" paralysis
+  (base_diag_20260820_181919) is this same mechanism.
+- Feeding back ``seq.position[m]`` ABSOLUTELY double-counts the lead: the
+  plan advances ``j + m`` steps per cycle while the arm, replayed from where
+  it actually is, advances only ``m``. That is the ~2x mismatch that read as a
+  stalling execution ratio (base_diag_20260820_190138, ratio ~0.5).
+
+So ``step()`` slices from ``command_start_idx`` and feeds back
+``current_state.position + (seq.position[m] - seq.position[0])`` -- the arm's
+own position plus the plan's delta over the points it will actually play,
+which is exactly what integrating the commanded velocities produces. Simulated
+over 60 cycles (probe8), absolute vs delta feedback::
+
+    j=4 n=4 abs   -> arm travelled 35.653 deg | fk_err 0.24360 m | lag 47.5296 deg
+    j=4 n=4 delta -> arm travelled 80.264 deg | fk_err 0.04770 m | lag  0.0314 deg
+
+Velocity and acceleration still come from that same plan point, so the fed-back
+state remains one self-consistent point (see above).
+
+Checked in the regime every previous fix in this file broke in -- an
+unreachable goal -- over 80 cycles (probe9). The solver's OWN error
+(``result.position_error``) is the tell: in the amplifying failure
+(base_diag_20260820_175022) it GREW 0.56 -> 1.09 m. Under delta feedback it
+decreases in all three regimes (in-obstacle 0.0017 -> 0.0003, far 0.0028 ->
+0.0018), per-cycle motion decays (in-obstacle dq 6.90 -> 0.70 deg) and the arm
+settles at its best reachable approach instead of oscillating -- the sim
+behaviour we were after. ``j = command_start_idx`` and ``j+1`` are
+indistinguishable there (lag 0.038 vs 0.026 deg), so this keeps cuRobo's value.
+
+One caveat when reading a fresh CSV: the FIRST solve after ``setup()`` returns
+an entirely flat 81-point plan (the un-warmed seed), so row 1 legitimately
+shows zero velocity and ``q_pred == q_real``. It escapes on solve 2. Judge the
+execution ratio from row 2 onward.
 """
 
+import math
 import time
 from typing import Any
 
@@ -32,21 +158,12 @@ from curobo.types import JointState, Pose, GoalToolPose
 from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
-from .mpc_common import _load_mpc_config, _build_metrics_rollout_cfg, _extract_cspace_reg_weights
-from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_interpolation_dt, resolve_use_cuda_graph
-
-
-def _build_lbfgs_optimizer_config(config_path: str) -> dict:
-    """Load the LBFGS cost/optimizer config from YAML (see config/mpc/lbfgs_mpc.yaml
-    and the lbfgs_config_file ROS param). Nothing is overridden after loading --
-    num_iters/inner_iters and every cost/constraint weight come straight from
-    the file."""
-    return _load_mpc_config(config_path)
+from curobo_ros.core.diagnostics import open_diag_csv
 
 
 class LBFGSController(ReactiveController):
-    """Closed-loop LBFGS+B-spline MPC built directly on cuRobo's ``optimize_next_action()``."""
+    """Closed-loop MPC on cuRobo's stock config + optimize_action_sequence()."""
 
     def get_planner_name(self) -> str:
         return "LBFGS Model Predictive Control"
@@ -61,53 +178,39 @@ class LBFGSController(ReactiveController):
         cw = self.config_wrapper
         node = self.node
 
-        if not node.has_parameter('lbfgs_solve_mode'):
-            node.declare_parameter('lbfgs_solve_mode', 'action_sequence')
-        solve_mode = node.get_parameter('lbfgs_solve_mode').get_parameter_value().string_value
-        if solve_mode not in ('next_action', 'action_sequence'):
-            node.get_logger().warn(
-                f"LBFGS: unknown lbfgs_solve_mode '{solve_mode}', defaulting to 'next_action'"
-            )
-            solve_mode = 'next_action'
-        self._solve_mode = solve_mode
-
         interpolation_dt = resolve_interpolation_dt(node)
-        optimization_dt = 4.0 * interpolation_dt
+        # optimization_dt IS the spacing of the points we publish -- measured,
+        # not assumed: every point of action_sequence (and of
+        # get_command_sequence() and robot_state_sequence) sits
+        # optimization_dt apart, and the solver reports the same value as
+        # result.action_dt. interpolation_steps does NOT subdivide time; there
+        # is no finer-sampled sequence anywhere in the result.
+        #
+        # It must therefore equal execute_trajectory's command_period (0.08 s),
+        # which is what interpolation_dt already is. lbfgs_planner.py's
+        # `optimization_dt = 4.0 * interpolation_dt` is WRONG for this pipeline:
+        # it plans points 0.32 s apart and then has them played at 0.08 s each,
+        # so every velocity is applied for a quarter of its intended duration
+        # and the arm achieves ~1/4 of the planned motion. Measured on hardware
+        # (base_diag_20260820_185016): the plan advanced ~3.0 deg per cycle, the
+        # arm 0.35 -- a ratio of 0.13 -- and the lag grew to 38 deg before both
+        # stalled.
+        optimization_dt = interpolation_dt
 
-        config_path = node.get_parameter('lbfgs_config_file').get_parameter_value().string_value
-        lbfgs_cfg = _build_lbfgs_optimizer_config(config_path)
-
-        warm_iters = lbfgs_cfg.pop('warm_start_iters')
-        cold_iters = lbfgs_cfg.pop('cold_start_iters')
-        horizon = lbfgs_cfg.pop('horizon')
-
-
-        base_kwargs = dict(
+        config = ModelPredictiveControlCfg.create(
             robot=cw.robot_config_file,
             scene_model=cw.obstacle_manager.primitives_only_scene(),
-            optimization_dt=optimization_dt,
-            use_cuda_graph=resolve_use_cuda_graph(node),
-            self_collision_check=True,
             collision_cache=cw.collision_cache,
-            store_debug=False,
-            warm_start_optimization_num_iters=warm_iters,
-            cold_start_optimization_num_iters=cold_iters,
+            use_cuda_graph=resolve_use_cuda_graph(node),
+            optimization_dt=optimization_dt,
         )
-        cspace_reg_weights = _extract_cspace_reg_weights(lbfgs_cfg["rollout"]["cost_cfg"])
-        cfg = ModelPredictiveControlCfg.create(
-            optimizer_configs=[lbfgs_cfg],
-            num_control_points=horizon,
-            metrics_rollout=_build_metrics_rollout_cfg(lbfgs_cfg["rollout"]["cost_cfg"]),
-            **base_kwargs,
-        )
-        solver = ModelPredictiveControl(cfg)
-
+        solver = ModelPredictiveControl(config)
 
         warmup_state = solver.default_joint_state.clone().unsqueeze(0)
         warmup_state.velocity = torch.zeros_like(warmup_state.position)
         warmup_state.acceleration = torch.zeros_like(warmup_state.position)
-        t_warm = time.monotonic()
         solver.setup(warmup_state)
+
         warmup_kin = solver.compute_kinematics(warmup_state)
         warmup_goal = GoalToolPose.from_poses(
             {solver.tool_frames[0]: Pose(
@@ -118,267 +221,295 @@ class LBFGSController(ReactiveController):
             num_goalset=1,
         )
         solver.update_goal_tool_poses(warmup_goal, run_ik=False)
-        node.get_logger().info(
-            f"LBFGS: solver + IK warmed up in {(time.monotonic() - t_warm) * 1000:.0f}ms"
-        )
 
         node.lbfgs = solver
-        self._diag = MPCDiagnostics(
-            node, solver, cw.base_link, interpolation_dt,
-            self._fk_position_error, self._fk_orientation_error,
-            csv_prefix="lbfgs_diag",
-            cspace_reg_weights=cspace_reg_weights,
-        )
+
+        # Points published per solve; n-1 of them get executed, the last is the
+        # anti-starvation spare (see the module docstring). Minimum 2: with a
+        # single point there is no spare and no executed point to feed back.
+        if not node.has_parameter('lbfgs_command_points'):
+            node.declare_parameter('lbfgs_command_points', 4)
+        self._command_points = max(2, int(node.get_parameter('lbfgs_command_points').value))
+        self._interpolation_dt = interpolation_dt
+        # Where the publishable part of robot_state_sequence starts. Read from
+        # the TEM rather than hardcoded to 4: it is defined as
+        # interpolation_steps, so it tracks the config.
+        self._command_start_idx = int(
+            getattr(solver.trajectory_execution_manager, 'command_start_idx', 4))
+        # Publish-to-publish period: one point SHORT of the segment.
+        self._publish_period = (self._command_points - 1) * interpolation_dt
+        self._next_publish_t = None
+
+        # NOT setting _command_interval: execute() then picks
+        # _execute_immediate() (solve -> publish the whole segment -> re-solve)
+        # rather than the paced producer/consumer loop, whose per-tick pop
+        # would undo the multi-point publish.
+
         node.get_logger().info(
-            f"LBFGS solver built: solve_mode={self._solve_mode}, "
-            f"interpolation_dt={interpolation_dt}s, "
-            f"optimization_dt={optimization_dt}s, horizon={horizon}, "
-            f"warm_start_iters={warm_iters}, cold_start_iters={cold_iters}, "
+            f"LBFGS solver built: interpolation_dt={interpolation_dt}s, "
+            f"optimization_dt={optimization_dt}s, "
+            f"command_points={self._command_points} "
+            f"({self._command_points * interpolation_dt:.3f}s segment, "
+            f"republished every {self._publish_period:.3f}s), "
             f"robot={cw.robot_config_file}, collision_cache={cw.collision_cache}"
         )
-
-        self._command_interval = interpolation_dt
-
-        self._batch_size = solver.trajectory_execution_manager.interpolation_steps
         return solver
 
     def setup(self, start_state: JointState, goal_request: Any) -> bool:
-        self._diag.csv_init(self._debug_enabled())
         p = goal_request.target_pose
         raw = [
             p.position.x, p.position.y, p.position.z,
             p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z,
         ]
-        node = self.node
-        node.get_logger().info(
-            f"LBFGS: new goal received - position=({raw[0]:.4f}, {raw[1]:.4f}, {raw[2]:.4f})m "
+        self.node.get_logger().info(
+            f"LBFGS: new goal - position=({raw[0]:.4f}, {raw[1]:.4f}, {raw[2]:.4f})m "
             f"orientation(wxyz)=({raw[3]:.4f}, {raw[4]:.4f}, {raw[5]:.4f}, {raw[6]:.4f})"
         )
         goal = self._set_target(raw)
         self.solver.setup(start_state)  # returns None -- MPCSolver.setup() has no return value
-        applied = self.solver.update_goal_tool_poses(goal, run_ik=False)
+        self.solver.update_goal_tool_poses(goal, run_ik=False)
         self.goal = goal
-        self._diag.publish_goal_marker(raw, applied)
-
-        node.get_logger().info(f"LBFGS: goal IK anchor applied={applied}")
-
-        if self._debug_enabled():
-            self._diag.log_setup_summary(start_state, raw, applied)
+        self._next_publish_t = None  # new goal = new publish clock
+        self._csv_init()
         return True
 
-    # ---- Control step ----
+    # ---- Control step -----------------------------------------------------
 
     def step(self, current_state: JointState) -> JointState:
-        if self._solve_mode == 'action_sequence':
-            action, _result, _seq, _solve_ms = self._solve_action_sequence(current_state)
-            return action
-        return self._step_next_action(current_state)
+        """One resolve -> one trajectory segment, as a 3D ``[1, n, dof]``
+        JointState so ``_send_command`` publishes it as a multi-point
+        trajectory (see the module docstring).
 
-    def _step_next_action(self, current_state: JointState) -> JointState:
-
-        is_resolving = not self.solver.trajectory_execution_manager.has_valid_next_command()
-
-        t_solve = time.monotonic()
-        result = self.solver.optimize_next_action(current_state)
-        solve_ms = (time.monotonic() - t_solve) * 1000.0
-
-
-        action = result.next_action
-        if getattr(action, 'velocity', None) is None:
-
-            self.node.get_logger().warn(
-                "LBFGS: next_action.velocity is None (send path will zero-fill)",
-                throttle_duration_sec=2.0,
-            )
-
-        if is_resolving:
-            self._last_position_error = self._fk_position_error(action)
-            self._last_orientation_error = self._fk_orientation_error(action)
-            self._update_hold()
-
-            self._diag.publish_predicted_path(result)
-            self._diag.publish_full_predicted_path(result)
-
-            if self._debug_enabled():
-                breakdown = self._diag.cost_breakdown(result)
-                self._diag.publish_costs(
-                    result, breakdown, self._last_position_error, self._last_orientation_error)
-                with self._pending_cv:
-                    queue_depth = len(self._pending_queue)
-                self._diag.record_tick(
-                    result, solve_ms=solve_ms,
-                    last_position_error=self._last_position_error,
-                    last_orientation_error=self._last_orientation_error,
-                    queue_depth=queue_depth,
-                    min_queue_depth_seen=(
-                        self._min_queue_depth_seen
-                        if self._min_queue_depth_seen is not None else -1
-                    ),
-                    starvation_ticks=self._starvation_ticks,
-                    backpressure_wait_ms=self._diag_backpressure_wait_ms,
-                    perception_ms=self._diag_perception_ms,
-                    live_goal_ms=self._diag_live_goal_ms,
-                    cheap_ms_before_resolve=self._diag_cheap_ms_before_resolve,
-                    batch_wall_ms=self._diag_batch_wall_ms,
-                    loop_iter=self._diag_loop_iter,
-                )
-
-        return action
-
-    def step_batch(self, current_state: JointState, n: int) -> list:
-        if self._solve_mode == 'action_sequence':
-            return self._step_batch_action_sequence(current_state, n)
-
-        first_action = self._step_next_action(current_state)
-        tem = self.solver.trajectory_execution_manager
-        try:
-            seq = tem.get_command_sequence()  # [.., n, dof] horizon window
-            tem._current_command_idx = tem.interpolation_steps  # mark fully drained
-        except AttributeError:
-            self.node.get_logger().error(
-                "LBFGS: get_command_sequence()/_current_command_idx missing on "
-                "this cuRobo version -- falling back to per-call step()",
-                throttle_duration_sec=5.0,
-            )
-            return [first_action] + [self._step_next_action(current_state) for _ in range(n - 1)]
-
-        batch = [first_action]
-        for i in range(1, n):
-            batch.append(JointState(
-                position=seq.position[..., i, :],
-                velocity=seq.velocity[..., i, :] if seq.velocity is not None else None,
-                acceleration=seq.acceleration[..., i, :] if seq.acceleration is not None else None,
-                joint_names=seq.joint_names,
-            ))
-        return batch
-
-    # ---- 'action_sequence' mode ------------------------------------------------
-
-    def _solve_action_sequence(self, current_state: JointState):
-        """One ``optimize_action_sequence()`` resolve (always re-solves, unlike
-        ``optimize_next_action()``). Returns ``(first_point_action, result, seq,
-        solve_ms)`` so both ``step()`` (which only needs the first point) and
-        ``_step_batch_action_sequence()`` (which slices more points out of the
-        same window) share exactly one resolve per producer-loop iteration.
-
-        Deliberately NOT MPPIController's ``_v_bc``/``executed_idx`` velocity-
-        continuity feedback -- see the module docstring. ``current_state`` is
-        used as handed in by ReactiveController._close_state_loop.
+        Also stashes ``_exec_state`` -- the plan point the arm will have
+        reached when this segment is replaced -- and holds the publish back
+        until the previous segment is one point from running out.
         """
-        state_in = current_state.clone()
-
         t_solve = time.monotonic()
         result = self.solver.optimize_action_sequence(current_state)
-        solve_ms = (time.monotonic() - t_solve) * 1000.0
+        self._last_solve_ms = (time.monotonic() - t_solve) * 1000.0
 
-        try:
-            if not torch.equal(state_in.position, current_state.position):
-                self.node.get_logger().warn(
-                    "LBFGS (action_sequence): the solver mutated the state it was given "
-                    "- diagnostics use the input snapshot",
-                    throttle_duration_sec=1.0)
-        except Exception:
-            pass
-
-        seq = result.action_sequence
-        if seq is None or seq.position.shape[1] == 0:
+        # Slice robot_state_sequence from command_start_idx -- NOT from 0, and
+        # not action_sequence (which is exactly this slice, but capped at 4
+        # points, so it cannot honour lbfgs_command_points > 4). The skipped
+        # prefix is not optional; see the module docstring.
+        rss = result.robot_state_sequence
+        full = rss.joint_state if rss is not None else None
+        j = self._command_start_idx
+        if full is None or full.position.shape[1] <= j + 1:
             action = current_state.clone()
             action.velocity = torch.zeros_like(action.position)
             action.acceleration = torch.zeros_like(action.position)
-            self._last_position_error = self._fk_position_error(state_in)
-            self._last_orientation_error = self._fk_orientation_error(state_in)
-            self._update_hold()
-            return action, result, seq, solve_ms
+            self._last_n_pts = 0
+            self._exec_state = action
+            return action
 
-        first_action = JointState(
-            position=seq.position[:, -1, :],
-            velocity=seq.velocity[:, -1, :] if seq.velocity is not None else None,
-            acceleration=seq.acceleration[:, -1, :] if seq.acceleration is not None else None,
+        seq = JointState(
+            position=full.position[:, j:, :],
+            velocity=full.velocity[:, j:, :] if full.velocity is not None else None,
+            acceleration=full.acceleration[:, j:, :] if full.acceleration is not None else None,
+            joint_names=full.joint_names,
+        )
+        n = min(self._command_points, seq.position.shape[1])
+        self._last_n_pts = n
+
+        # Points 0..n-2 are executed before the next publish replaces the queue;
+        # n-1 is the spare that is never played. So the arm plays m = n-1
+        # velocities, which move it by the plan's DELTA over those points --
+        # from wherever it actually is, NOT to the plan's absolute position.
+        # The segment starts j steps ahead of current_state, so seq.position[m]
+        # taken absolutely double-counts that lead: the plan would advance j+m
+        # steps per cycle while the arm advances m. Anchor on current_state and
+        # add only the delta, and the two are equal by construction for any j.
+        m = n - 1
+        self._exec_state = self._point(seq, m)
+        self._exec_state.position = (
+            current_state.position + (seq.position[:, m, :] - seq.position[:, 0, :])
+        )
+
+        self._hold_publish()
+
+        # Cloned for the same reason as _point(): _execute_immediate consumes
+        # this before the next solve, but _execute_paced QUEUES actions, and a
+        # queued view would be rewritten under it by the next solve.
+        return JointState(
+            position=seq.position[:, :n, :].clone(),
+            velocity=seq.velocity[:, :n, :].clone() if seq.velocity is not None else None,
+            acceleration=(seq.acceleration[:, :n, :].clone()
+                          if seq.acceleration is not None else None),
             joint_names=seq.joint_names,
         )
 
-        self._last_position_error = self._fk_position_error(state_in)
-        self._last_orientation_error = self._fk_orientation_error(state_in)
-        self._update_hold()
-        try:
-            q = state_in.position
-            self._last_q = (q[0] if q.dim() > 1 else q).detach().cpu().tolist()
-        except Exception:
-            self._last_q = None
+    @staticmethod
+    def _point(seq: JointState, i: int) -> JointState:
+        """Point ``i`` of an action sequence as a standalone JointState.
 
-        # Diagnostic-only approximation: the point that will actually have
-        # been sent before the NEXT resolve is the batch_size-th one in a
-        # paced producer loop (step_batch), but 0 in an unpaced step()-only
-        # loop. step() doesn't know which caller it has, so this always uses
-        # the paced assumption -- harmless since it only affects CSV columns,
-        # not control.
-        npts = seq.position.shape[1]
-        executed_idx = min(max(0, self._batch_size - 1), npts - 1)
+        CLONED, not a view. With use_cuda_graph the solver reuses the same
+        output tensors on every call, so a view into a result silently mutates
+        when the next solve runs -- verified: the same data_ptr comes back and
+        a held slice drifted 0.49 dps. Nothing currently reads _exec_state
+        after the next solve, so this is latent rather than active, but it is
+        invisible when it does bite.
+        """
+        return JointState(
+            position=seq.position[:, i, :].clone(),
+            velocity=seq.velocity[:, i, :].clone() if seq.velocity is not None else None,
+            acceleration=(seq.acceleration[:, i, :].clone()
+                          if seq.acceleration is not None else None),
+            joint_names=seq.joint_names,
+        )
 
-        if self._debug_enabled():
-            breakdown = self._diag.cost_breakdown(result)
-            horizon_diag = self._diag.horizon_diag(result, seq, executed_idx)
-            self._diag.csv_write(
-                result, solve_ms, breakdown, horizon_diag,
-                command_interval=self._command_interval,
-                last_position_error=self._last_position_error,
-                last_orientation_error=self._last_orientation_error,
-                v_bc=None, executed_idx=executed_idx, last_q=self._last_q,
-            )
-            self._diag.publish_costs(
-                result, breakdown, self._last_position_error, self._last_orientation_error)
-        self._diag.publish_predicted_path(result)
-        self._diag.publish_full_predicted_path(result)
+    def _hold_publish(self):
+        """Block until the previously published segment is one point from
+        running out, then let the caller publish.
 
-        return first_action, result, seq, solve_ms
+        This is what gives the arm time to execute points 0..n-2 before they
+        are replaced -- ``_execute_immediate`` otherwise loops at solve rate
+        (~150 ms) and would replace a 320 ms segment before it had played.
+        Publishing one point EARLY (rather than exactly at the end) leaves a
+        spare in the node's queue, so a late publish degrades into a slightly
+        stale command instead of the zero-velocity stop an empty queue
+        commands (execute_trajectory.cpp:62-83).
 
-    def _step_batch_action_sequence(self, current_state: JointState, n: int) -> list:
-        first_action, _result, seq, _solve_ms = self._solve_action_sequence(current_state)
-        if seq is None or seq.position.shape[1] == 0:
-            return [first_action] * n
-
-        npts = seq.position.shape[1]
-        batch = [first_action]
-        for i in range(1, min(n, npts)):
-            batch.append(JointState(
-                position=seq.position[..., i, :],
-                velocity=seq.velocity[..., i, :] if seq.velocity is not None else None,
-                acceleration=seq.acceleration[..., i, :] if seq.acceleration is not None else None,
-                joint_names=seq.joint_names,
-            ))
-        # Window shorter than the requested batch (shouldn't happen with the
-        # default command_end_idx=interpolation_steps*2 >= batch_size, but
-        # guard anyway): pad by holding the last available point.
-        while len(batch) < n:
-            batch.append(batch[-1])
-        return batch
+        The first call after a goal never sleeps (``_next_publish_t`` is None),
+        which is also the call that may capture a CUDA graph under gpu_lock
+        (``_step_guard``) -- so the sleep does not hold that lock.
+        """
+        if self._next_publish_t is not None:
+            wait = self._next_publish_t - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            else:
+                # Solve outran the segment: the spare point is already playing
+                # (or has run out). Lengthen the segment or speed up the solve.
+                self.node.get_logger().warn(
+                    f"LBFGS: publish {-wait * 1000.0:.0f}ms late "
+                    f"(solve {self._last_solve_ms:.0f}ms vs "
+                    f"{self._publish_period * 1000.0:.0f}ms period) - "
+                    f"raise lbfgs_command_points",
+                    throttle_duration_sec=5.0,
+                )
+        self._next_publish_t = time.monotonic() + self._publish_period
 
     def apply_live_goal(self, raw_goal) -> bool:
-        self.node.get_logger().info(
-            f"LBFGS: live goal received - position=({raw_goal[0]:.4f}, {raw_goal[1]:.4f}, "
-            f"{raw_goal[2]:.4f})m orientation(wxyz)=({raw_goal[3]:.4f}, {raw_goal[4]:.4f}, "
-            f"{raw_goal[5]:.4f}, {raw_goal[6]:.4f})"
-        )
         goal = self._set_target(raw_goal)
-
-        applied = self.solver.update_goal_tool_poses(goal, run_ik=False)
+        self.solver.update_goal_tool_poses(goal, run_ik=False)
         self.goal = goal
-        self._diag.publish_goal_marker(raw_goal, applied)
-        return applied
+        return True
 
     def update_world(self, scene) -> None:
-        """Reload the shared Scene into the LBFGS solver's collision checker.
+        """Reload the shared Scene into this solver's collision checker.
+
+        Without this override, obstacle updates never reach this solver:
+        ReactiveController.update_world() is a no-op by default, so the
+        collision model would stay frozen at whatever
+        cw.obstacle_manager.primitives_only_scene() returned at
+        build_solver() time. Mirrors LBFGSController.update_world().
         """
         self.solver.scene_collision_checker.load_collision_model(scene)
 
-    # ---- helpers --------------------------------------------------------------
+    # ---- State feedback ---------------------------------------------------
 
-    def _debug_enabled(self) -> bool:
+    def _close_state_loop(self, robot_context, predicted_state: JointState) -> JointState:
+        """Feed back plan point ``n-2`` WHOLE -- position, velocity and
+        acceleration from the same point, one source of truth. Legitimate only
+        because ``_hold_publish()`` waited for the arm to execute it; see the
+        module docstring.
+
+        ``predicted_state`` (the segment's last point, built by
+        ``_state_from_action``) is ignored: that point is the never-played
+        spare.
+        """
+        state = self._exec_state
+
+        # Convergence is measured on the REAL arm, never on the state we feed
+        # back. The two are meant to agree here, but if execution ever fails
+        # they must not agree silently: a metric taken from the plan would
+        # converge by construction and report success from anywhere.
+        real_state = self._read_state(robot_context)
+        self._last_position_error = self._fk_position_error(real_state)
+        self._last_orientation_error = self._fk_orientation_error(real_state)
+        self._update_hold()
+
+        self._csv_write(real_state, state, robot_context)
+        return state
+
+    # ---- Minimal diagnostics (gated by the `mpc_debug` ROS param) ----------
+
+    def _csv_init(self):
+        """Open a fresh CSV per goal when `mpc_debug` is set, else stay off."""
+        self._csv_close()
         if not self.node.has_parameter('mpc_debug'):
             self.node.declare_parameter('mpc_debug', False)
-        return bool(self.node.get_parameter('mpc_debug').value)
+        if not bool(self.node.get_parameter('mpc_debug').value):
+            return
+        self._csv = open_diag_csv(self.node, "lbfgs_diag")
+        self._csv_t0 = time.monotonic()
+
+    def _csv_close(self):
+        csv = getattr(self, '_csv', None)
+        if csv is not None:
+            csv.close()
+        self._csv = None
+
+    def _csv_write(self, real_state, predicted_state, robot_context):
+        """One row per solve.
+
+        ``q_pred_*`` is plan point ``n-2`` -- the state fed to the next solve,
+        i.e. where the arm is ASSUMED to be. ``q_real_*`` is where it measurably
+        IS. This controller is open-loop in position between solves, so these
+        two columns are the assumption it rests on: they are expected to agree
+        to a fraction of a degree, and a growing gap means the arm is not
+        executing what it is handed -- read it before anything else.
+
+        ``v_exec_max_dps`` is what the plan COMMANDS at that point;
+        ``v_real_max_dps`` what the arm actually DOES.
+        """
+        csv = getattr(self, '_csv', None)
+        if csv is None:
+            return
+
+        def q_deg(state):
+            p = state.position
+            return [math.degrees(v) for v in (p[0] if p.dim() > 1 else p).cpu().tolist()]
+
+        q_real, q_pred = q_deg(real_state), q_deg(predicted_state)
+        names = self.solver.joint_names
+
+        # Commanded velocity at the fed-back point. cuRobo bounds plan velocity
+        # with a COST/constraint, not a hard clamp, so a plan can come back over
+        # the limit; JointSpeedStrategy clamps again on its side
+        # (_clamp_velocities). Compare against the URDF limit (min 120 deg/s) to
+        # tell "the plan asked for too much" from "the driver clamped it".
+        v_exec = getattr(predicted_state, 'velocity', None)
+        v_max = (max(abs(x) for x in v_exec.reshape(-1).cpu().tolist())
+                 if v_exec is not None else float('nan'))
+
+        # Measured arm velocity: a real driver reading, averaged at the source's
+        # own ~100Hz rate (joint_speed_strategy.py:120-127) rather than sampled
+        # per solve.
+        try:
+            v_real = max(abs(x) for x in robot_context.get_joint_velocity_filtered())
+        except Exception:
+            v_real = float('nan')
+
+        csv.write_header_once(
+            ["t_s", "solve_ms", "n_pts", "seg_ms", "fk_err_real_m", "fk_err_pred_m",
+             "fk_rot_err_real_deg", "v_exec_max_dps", "v_real_max_dps",
+             "hold_count", "on_target"]
+            + [f"q_real_j{i + 1}_deg" for i in range(len(names))]
+            + [f"q_pred_j{i + 1}_deg" for i in range(len(names))])
+        n_pts = getattr(self, '_last_n_pts', 0)
+        csv.writerow(
+            [f"{time.monotonic() - self._csv_t0:.3f}",
+             f"{getattr(self, '_last_solve_ms', float('nan')):.1f}",
+             f"{n_pts}", f"{n_pts * self._interpolation_dt * 1000.0:.0f}",
+             f"{self._last_position_error:.5f}",
+             f"{self._fk_position_error(predicted_state):.5f}",
+             f"{math.degrees(self._last_orientation_error):.3f}",
+             f"{math.degrees(v_max):.2f}", f"{math.degrees(v_real):.2f}",
+             f"{self._hold_count}", f"{int(self.is_on_target())}"]
+            + [f"{v:.2f}" for v in q_real] + [f"{v:.2f}" for v in q_pred])
 
     def cancel(self):
-        if getattr(self, '_diag', None) is not None:
-            self._diag.csv_close()
+        self._csv_close()
         super().cancel()
