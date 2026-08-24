@@ -65,11 +65,11 @@ class ReactiveController(TrajectoryPlanner):
         self._latest_goal_fresh = False
 
         # Tunables (overwritten from the per-call config in plan()).
-        self.convergence_threshold = 0.01      # meters
+        self.convergence_threshold = 0.03      # meters
 
         self.convergence_threshold_rad = 0.05  # radians
 
-        self.convergence_hold_steps = 5
+        self.convergence_hold_steps = 1
         self.max_iterations = 1000
         self.perception_refresh_period = 2
 
@@ -77,6 +77,13 @@ class ReactiveController(TrajectoryPlanner):
         self._last_position_error = float('inf')
         # Latest scalar ORIENTATION error (rad), written by step().
         self._last_orientation_error = float('inf')
+        # The reactive solver's OWN error metrics (its optimization cost
+        # target), as opposed to the FK-measured pair above. inf means "not
+        # available" (default; see get_controller_position_error()) —
+        # subclasses that expose a solver-native error overwrite these in
+        # step()/_close_state_loop().
+        self._last_controller_position_error = float('inf')
+        self._last_controller_orientation_error = float('inf')
         # Consecutive steps with BOTH errors inside tolerance; see _update_hold.
         self._hold_count = 0
         # Cartesian target (xyz tensor), set by _set_target, read by FK error.
@@ -279,6 +286,20 @@ class ReactiveController(TrajectoryPlanner):
         """Latest scalar position error (meters)."""
         return self._last_position_error
 
+    def get_controller_position_error(self) -> float:
+        """Latest solver-native position error (meters), inf if unavailable.
+
+        This is the optimizer's OWN error metric (its cost target), not the
+        FK-measured error against the real/fed-back state returned by
+        ``get_position_error()``. The two can diverge — see the field comment
+        in ``SendTrajectory.action``.
+        """
+        return self._last_controller_position_error
+
+    def get_controller_orientation_error(self) -> float:
+        """Latest solver-native orientation error (radians), inf if unavailable."""
+        return self._last_controller_orientation_error
+
     def set_live_goal(self, raw_goal) -> None:
         """Deposit a live goal update. Called from the ROS topic thread.
         """
@@ -320,7 +341,7 @@ class ReactiveController(TrajectoryPlanner):
 
         self.convergence_threshold = config.get('convergence_threshold', 0.01)
         self.convergence_threshold_rad = config.get('convergence_threshold_rad', 0.05)
-        self.convergence_hold_steps = int(config.get('convergence_hold_steps', 5))
+        self.convergence_hold_steps = int(config.get('convergence_hold_steps', 1))
         self.max_iterations = config.get('max_iterations', 1000)
         self.start_state = start_state
 
@@ -427,7 +448,8 @@ class ReactiveController(TrajectoryPlanner):
                     self._last_log_time = now
                     self.node.get_logger().info(
                         f"{self.get_planner_name()}: error="
-                        f"{self.get_position_error():.4f}m on_target={self.is_on_target()}"
+                        f"{self.get_position_error():.4f}m "
+                        f"{self.get_orientation_error():.4f}rad on_target={self.is_on_target()}"
                     )
 
                 tstep += 1
@@ -628,6 +650,13 @@ class ReactiveController(TrajectoryPlanner):
         fb.position_error = float(err) if err != float('inf') else -1.0
 
         fb.orientation_error = float(rot_err) if rot_err != float('inf') else -1.0
+
+        ctrl_err = self.get_controller_position_error()
+        ctrl_rot_err = self.get_controller_orientation_error()
+        fb.controller_position_error = float(ctrl_err) if ctrl_err != float('inf') else -1.0
+        fb.controller_orientation_error = (
+            float(ctrl_rot_err) if ctrl_rot_err != float('inf') else -1.0
+        )
         fb.hold_count = int(self.get_hold_count())
         fb.step_progression = (
             float(1.0 - min(err / 0.1, 1.0)) if err != float('inf') else 0.0

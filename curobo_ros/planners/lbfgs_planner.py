@@ -158,6 +158,7 @@ from curobo.types import JointState, Pose, GoalToolPose
 from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
+from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_interpolation_dt, resolve_use_cuda_graph
 from curobo_ros.core.diagnostics import open_diag_csv
 
@@ -224,6 +225,17 @@ class LBFGSController(ReactiveController):
 
         node.lbfgs = solver
 
+        # RViz-facing publisher for the MPC's predicted end-effector path
+        # (nav_msgs/Path on 'mpc_predicted_path', under this node's namespace).
+        # Reuses MPPIController's diagnostics helper rather than duplicating
+        # the FK-to-Path conversion; only publish_predicted_path() is used
+        # here, csv_init() is never called so this does not open a second CSV
+        # alongside LBFGSController's own (see _csv_init below).
+        self._diag = MPCDiagnostics(
+            node, solver, cw.base_link, interpolation_dt,
+            self._fk_position_error, self._fk_orientation_error,
+        )
+
         # Points published per solve; n-1 of them get executed, the last is the
         # anti-starvation spare (see the module docstring). Minimum 2: with a
         # single point there is no spare and no executed point to feed back.
@@ -287,6 +299,24 @@ class LBFGSController(ReactiveController):
         t_solve = time.monotonic()
         result = self.solver.optimize_action_sequence(current_state)
         self._last_solve_ms = (time.monotonic() - t_solve) * 1000.0
+
+        # The solver's OWN error (its optimization cost target), distinct from
+        # the FK-measured _last_position_error/_last_orientation_error set in
+        # _close_state_loop -- see the module docstring's "unreachable goal"
+        # paragraph for why the two can diverge. Same extraction as
+        # mpc_diagnostics.py's CSV column (pose_pos_err_m/pose_rot_err_rad).
+        pos_err = getattr(result, 'position_error', None)
+        rot_err = getattr(result, 'rotation_error', None)
+        self._last_controller_position_error = (
+            float(pos_err.reshape(-1)[0].item()) if pos_err is not None else float('inf'))
+        self._last_controller_orientation_error = (
+            float(rot_err.reshape(-1)[0].item()) if rot_err is not None else float('inf'))
+
+        # RViz feed of the full predicted horizon. Placed before
+        # _hold_publish() so this FK+publish is absorbed by that call's
+        # sleep-to-deadline rather than delaying the trajectory command it
+        # gates (see module docstring on why that publish is time-critical).
+        self._diag.publish_predicted_path(result)
 
         # Slice robot_state_sequence from command_start_idx -- NOT from 0, and
         # not action_sequence (which is exactly this slice, but capped at 4

@@ -112,7 +112,7 @@ class UnifiedPlannerNode(Node):
         self.declare_parameter('convergence_threshold_rad', 0.05)
         # Consecutive in-tolerance steps required before on_target goes true.
         # Set 1 to restore the pre-2026-08-07 instantaneous behaviour.
-        self.declare_parameter('convergence_hold_steps', 5)
+        self.declare_parameter('convergence_hold_steps', 1)
         self.declare_parameter('max_mpc_iterations', 1000)
         # Capture/replay CUDA graphs in the solvers (faster, but a captured
         # MotionGen graph can be invalidated by intervening MPC activity — see
