@@ -470,8 +470,8 @@ class ReactiveController(TrajectoryPlanner):
                 current_state = self._close_state_loop(robot_context, predicted_state)
                 self._last_action = action
 
-                if goal_handle is not None and tstep % 5 == 0:
-                    self._publish_feedback(goal_handle, action)
+                # if goal_handle is not None and tstep % 5 == 0:
+                self._publish_feedback(goal_handle, action)
 
                 now = time.time()
                 if now - self._last_log_time > 1.0 and bool(self.node.get_parameter('mpc_debug').value):

@@ -38,12 +38,13 @@ node a buffer to chew through. MPPIController already does this
 
 Plan / execute, with an overlap
 -------------------------------
-``lbfgs_command_points`` (ROS param, default 4) points are published per solve,
+``lbfgs_command_points`` (ROS param, default 4) points are CONSUMED per solve,
 but the next segment is published after only ``(n-1) * interpolation_dt`` --
 one point EARLY. So point ``n-1`` is never played: it is the spare that keeps
 the node's queue non-empty if a publish runs late, which is what prevents the
 zero-velocity stop. The arm executes points ``0 .. n-2`` before the queue is
 replaced.
+
 
 Waiting for that execution is what makes the whole scheme work, and it is the
 piece an earlier version was missing.
@@ -242,13 +243,26 @@ class LBFGSController(ReactiveController):
         if not node.has_parameter('lbfgs_command_points'):
             node.declare_parameter('lbfgs_command_points', 6)
         self._command_points = max(2, int(node.get_parameter('lbfgs_command_points').value))
+
+        # Raising _command_points to buy that margin would ALSO stretch
+        # _publish_period (it is (n-1)*dt below) and slow the control loop --
+        # which is why the two are separated here instead. The extra points are
+        # a tail that is normally DISCARDED: each publish replaces the queue
+        # (execute_trajectory.cpp `this->trajectory = *msg;`), so they are only
+        # ever played when a solve runs late. Reaction time is set by
+        # _publish_period, not by queue depth, and is unchanged.
+        #
+        if not node.has_parameter('lbfgs_publish_points'):
+            node.declare_parameter('lbfgs_publish_points', 11 )#/self._command_points)
+        self._publish_points = max(
+            self._command_points, int(node.get_parameter('lbfgs_publish_points').value))
         self._interpolation_dt = interpolation_dt
         # Where the publishable part of robot_state_sequence starts. Read from
         # the TEM rather than hardcoded to 4: it is defined as
         # interpolation_steps, so it tracks the config.
         self._command_start_idx = int(
             getattr(solver.trajectory_execution_manager, 'command_start_idx', 4))
-        # Publish-to-publish period: one point SHORT of the segment.
+
         self._publish_period = (self._command_points - 1) * interpolation_dt
         self._next_publish_t = None
         # Wall-clock timestamp when the previous step() call returned -- lets
@@ -269,13 +283,21 @@ class LBFGSController(ReactiveController):
             f"LBFGS solver built: interpolation_dt={interpolation_dt}s, "
             f"optimization_dt={optimization_dt}s, "
             f"command_points={self._command_points} "
-            f"({self._command_points * interpolation_dt:.3f}s segment, "
+            f"({self._command_points * interpolation_dt:.3f}s consumed, "
             f"republished every {self._publish_period:.3f}s), "
+            f"publish_points={self._publish_points} "
+            f"({(self._publish_points - self._command_points) * interpolation_dt:.3f}s "
+            f"underrun tail), "
             f"robot={cw.robot_config_file}, collision_cache={cw.collision_cache}"
         )
         return solver
 
     def setup(self, start_state: JointState, goal_request: Any) -> bool:
+
+        self._publish_points = max(
+            self._command_points,
+            int(self.node.get_parameter('lbfgs_publish_points').value))
+
         p = goal_request.target_pose
         raw = [
             p.position.x, p.position.y, p.position.z,
@@ -353,7 +375,8 @@ class LBFGSController(ReactiveController):
             acceleration=full.acceleration[:, j:, :] if full.acceleration is not None else None,
             joint_names=full.joint_names,
         )
-        n = min(self._command_points, seq.position.shape[1])
+
+        n = min(self._publish_points, seq.position.shape[1])
         self._last_n_pts = n
 
         # "Controller error" at THIS instant, not result.position_error --
@@ -381,7 +404,9 @@ class LBFGSController(ReactiveController):
         # taken absolutely double-counts that lead: the plan would advance j+m
         # steps per cycle while the arm advances m. Anchor on current_state and
         # add only the delta, and the two are equal by construction for any j.
-        m = n - 1
+        #
+        
+        m = min(self._command_points, n) - 1
         self._exec_state = self._point(seq, m)
         self._exec_state.position = (
             current_state.position + (seq.position[:, m, :] - seq.position[:, 0, :])
@@ -487,7 +512,8 @@ class LBFGSController(ReactiveController):
                     f"{predicted_path_ms:.0f}ms + controller_fk "
                     f"{controller_fk_ms:.0f}ms + step_diag {step_diag_ms:.0f}ms "
                     f"vs {self._publish_period * 1000.0:.0f}ms budget - raise "
-                    f"lbfgs_command_points (or cut whichever term dominates)",
+                    f"lbfgs_publish_points to absorb it (queue tail, does NOT "
+                    f"slow the loop), or cut whichever term dominates",
                     throttle_duration_sec=5.0,
                 )
         self._next_publish_t = time.monotonic() + self._publish_period
