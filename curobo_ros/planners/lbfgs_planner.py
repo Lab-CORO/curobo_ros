@@ -240,7 +240,7 @@ class LBFGSController(ReactiveController):
         # anti-starvation spare (see the module docstring). Minimum 2: with a
         # single point there is no spare and no executed point to feed back.
         if not node.has_parameter('lbfgs_command_points'):
-            node.declare_parameter('lbfgs_command_points', 4)
+            node.declare_parameter('lbfgs_command_points', 6)
         self._command_points = max(2, int(node.get_parameter('lbfgs_command_points').value))
         self._interpolation_dt = interpolation_dt
         # Where the publishable part of robot_state_sequence starts. Read from
@@ -251,6 +251,14 @@ class LBFGSController(ReactiveController):
         # Publish-to-publish period: one point SHORT of the segment.
         self._publish_period = (self._command_points - 1) * interpolation_dt
         self._next_publish_t = None
+        # Wall-clock timestamp when the previous step() call returned -- lets
+        # _hold_publish()'s late-warning break "outside step()" (send_command,
+        # _close_state_loop, perception refresh, live-goal check, loop
+        # overhead -- all in reactive_controller.py's _execute_immediate, not
+        # measured here individually) out from step()'s own phases. See
+        # _last_cycle_breakdown.
+        self._t_prev_step_end = None
+        self._last_cycle_breakdown = (0.0, 0.0, 0.0, 0.0)  # (outside_step, predicted_path, controller_fk, step_diag) ms
 
         # NOT setting _command_interval: execute() then picks
         # _execute_immediate() (solve -> publish the whole segment -> re-solve)
@@ -282,6 +290,7 @@ class LBFGSController(ReactiveController):
         self.solver.update_goal_tool_poses(goal, run_ik=False)
         self.goal = goal
         self._next_publish_t = None  # new goal = new publish clock
+        self._t_prev_step_end = None  # no "outside step()" gap to measure yet
         self._csv_init()
         return True
 
@@ -296,27 +305,29 @@ class LBFGSController(ReactiveController):
         reached when this segment is replaced -- and holds the publish back
         until the previous segment is one point from running out.
         """
+        t_step_start = time.monotonic()
+        # Everything since the PREVIOUS step() call returned: _send_command,
+        # _close_state_loop, perception refresh, live-goal check and plain
+        # loop overhead, all in reactive_controller.py's _execute_immediate --
+        # none of it measured individually here, it is whatever is left once
+        # this step()'s own phases (below) are subtracted from the total
+        # publish-to-publish cycle. See _last_cycle_breakdown / _hold_publish.
+        outside_step_ms = (
+            (t_step_start - self._t_prev_step_end) * 1000.0
+            if self._t_prev_step_end is not None else 0.0
+        )
+
         t_solve = time.monotonic()
         result = self.solver.optimize_action_sequence(current_state)
         self._last_solve_ms = (time.monotonic() - t_solve) * 1000.0
-
-        # The solver's OWN error (its optimization cost target), distinct from
-        # the FK-measured _last_position_error/_last_orientation_error set in
-        # _close_state_loop -- see the module docstring's "unreachable goal"
-        # paragraph for why the two can diverge. Same extraction as
-        # mpc_diagnostics.py's CSV column (pose_pos_err_m/pose_rot_err_rad).
-        pos_err = getattr(result, 'position_error', None)
-        rot_err = getattr(result, 'rotation_error', None)
-        self._last_controller_position_error = (
-            float(pos_err.reshape(-1)[0].item()) if pos_err is not None else float('inf'))
-        self._last_controller_orientation_error = (
-            float(rot_err.reshape(-1)[0].item()) if rot_err is not None else float('inf'))
 
         # RViz feed of the full predicted horizon. Placed before
         # _hold_publish() so this FK+publish is absorbed by that call's
         # sleep-to-deadline rather than delaying the trajectory command it
         # gates (see module docstring on why that publish is time-critical).
+        t0 = time.monotonic()
         self._diag.publish_predicted_path(result)
+        predicted_path_ms = (time.monotonic() - t0) * 1000.0
 
         # Slice robot_state_sequence from command_start_idx -- NOT from 0, and
         # not action_sequence (which is exactly this slice, but capped at 4
@@ -331,6 +342,9 @@ class LBFGSController(ReactiveController):
             action.acceleration = torch.zeros_like(action.position)
             self._last_n_pts = 0
             self._exec_state = action
+            self._last_controller_position_error = float('inf')
+            self._last_controller_orientation_error = float('inf')
+            self._t_prev_step_end = time.monotonic()
             return action
 
         seq = JointState(
@@ -341,6 +355,23 @@ class LBFGSController(ReactiveController):
         )
         n = min(self._command_points, seq.position.shape[1])
         self._last_n_pts = n
+
+        # "Controller error" at THIS instant, not result.position_error --
+        # measured (probe_controller_error.py) to sit near zero from the very
+        # first solve even with the state frozen 0.5 m from the goal: it is
+        # the optimizer's own horizon-convergence metric (how close its plan
+        # gets to the goal BY THE END of its horizon), not a real-time
+        # tracking error, so it stays small independent of how far the
+        # current/real state actually is. FK-measuring seq's point 0 -- the
+        # very first commanded point, i.e. the solver's own estimate of where
+        # the arm will be right after this solve -- gives an instantaneous
+        # number instead, directly comparable to (and, once execution tracks
+        # the plan, converging toward) _last_position_error/_last_orientation_error.
+        t0 = time.monotonic()
+        first_point = self._point(seq, 0)
+        self._last_controller_position_error = self._fk_position_error(first_point)
+        self._last_controller_orientation_error = self._fk_orientation_error(first_point)
+        controller_fk_ms = (time.monotonic() - t0) * 1000.0
 
         # Points 0..n-2 are executed before the next publish replaces the queue;
         # n-1 is the spare that is never played. So the arm plays m = n-1
@@ -356,7 +387,26 @@ class LBFGSController(ReactiveController):
             current_state.position + (seq.position[:, m, :] - seq.position[:, 0, :])
         )
 
+        # Diagnostics for the segment about to be published -- before
+        # _hold_publish() so this work is absorbed by that call's
+        # sleep-to-deadline rather than delaying the time-critical publish
+        # (same reasoning as publish_predicted_path above). Budget is the
+        # segment's own duration: the same one _hold_publish() itself warns
+        # against when overrun.
+        t0 = time.monotonic()
+        self._diag.publish_step_diagnostics(
+            solve_ms=self._last_solve_ms, budget_ms=self._publish_period * 1000.0,
+            result=result, position=seq.position[:, :n, :],
+            velocity=seq.velocity[:, :n, :] if seq.velocity is not None else None,
+            acceleration=seq.acceleration[:, :n, :] if seq.acceleration is not None else None,
+            joint_names=seq.joint_names, dt=self._interpolation_dt,
+        )
+        step_diag_ms = (time.monotonic() - t0) * 1000.0
+
+        self._last_cycle_breakdown = (outside_step_ms, predicted_path_ms, controller_fk_ms, step_diag_ms)
+
         self._hold_publish()
+        self._t_prev_step_end = time.monotonic()
 
         # Cloned for the same reason as _point(): _execute_immediate consumes
         # this before the next solve, but _execute_paced QUEUES actions, and a
@@ -405,17 +455,39 @@ class LBFGSController(ReactiveController):
         (``_step_guard``) -- so the sleep does not hold that lock.
         """
         if self._next_publish_t is not None:
-            wait = self._next_publish_t - time.monotonic()
+            now = time.monotonic()
+            wait = self._next_publish_t - now
             if wait > 0:
                 time.sleep(wait)
             else:
-                # Solve outran the segment: the spare point is already playing
-                # (or has run out). Lengthen the segment or speed up the solve.
+                # The budget (_publish_period) is compared against the WHOLE
+                # cycle since the last publish, not just the solve -- solve_ms
+                # alone routinely under-explains a "late" warning (e.g.
+                # 159ms solve vs a 400ms budget, still 1ms late). cycle_start
+                # is exactly when the previous publish went out (_next_publish_t
+                # was set to cycle_start + _publish_period then), so cycle_ms
+                # is measured directly. _last_cycle_breakdown (filled in by
+                # step(), see there) accounts for where the rest of it went:
+                # outside_step (_send_command/_close_state_loop/perception
+                # refresh/live-goal check/loop overhead, all in
+                # reactive_controller.py, not measured individually) +
+                # predicted_path (publish_predicted_path) + controller_fk
+                # (the seq[0] FK used for _last_controller_position_error) +
+                # step_diag (publish_step_diagnostics: FK + cost breakdown +
+                # trajectory build/publish).
+                cycle_start = self._next_publish_t - self._publish_period
+                cycle_ms = (now - cycle_start) * 1000.0
+                outside_step_ms, predicted_path_ms, controller_fk_ms, step_diag_ms = (
+                    self._last_cycle_breakdown)
                 self.node.get_logger().warn(
-                    f"LBFGS: publish {-wait * 1000.0:.0f}ms late "
-                    f"(solve {self._last_solve_ms:.0f}ms vs "
-                    f"{self._publish_period * 1000.0:.0f}ms period) - "
-                    f"raise lbfgs_command_points",
+                    f"LBFGS: publish {-wait * 1000.0:.0f}ms late - cycle "
+                    f"{cycle_ms:.0f}ms = outside_step {outside_step_ms:.0f}ms "
+                    f"(send_command/close_state_loop/perception/loop) + solve "
+                    f"{self._last_solve_ms:.0f}ms + predicted_path "
+                    f"{predicted_path_ms:.0f}ms + controller_fk "
+                    f"{controller_fk_ms:.0f}ms + step_diag {step_diag_ms:.0f}ms "
+                    f"vs {self._publish_period * 1000.0:.0f}ms budget - raise "
+                    f"lbfgs_command_points (or cut whichever term dominates)",
                     throttle_duration_sec=5.0,
                 )
         self._next_publish_t = time.monotonic() + self._publish_period
@@ -456,7 +528,13 @@ class LBFGSController(ReactiveController):
         # they must not agree silently: a metric taken from the plan would
         # converge by construction and report success from anywhere.
         real_state = self._read_state(robot_context)
-        self._last_position_error = self._fk_position_error(real_state)
+        # xyz first, scalar derived from it -- one FK call instead of two
+        # (_fk_position_error would otherwise redo the same FK pass).
+        self._last_position_error_xyz = self._fk_position_error_xyz(real_state)
+        self._last_position_error = (
+            float(torch.linalg.norm(self._last_position_error_xyz).item())
+            if self._last_position_error_xyz is not None else float('inf')
+        )
         self._last_orientation_error = self._fk_orientation_error(real_state)
         self._update_hold()
 

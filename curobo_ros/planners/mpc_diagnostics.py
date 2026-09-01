@@ -15,9 +15,11 @@ import time
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
+from rclpy.duration import Duration
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker
 
-from curobo_msgs.msg import MpcCosts
+from curobo_msgs.msg import MpcCosts, MpcStepDiagnostics
 from curobo.types import JointState
 
 from curobo_ros.core.diagnostics import open_diag_csv
@@ -70,6 +72,12 @@ class MPCDiagnostics:
         # Cost/constraint breakdown, for live inspection via rqt_plot (each
         # named field is individually plottable). See cost_breakdown().
         self._cost_pub = node.create_publisher(MpcCosts, 'mpc_costs', 10)
+        # One message per control cycle: the trajectory actually sent onward
+        # this step, its solve time against budget, arrival FK error and the
+        # same cost/constraint breakdown as mpc_costs. See
+        # publish_step_diagnostics().
+        self._step_diag_pub = node.create_publisher(
+            MpcStepDiagnostics, 'mpc_step_diagnostics', 10)
 
         self._csv = None
         self._csv_t0 = None
@@ -410,12 +418,21 @@ class MPCDiagnostics:
         self._path_pub.publish(self._ee_positions_to_path(ee_pos))
 
     def _ee_positions_to_path(self, ee_pos) -> Path:
+        """Each point of ee_pos is one MPC horizon step, self._step_dt apart
+        (not simultaneous), so its pose.header.stamp is incremented
+        per-point instead of all sharing path.header.stamp -- otherwise the
+        path carried no timing information at all (every point identically
+        "now"), making it look like a single instant rather than a
+        trajectory.
+        """
+        now = self.node.get_clock().now()
         path = Path()
         path.header.frame_id = self._path_frame
-        path.header.stamp = self.node.get_clock().now().to_msg()
-        for x, y, z in ee_pos:
+        path.header.stamp = now.to_msg()
+        for i, (x, y, z) in enumerate(ee_pos):
             pose = PoseStamped()
-            pose.header = path.header
+            pose.header.frame_id = self._path_frame
+            pose.header.stamp = (now + Duration(seconds=self._step_dt * i)).to_msg()
             pose.pose.position.x = x
             pose.pose.position.y = y
             pose.pose.position.z = z
@@ -589,6 +606,99 @@ class MPCDiagnostics:
         msg.con_scene_collision = breakdown.get("con_scene_collision", 0.0)
         msg.con_cspace_bound = breakdown.get("con_cspace_bound", 0.0)
         self._cost_pub.publish(msg)
+
+    def _build_joint_trajectory(self, position, velocity, acceleration, joint_names, dt: float) -> JointTrajectory:
+        """``position``/``velocity``/``acceleration`` are ``[1, npts, dof]``
+        tensors (``velocity``/``acceleration`` may be ``None``) -- the same
+        per-point data the caller is about to hand to ``_send_command``.
+        Points are ``dt`` apart, so point ``i``'s ``time_from_start`` is
+        ``(i + 1) * dt``: point 0 is what the robot will be commanded to
+        reach after the first ``dt`` of this segment, not at t=0.
+        """
+        traj = JointTrajectory()
+        traj.header.stamp = self.node.get_clock().now().to_msg()
+        traj.header.frame_id = self._path_frame
+        traj.joint_names = list(joint_names)
+        pos = position[0].detach().cpu().tolist()
+        vel = velocity[0].detach().cpu().tolist() if velocity is not None else None
+        acc = acceleration[0].detach().cpu().tolist() if acceleration is not None else None
+        for i, p in enumerate(pos):
+            pt = JointTrajectoryPoint()
+            pt.positions = [float(v) for v in p]
+            pt.velocities = [float(v) for v in vel[i]] if vel is not None else []
+            pt.accelerations = [float(v) for v in acc[i]] if acc is not None else []
+            pt.time_from_start = Duration(seconds=dt * (i + 1)).to_msg()
+            traj.points.append(pt)
+        return traj
+
+    def publish_step_diagnostics(
+        self, *, solve_ms: float, budget_ms: float, result,
+        position, velocity, acceleration, joint_names, dt: float,
+    ):
+        """Publish one ``MpcStepDiagnostics`` message for this control cycle.
+
+        ``budget_ms`` is the caller's real-time budget for this solve
+        (LBFGSController: the published segment's duration; MPPIController:
+        ``mpc_command_interval``), 0.0 if the caller has none. When
+        ``solve_ms`` exceeds it, only timing is published -- trajectory
+        construction, the arrival FK and the cost/constraint breakdown are
+        genuinely SKIPPED, not just zeroed, so an already-late cycle never
+        pays for more CPU/GPU work on top of the overrun (cf. cost_breakdown's
+        and horizon_diag's own crash-safety notes on keeping per-step
+        diagnostics cheap).
+        """
+        # Not always populated by the solver (observed None from
+        # LBFGSController's robot_state_sequence slice) -- self.solver.joint_names
+        # is the same list and always set.
+        if joint_names is None:
+            joint_names = self.solver.joint_names
+
+        msg = MpcStepDiagnostics()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self._path_frame
+        msg.solve_ms = float(solve_ms)
+        msg.budget_ms = float(budget_ms)
+        msg.budget_exceeded = bool(budget_ms > 0.0 and solve_ms > budget_ms)
+
+        nan = float('nan')
+        if msg.budget_exceeded:
+            msg.arrival_fk_err_m = nan
+            msg.arrival_fk_rot_err_deg = nan
+            msg.cost_tool_pose_pos = nan
+            msg.cost_tool_pose_orient = nan
+            msg.cost_cspace = nan
+            msg.cost_cspace_vel = nan
+            msg.cost_cspace_acc = nan
+            msg.cost_cspace_jerk = nan
+            msg.con_self_collision = nan
+            msg.con_scene_collision = nan
+            msg.con_cspace_bound = nan
+            self._step_diag_pub.publish(msg)
+            return
+
+        msg.trajectory = self._build_joint_trajectory(position, velocity, acceleration, joint_names, dt)
+
+        try:
+            last = JointState.from_position(position[:, -1, :], joint_names=joint_names)
+            msg.arrival_fk_err_m = float(self._fk_position_error(last))
+            msg.arrival_fk_rot_err_deg = math.degrees(float(self._fk_orientation_error(last)))
+        except Exception as e:
+            self.node.get_logger().warn(f"[MPC DIAG] arrival FK failed: {e}", throttle_duration_sec=5.0)
+            msg.arrival_fk_err_m = nan
+            msg.arrival_fk_rot_err_deg = nan
+
+        breakdown = self.cost_breakdown(result)
+        msg.cost_tool_pose_pos = breakdown.get('cost_tool_pose_pos', nan)
+        msg.cost_tool_pose_orient = breakdown.get('cost_tool_pose_orient', nan)
+        msg.cost_cspace = breakdown.get('cost_cspace', nan)
+        msg.cost_cspace_vel = breakdown.get('cost_cspace_vel', nan)
+        msg.cost_cspace_acc = breakdown.get('cost_cspace_acc', nan)
+        msg.cost_cspace_jerk = breakdown.get('cost_cspace_jerk', nan)
+        msg.con_self_collision = breakdown.get('con_self_collision', nan)
+        msg.con_scene_collision = breakdown.get('con_scene_collision', nan)
+        msg.con_cspace_bound = breakdown.get('con_cspace_bound', nan)
+
+        self._step_diag_pub.publish(msg)
 
     # ---- Step-level debug log ----
 

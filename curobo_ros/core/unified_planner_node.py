@@ -254,10 +254,9 @@ class UnifiedPlannerNode(Node):
         # Shared IK — same Scene as MotionPlanner.
         self.ik_services = IKServices(self, self.config_wrapper_motion)
 
-        # FK — depends only on robot YAML (no scene).
-        self.fk_services = FKServices(
-            self, self.config_wrapper_motion.robot_config_file
-        )
+        # FK poses are purely geometric (robot YAML only); its collision
+        # checker (poses_valid) shares the same Scene as MotionPlanner/IK.
+        self.fk_services = FKServices(self, self.config_wrapper_motion)
 
         self.planner_manager = PlannerManager(self, self.config_wrapper_motion)
 
@@ -506,6 +505,12 @@ class UnifiedPlannerNode(Node):
         if debug:
             self._log_solver_update_ms('ik_services', t0)
 
+        # fk_services' collision checker (poses_valid), same reasoning as
+        # ik_services above -- queried independently of the active planner.
+        self.fk_services.update_world()
+        if debug:
+            self._log_solver_update_ms('fk_services', t0)
+
     def _debug_solver_update_timing(self) -> bool:
         if not self.has_parameter('mpc_debug'):
             self.declare_parameter('mpc_debug', False)
@@ -566,6 +571,9 @@ class UnifiedPlannerNode(Node):
             # IK (only if it was initialized). IKServices reads the canonical
             # (motion) cache directly, so no sync is needed.
             self.ik_services.rebuild()
+
+            # FK's collision checker is sized off the same cache (poses_valid).
+            self.fk_services.rebuild()
 
             # Reactive controllers (only if initialized). Built from the SAME
             # shared cache, so just rebuild their solvers — no manual cache copy.

@@ -302,7 +302,13 @@ class MPPIController(ReactiveController):
         # state_in, not current_state: a post-solve corruption would otherwise
         # feed a phantom metre-scale error into _update_hold() and silently
         # reset a hold counter that had legitimately been accumulating.
-        self._last_position_error = self._fk_position_error(state_in)
+        # xyz first, scalar derived from it -- one FK call instead of two
+        # (_fk_position_error would otherwise redo the same FK pass).
+        self._last_position_error_xyz = self._fk_position_error_xyz(state_in)
+        self._last_position_error = (
+            float(torch.linalg.norm(self._last_position_error_xyz).item())
+            if self._last_position_error_xyz is not None else float('inf')
+        )
         self._last_orientation_error = self._fk_orientation_error(state_in)
         self._update_hold()
         # Measured joint POSITIONS, for the CSV. Without them a run that ends
@@ -331,6 +337,15 @@ class MPPIController(ReactiveController):
                     result, breakdown, self._last_position_error, self._last_orientation_error)
             self._diag.publish_predicted_path(result)
             self._diag.publish_full_predicted_path(result)
+            # Published every cycle, not gated by mpc_debug like the CSV/
+            # mpc_costs above: budget is mpc_command_interval (0.0 = unpaced,
+            # i.e. no fixed budget -- see publish_step_diagnostics).
+            self._diag.publish_step_diagnostics(
+                solve_ms=solve_ms, budget_ms=self._command_interval * 1000.0,
+                result=result, position=action.position, velocity=action.velocity,
+                acceleration=action.acceleration, joint_names=action.joint_names,
+                dt=self._step_dt,
+            )
 
         if self._debug_enabled():
             self._diag.log_step_summary(action, self._last_position_error)

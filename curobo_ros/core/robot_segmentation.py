@@ -34,9 +34,10 @@ class _CameraSource:
     the same `_masks` dict — one SetMask call masks every camera at once.
     """
     __slots__ = ('name', 'depth_topic', 'info_topic', 'output_topic',
-                 'depth_image', 'camera_info', 'depth_frame_id', 'publisher')
+                 'depth_image', 'camera_info', 'depth_frame_id', 'publisher',
+                 'distance_threshold')
 
-    def __init__(self, name, depth_topic, info_topic, output_topic):
+    def __init__(self, name, depth_topic, info_topic, output_topic, distance_threshold):
         self.name = name
         self.depth_topic = depth_topic
         self.info_topic = info_topic
@@ -45,6 +46,7 @@ class _CameraSource:
         self.camera_info = None
         self.depth_frame_id = None
         self.publisher = None
+        self.distance_threshold = distance_threshold
 
 
 class DepthMapRobotSegmentation(Node):
@@ -153,10 +155,16 @@ class DepthMapRobotSegmentation(Node):
                 f'{name}.camera_info_topic', '/depth_to_rgb/camera_info' if is_default else '')
             self.declare_parameter(
                 f'{name}.output_topic', 'masked_depth_image' if is_default else f'masked_depth_image_{name}')
+            # Per-camera override of the node-level distance_threshold (e.g. a
+            # wrist camera close to the gripper needs a tighter margin than a
+            # fixed overview camera). Defaults to the global value above.
+            self.declare_parameter(f'{name}.distance_threshold', self.distance_threshold)
 
             depth_topic = self.get_parameter(f'{name}.depth_image_topic').get_parameter_value().string_value
             info_topic = self.get_parameter(f'{name}.camera_info_topic').get_parameter_value().string_value
             output_topic = self.get_parameter(f'{name}.output_topic').get_parameter_value().string_value
+            cam_distance_threshold = self.get_parameter(
+                f'{name}.distance_threshold').get_parameter_value().double_value
 
             if not depth_topic or not info_topic:
                 self.get_logger().error(
@@ -164,7 +172,7 @@ class DepthMapRobotSegmentation(Node):
                     f"(set '{name}.depth_image_topic' / '{name}.camera_info_topic') - skipped")
                 continue
 
-            cam = _CameraSource(name, depth_topic, info_topic, output_topic)
+            cam = _CameraSource(name, depth_topic, info_topic, output_topic, cam_distance_threshold)
             cam.publisher = self.create_publisher(Image, output_topic, 10)
             self.create_subscription(
                 Image, depth_topic, functools.partial(self._on_depth, cam), 1)
@@ -490,7 +498,7 @@ class DepthMapRobotSegmentation(Node):
         min_distances, _ = torch.min(distances, dim=1)
 
         # Keep points that are farther than threshold (i.e. NOT the robot)
-        mask = min_distances > self.distance_threshold
+        mask = min_distances > cam.distance_threshold
 
         # Also drop points inside any user-defined mask shape (e.g. a grasped
         # object) so they never reach the mapper / ESDF. Uses the same base-frame

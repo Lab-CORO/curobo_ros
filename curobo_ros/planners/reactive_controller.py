@@ -75,13 +75,21 @@ class ReactiveController(TrajectoryPlanner):
 
         # Latest scalar position error, written by step(), read by is_converged().
         self._last_position_error = float('inf')
+        # Signed per-axis component (base frame) of the same error, set
+        # alongside _last_position_error wherever a controller computes it
+        # (see _fk_position_error_xyz). None until the first real measurement.
+        self._last_position_error_xyz: Optional[torch.Tensor] = None
         # Latest scalar ORIENTATION error (rad), written by step().
         self._last_orientation_error = float('inf')
-        # The reactive solver's OWN error metrics (its optimization cost
-        # target), as opposed to the FK-measured pair above. inf means "not
-        # available" (default; see get_controller_position_error()) —
-        # subclasses that expose a solver-native error overwrite these in
-        # step()/_close_state_loop().
+        # INSTANTANEOUS FK error of the controller's own next commanded
+        # point (e.g. the very first point of the current plan), as opposed
+        # to the FK-measured pair above which is against the real/fed-back
+        # state. NOT the solver's raw ``result.position_error`` -- measured
+        # (curobo_ros's probe_controller_error.py) to be a horizon-end
+        # convergence metric that stays near zero even with the real state
+        # far from the goal, so it is useless as a "right now" error. inf
+        # means "not available" (default; see get_controller_position_error())
+        # — subclasses that expose one overwrite these in step().
         self._last_controller_position_error = float('inf')
         self._last_controller_orientation_error = float('inf')
         # Consecutive steps with BOTH errors inside tolerance; see _update_hold.
@@ -232,15 +240,29 @@ class ReactiveController(TrajectoryPlanner):
         """Current end-effector position via the solver's forward kinematics."""
         return self._compute_ee_pose(current_state)[0]
 
-    def _fk_position_error(self, current_state: JointState) -> float:
-        """Real Cartesian distance (m) between the current EE and the target."""
+    def _fk_position_error_xyz(self, current_state: JointState) -> Optional[torch.Tensor]:
+        """Signed per-axis Cartesian error (m), base frame: ee - target.
+
+        None if no target is set or FK fails. ``_fk_position_error`` is this
+        vector's norm -- kept as a separate call so callers that only need
+        the scalar (most of them) don't have to unpack a tensor, while
+        callers reporting per-axis error (_close_state_loop) can call this
+        directly instead of triggering a second FK pass.
+        """
         if self._target_position is None:
-            return float('inf')
+            return None
         try:
             ee = self._compute_ee_position(current_state)
-            return float(torch.linalg.norm(ee - self._target_position).item())
+            return ee - self._target_position
         except Exception:
+            return None
+
+    def _fk_position_error(self, current_state: JointState) -> float:
+        """Real Cartesian distance (m) between the current EE and the target."""
+        comp = self._fk_position_error_xyz(current_state)
+        if comp is None:
             return float('inf')
+        return float(torch.linalg.norm(comp).item())
 
     def _fk_orientation_error(self, current_state: JointState) -> float:
         """Real angular distance (rad) between the current EE and the target
@@ -286,18 +308,26 @@ class ReactiveController(TrajectoryPlanner):
         """Latest scalar position error (meters)."""
         return self._last_position_error
 
-    def get_controller_position_error(self) -> float:
-        """Latest solver-native position error (meters), inf if unavailable.
+    def get_position_error_xyz(self) -> Optional[torch.Tensor]:
+        """Latest signed per-axis position error (meters, base frame), or
+        None if the active controller never set it (see _last_position_error_xyz).
+        """
+        return self._last_position_error_xyz
 
-        This is the optimizer's OWN error metric (its cost target), not the
-        FK-measured error against the real/fed-back state returned by
-        ``get_position_error()``. The two can diverge — see the field comment
+    def get_controller_position_error(self) -> float:
+        """Latest INSTANTANEOUS controller position error (meters), inf if unavailable.
+
+        FK error of the controller's own next commanded point against the
+        goal — the solver's best estimate of "how far will I be right after
+        this solve", as opposed to the FK-measured error against the
+        real/fed-back state returned by ``get_position_error()``. NOT the
+        solver's raw internal cost/convergence metric — see the field comment
         in ``SendTrajectory.action``.
         """
         return self._last_controller_position_error
 
     def get_controller_orientation_error(self) -> float:
-        """Latest solver-native orientation error (radians), inf if unavailable."""
+        """Latest instantaneous controller orientation error (radians), inf if unavailable."""
         return self._last_controller_orientation_error
 
     def set_live_goal(self, raw_goal) -> None:
@@ -444,7 +474,7 @@ class ReactiveController(TrajectoryPlanner):
                     self._publish_feedback(goal_handle, action)
 
                 now = time.time()
-                if now - self._last_log_time > 1.0:
+                if now - self._last_log_time > 1.0 and bool(self.node.get_parameter('mpc_debug').value):
                     self._last_log_time = now
                     self.node.get_logger().info(
                         f"{self.get_planner_name()}: error="
@@ -648,6 +678,13 @@ class ReactiveController(TrajectoryPlanner):
         fb.state = "ON_TARGET" if on_target else "TRACKING"
         fb.on_target = bool(on_target)
         fb.position_error = float(err) if err != float('inf') else -1.0
+
+        xyz = self.get_position_error_xyz()
+        if xyz is not None:
+            fb.position_error_x, fb.position_error_y, fb.position_error_z = (
+                float(v) for v in xyz.reshape(-1).cpu().tolist())
+        else:
+            fb.position_error_x = fb.position_error_y = fb.position_error_z = -1e9
 
         fb.orientation_error = float(rot_err) if rot_err != float('inf') else -1.0
 
