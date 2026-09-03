@@ -32,6 +32,9 @@ following the same self-registering pattern as ``IKServices`` / ``FKServices``.
 import torch
 
 from rclpy.time import Time
+from rclpy.qos import (QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy,
+                       QoSReliabilityPolicy)
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from std_srvs.srv import Trigger
 from curobo.types import JointState, Pose, DeviceCfg
 from curobo.sphere_fit import estimate_sphere_count
@@ -57,6 +60,25 @@ class AttachmentServices:
             AttachObject, f'{name}/attach_object', self._attach_object_callback)
         self.detach_object_srv = node.create_service(
             Trigger, f'{name}/detach_object', self._detach_object_callback)
+
+        # Broadcast of the payload's link-local spheres, for any OTHER node
+        # that keeps its own copy of the robot kinematics -- robot_segmentation
+        # is the one that matters: writing these rows into its own
+        # kinematics_params makes its depth mask carve the payload out of the
+        # point cloud, with no set_mask call. See _publish_attached_spheres for
+        # why a publisher and not a client, and _read_attach_rows for why these
+        # rows and not _attached_spheres.
+        self.attached_spheres_pub = node.create_publisher(
+            Float32MultiArray, f'{name}/attached_spheres',
+            QoSProfile(depth=1,
+                       history=QoSHistoryPolicy.KEEP_LAST,
+                       reliability=QoSReliabilityPolicy.RELIABLE,
+                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
+        # Publish the (empty) startup state right away: with TRANSIENT_LOCAL
+        # this is what a subscriber that comes up later -- or respawns
+        # mid-session -- latches onto, so "nothing attached" is an assertion
+        # rather than the absence of a message.
+        self._publish_attached_spheres(None)
 
     def active_manager(self):
         """The AttachmentManager backing whichever planner is currently active.
@@ -89,6 +111,72 @@ class AttachmentServices:
         """
         am = self.active_manager()
         return am._kinematics if am is not None else None
+
+    # ------------------------------------------------------------------
+    # Broadcast (consumers holding their own copy of the kinematics)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_attach_rows(am):
+        """The ATTACH_LINK sphere rows currently written on ``am``, [n_slots, 4].
+
+        These are the rows AttachmentManager.update() composed and wrote in
+        place, so they are already LINK-LOCAL: update() computes
+        ``ee_pose^-1 . world_offset`` and stores the result in ATTACH_LINK's
+        slots, which lands in the link's own frame because ATTACH_LINK's
+        fixed_transform is identity against tool_frames[0] (a robot-YAML
+        contract the config comments already call load-bearing).
+
+        Deliberately NOT ``_attached_spheres``: that one is in OBSTACLE frame,
+        so a receiver would have to redo the same composition -- hence also
+        receive the grasp JointState and own an AttachmentManager. These rows
+        are self-contained: written into the same slots of any kinematics
+        built from the same robot YAML, the next FK there carries the payload.
+
+        Always n_slots rows: update() pads the unused slots with the -100
+        sentinel radius, which makes the row count a usable integrity check on
+        the receiving side.
+        """
+        kp = am.kinematics_params
+        idx = kp.get_sphere_index_from_link_name(ATTACH_LINK)
+        return kp.link_spheres[0, idx, :].detach().cpu().numpy()
+
+    def _publish_attached_spheres(self, rows) -> None:
+        """Broadcast the payload's link-local spheres. ``rows=None`` = detached.
+
+        Fire-and-forget by design: the planner never waits on, checks for, or
+        depends on a subscriber. That is precisely what keeps this from
+        re-coupling the planner to robot_segmentation -- a /set_mask CLIENT
+        here would suspend attach on that node's presence and latency, which
+        is why it was rejected. The dependency direction is inverted instead.
+
+        An EMPTY array is the detach signal, rather than a copy of the sentinel
+        rows: the receiver resets its own link through
+        ``kinematics_config.reset_link_spheres()``, which restores the
+        reference centers AND radii exactly, instead of us transmitting values
+        it would have to trust.
+        """
+        msg = Float32MultiArray()
+        n = 0 if rows is None else int(rows.shape[0])
+        # dim[0].label carries the link name so the receiver resolves the slot
+        # indices against ITS OWN kinematics instead of trusting ours -- a
+        # robot_config_file divergence then surfaces as a row-count mismatch
+        # warning rather than as a mask over an unrelated region of space.
+        msg.layout.dim = [
+            MultiArrayDimension(label=ATTACH_LINK, size=n, stride=n * 4),
+            MultiArrayDimension(label='xyzr', size=4, stride=4),
+        ]
+        if n:
+            msg.data = [float(v) for v in rows.reshape(-1)]
+        try:
+            self.attached_spheres_pub.publish(msg)
+        except Exception as e:
+            # Never propagate: this is called from __init__, from attach() after
+            # the payload is already attached, and from detach() after the state
+            # is already cleared. In the latter two a raise would report failure
+            # for an operation that succeeded.
+            self.node.get_logger().warn(
+                f"could not broadcast attached spheres: {e}")
 
     # ------------------------------------------------------------------
     # Solver discovery
@@ -271,6 +359,14 @@ class AttachmentServices:
             # AttachmentManager to write to. Only reached when _targets() is
             # truly empty — an LBFGS/MPC-only session that already has A
             # solver never pays this ~25s cost just to attach.
+            #
+            # This re-enters attach's own machinery: _warmup_classic() ends in
+            # UnifiedPlannerNode.replay_attachment() -> reapply(), while this
+            # call is still in flight. Harmless ONLY because _attached_spheres
+            # is still None at this point, so reapply() no-ops immediately --
+            # which is precisely why the state is memorized at the END of this
+            # method (see the bottom of the gpu_lock block). Hoisting that
+            # memorization earlier would silently replay a half-built attach.
             self.node._warmup_classic()
             managers = self._targets()
         if not managers:
@@ -372,9 +468,37 @@ class AttachmentServices:
             # Memorize state only now, on success (possibly partial: some
             # non-active solver may still be in `failures`, degraded until
             # the next attach/detach -- reapply()/replay can recover it on
-            # its next rebuild).
+            # its next rebuild). This position is load-bearing, not stylistic:
+            # the _warmup_classic() branch above re-enters reapply() mid-call
+            # and must find an empty state there.
             self._attached_state = grasp_end_state.clone()
             self._attached_spheres = sphere_tensor.clone()
+
+            # Read the composed rows back INSIDE the lock: a .cpu() on a tensor
+            # another solver's write could be touching is a torn read. It is 16
+            # floats -- the cost of holding the lock for it is nil. Read from a
+            # manager that actually took the write (`written`, not `managers`),
+            # every successful one holding identical rows by construction.
+            #
+            # Swallowed on failure: at this point the payload IS attached and
+            # memorized, so letting this raise would report success=False for
+            # an attach that happened -- the exact inconsistency the rollback
+            # above exists to prevent. The broadcast is a side channel; it must
+            # never be able to fail the operation it only describes.
+            broadcast_rows = None
+            try:
+                broadcast_rows = self._read_attach_rows(written[0])
+            except Exception as e:
+                self.node.get_logger().warn(
+                    f"attach: could not read back payload spheres to "
+                    f"broadcast them ({e}); the payload IS attached, but "
+                    f"depth segmentation will not mask it.")
+
+        # `None` is the DETACHED signal, so a failed read must skip the publish
+        # entirely rather than fall through to it -- do not collapse these two
+        # into one call.
+        if broadcast_rows is not None:
+            self._publish_attached_spheres(broadcast_rows)
 
         if failures:
             self.node.get_logger().warn(
@@ -424,6 +548,10 @@ class AttachmentServices:
                         f"detach: failed on one solver's AttachmentManager: {e}")
         self._attached_state = None
         self._attached_spheres = None
+        # Must publish, not just stop publishing: without this a subscriber
+        # keeps the payload in its own kinematics forever and masks a piece
+        # that is no longer in the gripper.
+        self._publish_attached_spheres(None)
         self.node.get_logger().info(f"Detached payload from '{ATTACH_LINK}'")
         return True
 
@@ -442,6 +570,11 @@ class AttachmentServices:
         build_solver()) -- pass it explicitly so this reaches a solver that
         may not be reachable via PlannerManager yet. Omit it to replay onto
         every currently live solver (e.g. after a Classic rebuild).
+
+        Does not re-broadcast (_publish_attached_spheres): it re-writes the
+        SAME sphere_tensor with the SAME grasp state, so the composed rows are
+        identical to the ones already latched on ~/attached_spheres. A
+        subscriber's own copy is untouched by a solver rebuild here.
 
         Idempotent and safe to call whether or not anything is attached, so
         any call site can invoke it unconditionally. Writes unconditionally

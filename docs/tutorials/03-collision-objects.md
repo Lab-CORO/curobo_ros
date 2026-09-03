@@ -88,9 +88,29 @@ Two pitfalls, both silent:
 
 Attach applies to **every planner that currently has a live solver** — Classic/Multi Point/Joint Space (the shared `MotionPlanner`), MPC, and LBFGS — not just whichever one is active when you call it. The spheres are fitted once and the identical model is written into each; switching planners (`set_planner`) or triggering a solver rebuild (`set_collision_cache`) afterward carries the attachment along automatically, with no need to call `attach_object` again. **Motion Retargeting (`retarget`) is not covered**: a payload attached while some other planner is active is invisible to the retargeter, and `GetIK`/`GetFK` are collision-aware of everything *except* an attached payload (they use their own separate kinematics). `attach_object`/`detach_object` are refused with `success: false` while an execution goal is active — cancel it first.
 
-### The perception side: `set_mask`
+### The perception side: the payload masks itself
 
-`attach_object` only affects the **analytic** collision model (the fitted spheres). If a camera is watching the part being grasped, the depth-based perception layer (the ESDF voxel grid) still sees it and treats it as a world obstacle — the attached spheres then collide with their own voxels. `attach_object` has no reach into that layer at all; the fix lives one stage upstream, in `robot_segmentation`'s `set_mask`, which removes depth pixels before they ever become voxels:
+`attach_object` only affects the **analytic** collision model (the fitted spheres). If a camera is watching the part being grasped, the depth-based perception layer (the ESDF voxel grid) would still see it and treat it as a world obstacle — the attached spheres colliding with their own voxels.
+
+That is handled for you. On every attach and detach, the planner broadcasts the payload's fitted spheres on `<node>/attached_spheres`; `robot_segmentation` writes them into its own copy of the robot kinematics, so the payload is carved out of the depth exactly like the arm itself is. **No `set_mask` call is needed for a grasped payload.**
+
+Nothing is coupled by this: the planner publishes and never waits on, checks for, or depends on a subscriber — attach behaves identically whether or not `robot_segmentation` is running. The topic is `TRANSIENT_LOCAL`, so a segmentation node that starts (or respawns) mid-transport picks up the current payload immediately.
+
+Two parameters on `robot_segmentation` govern it:
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `attached_spheres_topic` | `/unified_planner/attached_spheres` | Set this if you renamed the planner node — a wrong value fails **silently**, as an absent subscription. |
+| `payload_distance_threshold` | `0.02` | Keep-distance applied to the payload's spheres only. Deliberately tighter than the robot's own `distance_threshold`: those spheres were just fitted to a geometry you supplied, so they don't need the slack the links get for model error — and a 5 cm halo would erase the table from the map at the exact moment of placing onto it. |
+
+Why this is stronger than a hand-written mask: the mask drops every point within `payload_distance_threshold` of a payload sphere — the spheres *dilated*. So no voxel can survive inside the planner's own collision model of the payload, **by construction**. A `set_mask` shape and the MORPHIT sphere fit are two independently specified geometries with no such relation, and a fit that bulges past a face leaves voxels inside the collision model — a collision the planner can never clear.
+
+#### When you still want `set_mask`
+
+`set_mask` is not obsolete. It remains the tool for two cases the automatic path cannot cover:
+
+- **A payload larger than the sphere budget.** With `extra_collision_spheres: {attached_object: 4}`, a big part is masked as coarsely as it is modelled: its extremities stay in the voxel grid. Raise the budget, or add a `set_mask` shape on top.
+- **Anything that is not the grasped payload** — a fixture, a table region, a static nuisance in view. There is no `attach` equivalent.
 
 ```bash
 ros2 service call /set_mask curobo_msgs/srv/SetMask \
@@ -99,7 +119,7 @@ ros2 service call /set_mask curobo_msgs/srv/SetMask \
     dimensions: {x: 0.04, y: 0.04, z: 0.04}}"
 ```
 
-It is nearly the same call as `attach_object` above (`type`, `pose`, `dimensions`, and the same frame convention), which makes it easy to fire both together when picking up a real, camera-observed part. One difference matters: `set_mask` re-resolves its `frame_id` **every cycle**, so the mask tracks the arm continuously, whereas `attach_object` resolves the frame **once**, at the call, and then relies on the arm's own kinematics to keep the payload correct. The two services are not coupled — nothing here calls `set_mask` on your behalf. Call `remove_mask` with the same name when you're done.
+It is nearly the same call as `attach_object` above (`type`, `pose`, `dimensions`, and the same frame convention). One difference matters: `set_mask` re-resolves its `frame_id` **every cycle**, so the mask tracks the arm continuously, whereas the attached spheres follow the arm through its own kinematics — the same visual result by a different mechanism. Call `remove_mask` with the same name when you're done.
 
 This requires the robot configuration to define an attachable link — the shipped M1013 config (`curobo_doosan/src/m1013/m1013.yml`) already does:
 

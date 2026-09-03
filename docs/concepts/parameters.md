@@ -112,6 +112,8 @@ Read by the MPC controller when it is built (first switch to `mpc`); change them
 | `robot_base_frame` | `base_0` | TF frame of the robot base |
 | `mask_margin` | `0.0` | Extra margin (m) around the robot mask |
 | `distance_threshold` | `0.05` | Distance (m) to a collision sphere below which a pixel is masked |
+| `payload_distance_threshold` | `0.02` | Same, for the spheres of an attached payload only. Tighter on purpose: those spheres were just fitted to a supplied geometry, and a 5 cm halo would erase the table at the moment of placing onto it |
+| `attached_spheres_topic` | `/unified_planner/attached_spheres` | Planner broadcast of the attached payload's spheres. Set it if the planner node was renamed; empty string disables the subscription |
 
 ## Robot YAML configuration
 

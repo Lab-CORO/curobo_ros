@@ -7,8 +7,10 @@ import numpy as np
 # ROS2
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy,
+                       QoSReliabilityPolicy)
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Float32MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 from cv_bridge import CvBridge, CvBridgeError
 import tf2_ros
@@ -75,9 +77,22 @@ class DepthMapRobotSegmentation(Node):
         # be kept (i.e. considered NOT part of the robot). Was a constructor-only
         # kwarg, unreachable from a launch file — now a runtime-settable param.
         self.declare_parameter('distance_threshold', distance_threshold)
+        # Same test, applied only to the spheres of an attached payload (see
+        # _on_attached_spheres). Tighter than the robot's own value on purpose:
+        # distance_threshold above is slack for LINK geometry/calibration error,
+        # while a payload's spheres were just fitted to a geometry the caller
+        # handed us -- and a 5 cm halo around the payload would erase the table
+        # from the map at the exact moment of placing onto it.
+        self.declare_parameter('payload_distance_threshold', 0.02)
+        # Planner-side broadcast of the attached payload's collision spheres.
+        # Empty string disables the subscription entirely.
+        self.declare_parameter('attached_spheres_topic',
+                               '/unified_planner/attached_spheres')
         self.mask_margin = self.get_parameter('mask_margin').get_parameter_value().double_value
         self.distance_threshold = self.get_parameter(
             'distance_threshold').get_parameter_value().double_value
+        self.payload_distance_threshold = self.get_parameter(
+            'payload_distance_threshold').get_parameter_value().double_value
 
         camera_names = list(
             self.get_parameter('camera_names').get_parameter_value().string_array_value)
@@ -129,6 +144,13 @@ class DepthMapRobotSegmentation(Node):
         # it follows the arm. See SetMask.srv / _shape_inside_mask.
         self._masks = {}
 
+        # Sphere slot indices of an attached payload in our OWN kinematics,
+        # once the planner has broadcast one. None while nothing is attached --
+        # the slots still exist and are still fed to the distance test, they
+        # just carry the -100 sentinel radius, which is inert there
+        # (norm - (-100) is never the minimum).
+        self._payload_idx = None
+
         # Per-(target_frame, source_frame) last-warn time for _tf_matrix, keyed
         # manually instead of relying on get_logger().warn(throttle_duration_sec=)
         # — that throttles per CALL SITE (file+line), not per key. With one
@@ -139,6 +161,11 @@ class DepthMapRobotSegmentation(Node):
 
         # Publisher for collision spheres visualization
         self.sphere_marker_pub = self.create_publisher(MarkerArray, 'collision_spheres', 10)
+        # How many sphere markers the last publish put on the wire. The count is
+        # no longer constant now that attach/detach turns payload slots on and
+        # off, so stale ids have to be explicitly deleted -- see
+        # publish_collision_spheres.
+        self._sphere_marker_count = 0
 
         # Publisher for robot point cloud (debug)
         self.robot_pointcloud_pub = self.create_publisher(PointCloud2, 'robot_pointcloud_debug', 10)
@@ -188,11 +215,93 @@ class DepthMapRobotSegmentation(Node):
         self.remove_mask_srv = self.create_service(
             RemoveObject, 'remove_mask', self.remove_mask_callback)
 
+        # Attached payload: adopt the planner's fitted spheres into our own
+        # kinematics so the depth mask carves the payload out with no set_mask
+        # call. TRANSIENT_LOCAL matches the publisher and is what makes this
+        # survive our own respawn (launched with respawn=True): a volatile
+        # subscription would come back blind mid-transport.
+        attached_topic = self.get_parameter(
+            'attached_spheres_topic').get_parameter_value().string_value
+        if attached_topic:
+            self.create_subscription(
+                Float32MultiArray, attached_topic, self._on_attached_spheres,
+                QoSProfile(depth=1,
+                           history=QoSHistoryPolicy.KEEP_LAST,
+                           reliability=QoSReliabilityPolicy.RELIABLE,
+                           durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
+            self.get_logger().info(f"Attached-payload spheres: {attached_topic}")
+
         # Segmentation is driven by each camera's depth-frame subscriber callback
         # (runs at that camera's rate), not a fixed timer — see _on_depth.
 
         self.get_logger().info(
             f"Depth map segmentation node initialized ({len(self._cameras)} camera(s))")
+
+    # ── Attached payload ─────────────────────────────────────────────────────
+
+    def _on_attached_spheres(self, msg):
+        """Adopt the planner's attached-payload spheres into our kinematics.
+
+        The planner writes those rows in place into ITS kinematics_params; this
+        node holds a SEPARATE Kinematics built from the same robot YAML, so the
+        same rows written into the same slots make our next FK carry the
+        payload -- and `_mask_pointcloud` then removes it from the depth with
+        no set_mask call at all. An empty array means detached.
+
+        The guarantee that buys: the mask drops every point within
+        payload_distance_threshold of a payload sphere, i.e. the spheres
+        DILATED -- so no voxel can survive inside the planner's own collision
+        model of the payload, by construction. A set_mask shape and the MORPHIT
+        fit are two independently specified geometries with no such relation
+        between them.
+
+        Why a subscription and not the planner calling our set_mask: the
+        planner must never block on, or even know about, this node. See
+        AttachmentServices._publish_attached_spheres.
+
+        No lock: rclpy's default executor serializes this against _on_depth,
+        so the write can't land mid-FK.
+        """
+        if not msg.layout.dim:
+            self.get_logger().warn('attached_spheres: no layout - ignoring',
+                                   throttle_duration_sec=10.0)
+            return
+        link_name = msg.layout.dim[0].label
+        kcfg = self._kin_model.kinematics_config
+        if link_name not in kcfg.link_name_to_idx_map:
+            self.get_logger().warn(
+                f"attached_spheres: link '{link_name}' is not in this node's "
+                f"kinematics - ignoring. Planner and segmentation must load "
+                f"the SAME robot_config_file.", throttle_duration_sec=10.0)
+            return
+        # Resolve the slots against OUR OWN model rather than trusting an index
+        # from the sender: a robot_config_file divergence then costs a warning
+        # instead of a mask over an unrelated region of space.
+        idx = kcfg.get_sphere_index_from_link_name(link_name)
+
+        n = len(msg.data) // 4
+        if n == 0:
+            # Detached. reset_link_spheres restores the reference centers AND
+            # radii from the robot YAML -- exact, and nothing to transmit.
+            kcfg.reset_link_spheres(link_name)
+            self.get_logger().info(f"Payload detached from '{link_name}'")
+            return
+        if n != idx.shape[0]:
+            self.get_logger().warn(
+                f"attached_spheres: got {n} rows for link '{link_name}' but "
+                f"this node's kinematics allocates {idx.shape[0]} slots - "
+                f"ignoring (mismatched robot_config_file?)",
+                throttle_duration_sec=10.0)
+            return
+
+        rows = torch.tensor(msg.data, dtype=self._ops_dtype,
+                            device=self._device).reshape(n, 4)
+        kcfg.link_spheres[:, idx, :] = rows
+        self._payload_idx = idx
+        live = int((rows[:, 3] > 0).sum())
+        self.get_logger().info(
+            f"Payload attached to '{link_name}': {live}/{n} spheres now masked "
+            f"from the depth (threshold {self.payload_distance_threshold} m)")
 
     # ── Mask services ────────────────────────────────────────────────────────
 
@@ -495,10 +604,19 @@ class DepthMapRobotSegmentation(Node):
 
         # Calculate distances from each point to each sphere
         distances = torch.norm(points - spheres_centers, dim=2) - spheres_radii
-        min_distances, _ = torch.min(distances, dim=1)
 
-        # Keep points that are farther than threshold (i.e. NOT the robot)
-        mask = min_distances > cam.distance_threshold
+        # Keep points that are farther than threshold (i.e. NOT the robot).
+        # Per-sphere rather than one scalar so an attached payload can use its
+        # own, tighter margin (see payload_distance_threshold): this is still
+        # exactly `min over spheres > threshold`, just with the threshold moved
+        # inside the reduction so it can differ per sphere.
+        thresholds = torch.full(
+            (robot_spheres.shape[0],), cam.distance_threshold,
+            dtype=self._ops_dtype, device=self._device)
+        if self._payload_idx is not None \
+                and int(self._payload_idx.max()) < robot_spheres.shape[0]:
+            thresholds[self._payload_idx] = self.payload_distance_threshold
+        mask = (distances > thresholds.unsqueeze(0)).all(dim=1)
 
         # Also drop points inside any user-defined mask shape (e.g. a grasped
         # object) so they never reach the mapper / ESDF. Uses the same base-frame
@@ -678,6 +796,12 @@ class DepthMapRobotSegmentation(Node):
         Args:
             robot_spheres: torch.Tensor of shape (N, 4) where each row is [x, y, z, radius]
         """
+        # Drop the disabled slots. Every link declared in extra_collision_spheres
+        # (attached_object) sits at the -100 sentinel radius until something is
+        # attached, which rendered as a marker with scale = -200. Latent while
+        # nothing ever wrote those rows in this node; visible and wrong the
+        # moment the payload broadcast starts feeding them.
+        robot_spheres = robot_spheres[robot_spheres[:, 3] > 0]
         robot_spheres = robot_spheres.cpu().numpy().tolist()
         marker_array = MarkerArray()
 
@@ -699,6 +823,18 @@ class DepthMapRobotSegmentation(Node):
             marker.color.g = 0.0
             marker.color.b = 0.0
             marker_array.markers.append(marker)
+
+        # Retire the ids the previous publish used and this one doesn't, or a
+        # detached payload's spheres would linger in RViz forever.
+        for i in range(len(robot_spheres), self._sphere_marker_count):
+            stale = Marker()
+            stale.header.frame_id = self.get_parameter(
+                'robot_base_frame').get_parameter_value().string_value
+            stale.header.stamp = self.get_clock().now().to_msg()
+            stale.action = Marker.DELETE
+            stale.id = i
+            marker_array.markers.append(stale)
+        self._sphere_marker_count = len(robot_spheres)
 
         self.sphere_marker_pub.publish(marker_array)
 

@@ -249,6 +249,7 @@ ros2 action send_goal /unified_planner/execute_trajectory curobo_msgs/action/Sen
 | `/mpc_predicted_path` | `nav_msgs/Path` | MPC active | Predicted end-effector path over the horizon |
 | `/mpc_goal_marker` | `visualization_msgs/Marker` | MPC active | Current MPC goal |
 | `/mpc_costs` | `curobo_msgs/msg/MpcCosts` | MPC active | Per-step cost and constraint breakdown |
+| `/unified_planner/attached_spheres` | `std_msgs/Float32MultiArray` | on attach/detach, `TRANSIENT_LOCAL` | The attached payload's collision spheres, link-local `[x, y, z, r]` rows. `dim[0].label` is the link name; an empty array means detached. Fire-and-forget: the planner never waits on a subscriber |
 
 The active control strategy adds its own topics, configured in the robot descriptor (`robots/<name>.yaml`). With the default Doosan setup: `/leeloo/execute_trajectory` (`trajectory_msgs/JointTrajectory`, published), `/leeloo/trajectory_state` (`std_msgs/Float32`, subscribed), `/dsr01/joint_states` (`sensor_msgs/JointState`, subscribed). The emulator strategy publishes `/emulator/joint_states` (`sensor_msgs/JointState`).
 
@@ -270,6 +271,7 @@ The active control strategy adds its own topics, configured in the robot descrip
 | Publishes | `/collision_spheres` | `visualization_msgs/MarkerArray` |
 | Publishes | `/robot_pointcloud_debug` | `sensor_msgs/PointCloud2` |
 | Service | `/set_mask` | `curobo_msgs/srv/SetMask` |
+| Subscribes | `/unified_planner/attached_spheres` (param `attached_spheres_topic`) | `std_msgs/Float32MultiArray` |
 | Service | `/remove_mask` | `curobo_msgs/srv/RemoveObject` |
 
 ## Checking node readiness

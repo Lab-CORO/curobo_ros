@@ -97,8 +97,11 @@ It computes the robot's collision spheres at the current joint state, masks ever
 | Publishes | `/masked_depth_image` | The depth image with the robot removed |
 | Publishes | `/collision_spheres`, `/robot_pointcloud_debug` | Debug visualization |
 | Services | `/set_mask`, `/remove_mask` | Extra user-defined masks, optionally riding TF frames |
+| Subscribes | `/unified_planner/attached_spheres` | The planner's attached payload, masked out automatically — see below |
 
 To use it, point the camera entry's `topic` at `/masked_depth_image` instead of the raw depth topic. Key parameters: `robot_base_frame` (default `base_0`), `mask_margin`.
+
+It also subtracts an **attached payload**. The planner broadcasts the payload's fitted collision spheres on every attach/detach; this node writes them into its own copy of the kinematics, so a grasped part is carved out of the depth exactly like the arm is, with no `set_mask` call ([Tutorial 3](03-collision-objects.md)). Set `attached_spheres_topic` if you renamed the planner node — a wrong value fails silently. `payload_distance_threshold` (default `0.02`) is the payload's own keep-distance, tighter than the robot's `distance_threshold` so that placing the part onto a surface does not erase that surface from the map.
 
 ## Tuning
 
