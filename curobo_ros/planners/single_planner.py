@@ -540,3 +540,20 @@ class SinglePlanner(TrajectoryPlanner):
         # valid (if arbitrary) identity here: has_solver() already gates out
         # the not-yet-built case before a caller would compare identities.
         return id(self.motion_planner)
+
+    def attachment_managers(self) -> list:
+        """cuRobo AttachmentManager for the shared MotionPlanner, or [].
+
+        MotionPlanner.attachment_manager forwards to
+        trajopt_solver.attachment_manager, but TrajOptSolver composes
+        SolverCore and doesn't re-expose it -- reach into .core instead.
+        Moved here from AttachmentServices._attachment_manager(), which this
+        override now replaces.
+        """
+        mp = self.motion_planner
+        if mp is None:
+            return []
+        am = getattr(mp, 'attachment_manager', None)  # property may raise -> None
+        if am is None:
+            am = mp.trajopt_solver.core.attachment_manager
+        return [am]

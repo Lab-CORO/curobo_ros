@@ -24,6 +24,7 @@ import traceback
 
 import rclpy
 import torch
+import tf2_ros
 from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
@@ -242,7 +243,15 @@ class UnifiedPlannerNode(Node):
         self._graph_capture_pending = True
         self._graph_capture_pending_lock = threading.Lock()
 
-        # Attach/detach a scene obstacle to the arm's attached_object link
+        # TF buffer for AttachmentServices: AttachObject.srv's header.frame_id
+        # lets a caller express the payload pose in any TF frame (typically
+        # the gripper link) instead of only the planner's own base frame.
+        # Node-level rather than inside AttachmentServices: a TransformListener
+        # subscribes to /tf and has no business living inside a service.
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # Attach/detach a payload to the arm's attached_object link
         # (standalone feature — pre-positioned objects, simulation, tests).
         # Registers its own attach_object/detach_object services.
         self.attachment_services = AttachmentServices(self, self.config_wrapper_motion)
@@ -356,8 +365,32 @@ class UnifiedPlannerNode(Node):
             # The wrapper sets both self.motion_planner and self.motion_gen.
             SinglePlanner.set_motion_planner(self.motion_planner)
             self.get_logger().info("  -> MotionPlanner ready and shared with SinglePlanner")
+            self.replay_attachment()
         else:
             self.get_logger().info("  -> MotionPlanner already initialized (cache)")
+
+    def replay_attachment(self, planner=None):
+        """Re-apply the currently attached object's collision spheres onto a
+        solver just built or rebuilt (fresh MotionPlanner from _warmup_classic
+        / rebuild_solvers_for_cache_change, or a reactive controller's fresh
+        solver from ReactiveController.ensure_solver()).
+
+        Resolved lazily via getattr rather than a direct
+        self.attachment_services.reapply() call: the main call site is
+        ReactiveController.ensure_solver() in reactive_controller.py, which
+        has no import path back to this node module (and shouldn't grow one
+        just for this). No-op if attachment_services isn't ready yet (also
+        covers a hypothetical call before __init__ reaches line ~248) or
+        nothing is attached. Never raises -- a replay failure must not fail
+        the solver build/rebuild that triggered it.
+        """
+        attach_svc = getattr(self, 'attachment_services', None)
+        if attach_svc is None:
+            return
+        try:
+            attach_svc.reapply(planner)
+        except Exception as e:
+            self.get_logger().warn(f"replay_attachment failed: {e}")
 
     def _ensure_ground_plane(self):
         """No-op: the ground is the `floor` cuboid of the loaded world file.
@@ -583,6 +616,14 @@ class UnifiedPlannerNode(Node):
                 self.planner_manager.get_planner('lbfgs').rebuild_solver()
             if self.retargeter is not None:
                 self.planner_manager.get_planner('retarget').rebuild_solver()
+
+            # Covers the classic/multi_point/joint_space MotionPlanner rebuild
+            # above, which (unlike the reactive rebuild_solver() calls just
+            # above -- routed through ReactiveController.ensure_solver(),
+            # which already replays) has no per-controller replay hook of its
+            # own. Redundant-but-harmless for the reactive solvers: reapply()
+            # is idempotent.
+            self.replay_attachment()
 
             # Rebuilt solvers hold no graph yet — their first step() will
             # capture, so mark it pending (see take_graph_capture_pending).

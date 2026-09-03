@@ -175,26 +175,42 @@ def _compute_sphere_distance(wrapper, node, response):
     `get_sphere_distance` takes the full `KinematicsState`, a pre-allocated
     `CollisionBuffer`, and `weight`/`activation_distance` tensors — there is
     no `compute_esdf` kwarg.
+
+    Resolved through AttachmentServices.active_manager() rather than an
+    explicit motion_planner/mpc/... chain: that method already walks the same
+    catalog attach_object does (classic/multi_point/joint_space's shared
+    MotionPlanner, plus mpc and lbfgs — retarget excluded), preferring
+    whichever planner is currently active. The old chain
+    (motion_planner or mpc or ik_solver) silently returned nothing for an
+    lbfgs-only session (node.ik_solver never actually exists — dead code) and,
+    even when it found a solver, read spheres from wrapper.kin_model: this
+    class's own robot_model_manager kinematics, which attach() never writes
+    to. Reusing active_manager() fixes both: am._kinematics IS the exact
+    KinematicsParams tensor attach() writes into, so this distance reflects
+    the attached payload too, not just the bare robot.
     """
+    attach_svc = getattr(node, 'attachment_services', None)
+    am = attach_svc.active_manager() if attach_svc is not None else None
+    if am is None:
+        response.nb_sphere = 0
+        response.data = []
+        return response
+
+    kin_model = am._kinematics
+    scene_collision_checker = am._scene_collision
+
     q_js = JointState(
         position=torch.tensor(
             wrapper.robot.get_joint_pose(),
             dtype=wrapper._ops_dtype,
             device=wrapper._device,
         ),
-        joint_names=wrapper.kin_model.joint_names,
+        joint_names=kin_model.joint_names,
     )
-    kinematics_state = wrapper.kin_model.compute_kinematics(q_js)
+    kinematics_state = kin_model.compute_kinematics(q_js)
     # v2: `robot_spheres` replaces `link_spheres_tensor`, shape already [B, H, N, 4]
     robot_spheres = kinematics_state.robot_spheres
 
-    solver = getattr(node, 'motion_planner', None) or getattr(node, 'mpc', None) or getattr(node, 'ik_solver', None)
-    if solver is None:
-        response.nb_sphere = 0
-        response.data = []
-        return response
-
-    scene_collision_checker = getattr(solver, 'scene_collision_checker', None)
     if scene_collision_checker is None or not hasattr(scene_collision_checker, 'get_sphere_distance'):
         response.nb_sphere = 0
         response.data = []

@@ -133,9 +133,23 @@ class ReactiveController(TrajectoryPlanner):
     # ------------------------------------------------------------------
 
     def ensure_solver(self):
-        """Build the cuRobo solver once, lazily, from the shared context."""
+        """Build the cuRobo solver once, lazily, from the shared context.
+
+        Single funnel for both first-time lazy construction AND
+        rebuild_solver() (which just clears self.solver and calls this) --
+        replaying any currently-attached object's spheres here covers both:
+        a solver that never saw the attach because it didn't exist yet, and
+        one that lost its sphere state to a rebuild.
+        """
         if self.solver is None:
             self.solver = self.build_solver()
+            try:
+                replay = getattr(self.node, 'replay_attachment', None)
+                if replay is not None:
+                    replay(self)
+            except Exception as e:
+                self.node.get_logger().warn(
+                    f"{self.get_planner_name()}: attachment replay failed: {e}")
         return self.solver
 
     def rebuild_solver(self):
@@ -202,6 +216,28 @@ class ReactiveController(TrajectoryPlanner):
         """TrajectoryPlanner override: each reactive controller owns its own
         """
         return self.solver is not None
+
+    def attachment_managers(self) -> list:
+        """TrajectoryPlanner override: this controller's cuRobo AttachmentManager(s).
+
+        Covers MPPIController and LBFGSController (both build a
+        ModelPredictiveControl / MPCSolver, exposing .core and .ik_solver)
+        without either needing its own override. solver.ik_solver.core and
+        solver.core resolve to the SAME KinematicsParams in this build (see
+        AttachmentServices for the analysis) -- included anyway for
+        forward-compatibility, deduped by the caller on
+        id(am.kinematics_params).
+
+        RetargetController overrides this to [] -- MotionRetargeter has no
+        .core and this default would raise on it.
+        """
+        if self.solver is None:
+            return []
+        managers = [self.solver.core.attachment_manager]
+        ik_solver = getattr(self.solver, 'ik_solver', None)
+        if ik_solver is not None:
+            managers.append(ik_solver.core.attachment_manager)
+        return managers
 
 
     def _set_target(self, raw) -> GoalToolPose:

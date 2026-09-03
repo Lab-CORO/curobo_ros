@@ -195,3 +195,14 @@ class TrajectoryPlanner(ABC):
         scene into that one shared solver three times per refresh.
         """
         return id(self)
+
+    def attachment_managers(self) -> list:
+        """cuRobo AttachmentManager(s) whose link_spheres this planner's solver reads.
+
+        Default []: nothing to attach to without a solver. Zero or MORE than one
+        is normal. Callers dedup on id(am.kinematics_params) -- that tensor is
+        what attach actually writes, and two managers can legitimately share one
+        (e.g. MPCSolver.core and MPCSolver.ik_solver both resolve to the same
+        already-resolved RobotCfg, see AttachmentServices for the full analysis).
+        """
+        return []

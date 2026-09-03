@@ -44,12 +44,10 @@ tests:
   - name: "02 Add second object"
     service: "/unified_planner/add_object"
     type: curobo_msgs/srv/AddObject
-    # 4 cm cube: this is the object case 05 attaches, so it has to be both a
-    # plausible grasped payload and small enough to fit the attach link's
-    # sphere budget (extra_collision_spheres.attached_object = 4 in m1013.yml,
-    # ~= a 4 cm cube). A larger cube would be attached as a coarse truncated
-    # approximation, making case 05 pass on a model that does not represent
-    # the real geometry.
+    # An ordinary scene obstacle -- unrelated to the attach tested in case 05,
+    # which now carries its own inline geometry and never touches the Scene
+    # (see AttachmentServices). 4 cm is arbitrary here; case 05 has its own
+    # size rationale (attach link sphere budget).
     data: {type: 0,
             name: "cube2",
             mesh_file_path: "",
@@ -84,41 +82,139 @@ tests:
         size_z: 40
         data: {$len: 64000, $sum_min: 500}
 
-  - name: "05 Attach object"
+  - name: "05 Attach inline geometry"
     service: "/unified_planner/attach_object"
     type: curobo_msgs/srv/AttachObject
-    # Attach cube2 at the arm's current joint configuration (home pose).
-    # The attachment manager fits collision spheres onto the obstacle geometry
-    # and disables the world obstacle to avoid double-counting. cube2 is sized
-    # to fit within the attach link's sphere budget, so this asserts a faithful
-    # collision model, not a truncated one (a truncated fit still succeeds but
-    # logs a warning -- see AttachmentServices.attach).
-    # timeout=90: attach triggers motion planner warmup if not yet done (~25s
-    # idle, ~37s throttled), on top of MorphIt's stochastic sphere-fit retries
-    # -- this is the known flake documented in docs/getting-started/testing.md.
-    data: {object_name: "cube2"}
+    # No preceding add_object: the payload never enters the Scene (see
+    # AttachmentServices) -- its geometry travels entirely inline in this
+    # request. 4 cm to fit within the attach link's 4 sphere slots
+    # (extra_collision_spheres.attached_object in m1013.yml) -- beyond that
+    # the attach still succeeds but on a truncated model, and the test would
+    # be validating a geometry that isn't the payload's real shape.
+    # A normalized quaternion is required: this pose feeds an FK composition,
+    # unlike the (0,0,0,0) tolerated elsewhere in this file by add_object.
+    # header.frame_id = the gripper link (tool_frames[0] in m1013.yml): 5 cm
+    # in front of the flange, independent of the arm's configuration -- what
+    # makes the expected result independent of the home pose, and therefore
+    # testable without calibrating a world-frame value. TF is available under
+    # test: gen_traj.launch.py starts robot_state_publisher + joint_state_publisher.
+    # frame_id: "" would target the base frame and skip the TF lookup entirely.
+    data: {header: {frame_id: "dsr01/link6"}, type: 0,
+            pose: {position: {x: 0.0, y: 0.0, z: 0.05},
+                   orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}},
+            dimensions: {x: 0.04, y: 0.04, z: 0.04}}
     timeout: 90.0
-    expect: {success: True, message: "Attached 'cube2'"}
+    expect: {success: True, message: "Attached payload to link 'attached_object'"}
 
-  - name: "06 Detach object"
+  - name: "06 Switch to LBFGS while attached"
+    service: "/unified_planner/set_planner"
+    type: curobo_msgs/srv/SetPlanner
+    # The inline payload from case 05 is attached under Classic (the only
+    # planner warm at startup). Switching to LBFGS exercises the replay hook
+    # (ReactiveController.ensure_solver() -> UnifiedPlannerNode.replay_attachment()
+    # -> AttachmentServices.reapply()) that carries the attach onto a solver
+    # built AFTER attach_object was called -- before this feature, LBFGS never
+    # saw a payload attached under any other planner at all.
+    # planner_type: 2 -> 'lbfgs' (PlannerFactory._PLANNER_CATALOG); the
+    # SetPlanner.srv constant for this id is still named BATCH, a naming
+    # leftover from before LBFGS replaced the unimplemented batch planner.
+    # timeout=90: LBFGS's solver does not exist yet at this point in the
+    # suite (only Classic was warmed at startup), so this is the one call
+    # here that pays a full solver build (~25-37s, see case 01).
+    data: {planner_type: 2}
+    timeout: 90.0
+    expect:
+      success: True
+      previous_planner: "Classic Motion Generation"
+      current_planner: "LBFGS Model Predictive Control"
+      message: "Successfully switched to LBFGS Model Predictive Control"
+
+  - name: "07 Attached spheres visible to LBFGS"
+    service: "/unified_planner/get_collision_distance"
+    type: curobo_msgs/srv/GetCollisionDistance
+    # Regression test for the bug this locks in: get_collision_distance used
+    # to resolve its solver from a hardcoded motion_planner/mpc/ik_solver
+    # chain that never included lbfgs (node.ik_solver doesn't even exist --
+    # dead code), so this call returned nb_sphere=0 for any lbfgs-only
+    # session. It now resolves through AttachmentServices.active_manager(),
+    # the currently ACTIVE planner (LBFGS since case 06).
+    # nb_sphere=17 is a structural constant of m1013.yml, independent of
+    # whether a payload is actually attached: 13 fixed arm spheres
+    # (collision_spheres: link1=1, link2=5, link3=1, link4=4, link5=1,
+    # link6=1, counted programmatically, not by eye) + 4 slots reserved for
+    # attached_object (extra_collision_spheres). So this proves the service
+    # resolves LBFGS's real kinematics at all (17, not 0) -- it does not by
+    # itself prove the payload's spheres are populated (case 05 already
+    # asserts the attach call itself succeeded).
+    data: {}
+    expect:
+      nb_sphere: 17
+      data: {$len: 17}
+
+  - name: "09 Add object while attached"
+    service: "/unified_planner/add_object"
+    type: curobo_msgs/srv/AddObject
+    # The payload attached in case 05 lives only as fitted spheres on the arm
+    # -- it was never added to the Scene, so a world push here (add_object ->
+    # ObstacleManager's world-changed notification -> update_all_solvers_world
+    # -> SceneCollision.load_collision_model -> clear()+re-add) has nothing of
+    # the payload's to double-count by construction (the bug this design
+    # replaces -- see the plan's Context). Placed far from the robot
+    # (mapper_extent_xyz is [2,2,2] centered) so it cannot itself perturb
+    # collision_distance's values -- this case only re-exercises the world-push
+    # code path with an attach live, to catch any future regression that
+    # routes the payload back through the Scene.
+    data: {type: 0,
+            name: "trigger",
+            mesh_file_path: "",
+            pose: {position: {x: -0.8, y: 0.0, z: -0.8},
+                  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 0.0}},
+            dimensions: {x: 0.05, y: 0.05, z: 0.05},
+            color: {r: 0.0, a: 0.0}
+          }
+    expect: {success: True,
+             message: "Object 'trigger' added (3 cuboids, 0 meshes)"}
+
+  - name: "10 Collision distance survives a world push"
+    service: "/unified_planner/get_collision_distance"
+    type: curobo_msgs/srv/GetCollisionDistance
+    # Deliberately weak: nb_sphere is a structural constant (see case 07),
+    # so this only proves get_collision_distance keeps resolving LBFGS's
+    # kinematics cleanly after a world push with an attach live -- it does
+    # NOT assert that the attached_object sphere distances themselves are
+    # unaffected by the new obstacle. Asserting that needs either a live run
+    # to calibrate a threshold or a $min/$max-style generator operator --
+    # this environment has neither ros2_test_compose installed to check nor
+    # a spare live session to measure against (see
+    # docs/getting-started/testing.md). The plan's Vérification section has
+    # the manual procedure instead.
+    data: {}
+    expect:
+      nb_sphere: 17
+      data: {$len: 17}
+
+  - name: "11 Detach object"
     service: "/unified_planner/detach_object"
     type: std_srvs/srv/Trigger
-    # Releases the attached object, re-enables it in the world scene.
+    # Resets the attached_object link's spheres. Nothing is injected into the
+    # world -- the payload was never in the Scene to begin with (see
+    # AttachmentServices.detach).
     data: {}
-    expect: {success: True, message: "Detached 'cube2'"}
+    expect: {success: True, message: "Detached payload"}
 
-  - name: "07 Remove object"
+  - name: "12 Remove object"
     service: "/unified_planner/remove_object"
     type: curobo_msgs/srv/RemoveObject
     data: {name: "cube"}
     expect: {success: True,
              message: "Object 'cube' removed from cuboids"}
 
-  - name: "08 Remove all objects"
+  - name: "13 Remove all objects"
     service: "/unified_planner/remove_all_objects"
     type: std_srvs/srv/Trigger
+    # cube2 (case 02) and trigger (case 09) are still in the scene -- only
+    # 'cube' was individually removed (case 12).
     data: {}
     expect: {success: True,
-            message: "All 1 obstacles removed"}
-
+            message: "All 2 obstacles removed"}
 

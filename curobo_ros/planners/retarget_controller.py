@@ -113,6 +113,15 @@ class RetargetController(ReactiveController):
         if local_ik is not None:
             local_ik.update_world(scene)
 
+    def attachment_managers(self) -> list:
+        """Out of scope for object-attach: MotionRetargeter has no .core, so
+        the ReactiveController default would raise on it. Known full traversal
+        for a future extension: solver._global_ik_solver, plus either
+        solver._local_ik_solver or solver._mpc_solver depending on
+        retarget_use_mpc -- each exposing its own .core.attachment_manager.
+        """
+        return []
+
     # ---- helpers --------------------------------------------------------------
 
     def _tool_frame(self) -> str:

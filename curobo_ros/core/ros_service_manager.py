@@ -190,16 +190,15 @@ class RosServiceManager:
                 gpu_lock.release()
 
     def publish_scene_obstacles(self, node):
-        """Publish scene obstacles as a MarkerArray, recolouring the currently
-        attached (→ disabled by attach) obstacle so attach/detach is visible.
+        """Publish scene obstacles as a MarkerArray.
 
         Obstacle attrs follow curobo/add_object: cuboid has ``.dims`` + ``.pose``
         ([x,y,z,qw,qx,qy,qz]); sphere/cylinder have ``.radius`` (cylinder also
-        ``.height``). The attached obstacle's name is exposed by AttachmentServices.
+        ``.height``). An attached payload never appears here -- AttachObject.srv
+        carries its geometry inline and it is never added to the Scene (see
+        AttachmentServices), so there is nothing to recolour.
         """
         scene = self.obstacle_manager.get_scene()
-        attach_svc = getattr(node, 'attachment_services', None)
-        attached_name = attach_svc.attached_name if attach_svc is not None else None
 
         marker_array = MarkerArray()
         clear = Marker()
@@ -238,12 +237,7 @@ class RosServiceManager:
                     d = 2.0 * float(getattr(obs, 'radius', 0.05))
                     m.scale.x = m.scale.y = d
                     m.scale.z = float(getattr(obs, 'height', d))
-                if attached_name is not None and getattr(obs, 'name', None) == attached_name:
-                    # attached → disabled world obstacle: grey, translucent
-                    m.color.r, m.color.g, m.color.b, m.color.a = 0.5, 0.5, 0.5, 0.35
-                else:
-                    # active obstacle: orange
-                    m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 0.6
+                m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 0.6
                 marker_array.markers.append(m)
 
         self.scene_obstacle_pub.publish(marker_array)
@@ -322,27 +316,47 @@ class RosServiceManager:
         """
         Publishes the robot's collision spheres as markers for visualization in RViz.
         Useful for debugging and ensuring proper masking of the robot in the point cloud.
+
+        Runs on a 2 Hz timer independent of planning, and (like
+        _publish_sparse_voxel_grid) queries kinematics on the GPU via
+        compute_kinematics -- without the same non-blocking gpu_lock guard, it
+        will eventually overlap a MotionGen/MPC CUDA graph capture and
+        invalidate it (cudaErrorStreamCaptureInvalidated), poisoning the whole
+        process's CUDA context until restart. Enabling this viz is also the
+        natural first thing to do right before/after an attach_object call, so
+        the race is not a corner case here.
         """
         if not self.collision_spheres_enabled:
             return
 
-        # Source spheres from the MotionPlanner's kinematics when available — it
-        # carries attaches (our robot_model_manager kin_model does not), so the
-        # fitted attached-object spheres show and ride the arm. attached_mask
-        # flags them for a distinct colour. Fall back to robot_model_manager.
-        kin = self._attachment_kinematics()
-        if kin is not None:
-            try:
-                robot_spheres, attached_mask = \
-                    self.robot_model_manager.get_collision_spheres_with_attached(kin)
-            except Exception as e:
-                self.node.get_logger().debug(
-                    f"attached-sphere viz fallback: {e}", throttle_duration_sec=5.0)
+        gpu_lock = getattr(node, 'gpu_lock', None)
+        if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
+            node.get_logger().warn(
+                "gpu_lock busy (CUDA graph capture in progress) - skipping "
+                "this collision sphere publish cycle",
+                throttle_duration_sec=5.0)
+            return  # planner is capturing a CUDA graph — skip this cycle
+        try:
+            # Source spheres from the MotionPlanner's kinematics when available — it
+            # carries attaches (our robot_model_manager kin_model does not), so the
+            # fitted attached-object spheres show and ride the arm. attached_mask
+            # flags them for a distinct colour. Fall back to robot_model_manager.
+            kin = self._attachment_kinematics()
+            if kin is not None:
+                try:
+                    robot_spheres, attached_mask = \
+                        self.robot_model_manager.get_collision_spheres_with_attached(kin)
+                except Exception as e:
+                    self.node.get_logger().debug(
+                        f"attached-sphere viz fallback: {e}", throttle_duration_sec=5.0)
+                    robot_spheres = self.robot_model_manager.get_collision_spheres()
+                    attached_mask = [False] * len(robot_spheres)
+            else:
                 robot_spheres = self.robot_model_manager.get_collision_spheres()
                 attached_mask = [False] * len(robot_spheres)
-        else:
-            robot_spheres = self.robot_model_manager.get_collision_spheres()
-            attached_mask = [False] * len(robot_spheres)
+        finally:
+            if gpu_lock is not None:
+                gpu_lock.release()
 
         # Create marker array — prepend a DELETEALL to clear stale markers
         marker_array = MarkerArray()
@@ -375,10 +389,17 @@ class RosServiceManager:
         self.publish_collision_spheres_pub.publish(marker_array)
 
     def _attachment_kinematics(self):
-        """The MotionPlanner's kinematics (carries attached-object spheres), or
-        None if the planner/attachment_services isn't ready."""
+        """Kinematics carrying attached-object spheres (from whichever solver
+        is currently active), or None if attachment_services isn't ready or
+        no solver has one yet.
+
+        No longer gated on motion_planner being non-None: that would make
+        this viz mute for the entire duration of an MPC-only or LBFGS-only
+        session (no MotionPlanner ever built), even though
+        AttachmentServices.kinematics() already resolves the active planner's
+        own manager independently of MotionPlanner.
+        """
         attach_svc = getattr(self.node, 'attachment_services', None)
-        mp = getattr(self.node, 'motion_planner', None)
-        if attach_svc is None or mp is None:
+        if attach_svc is None:
             return None
         return attach_svc.kinematics()

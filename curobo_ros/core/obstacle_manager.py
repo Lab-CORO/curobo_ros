@@ -15,6 +15,55 @@ from curobo._src.geom.collision.collision_scene import SceneCollisionCfg, SceneC
 from curobo._src.geom.collision.buffer_collision import CollisionBuffer
 from curobo.types import DeviceCfg
 
+# Mirrors AddObject.srv / AttachObject.srv's `int8` enum.
+CUBOID, SPHERE, CAPSULE, CYLINDER, MESH = 0, 1, 2, 3, 4
+
+
+def build_obstacle(name, obj_type, pose, dims, color, mesh_file_path=""):
+    """(bucket_name, Obstacle) from primitive parameters. Pure -- never
+    touches a Scene, so it is equally usable to append a new world obstacle
+    (add_object) or to build a synthetic one for AttachmentServices.attach()
+    that is never inserted anywhere.
+
+    Dimensions interpretation by type, identical to AddObject.srv/AttachObject.srv:
+      CUBOID  -> [dx, dy, dz]
+      CAPSULE -> [radius, height, _]
+      CYLINDER-> [radius, height, _]
+      SPHERE  -> [radius, _, _]
+      MESH    -> [scale_x, scale_y, scale_z]
+
+    Raises ValueError for an unrecognized type or (MESH only) a missing file.
+    """
+    if obj_type == CUBOID:
+        return 'cuboid', Cuboid(name=name, pose=pose, dims=dims, color=color)
+
+    if obj_type == CAPSULE:
+        return 'capsule', Capsule(
+            name=name, pose=pose,
+            base=[0, 0, 0], tip=[0, 0, dims[1]],
+            radius=dims[0], color=color,
+        )
+
+    if obj_type == CYLINDER:
+        return 'cylinder', Cylinder(
+            name=name, pose=pose,
+            radius=dims[0], height=dims[1], color=color,
+        )
+
+    if obj_type == SPHERE:
+        return 'sphere', Sphere(name=name, pose=pose, radius=dims[0], color=color)
+
+    if obj_type == MESH:
+        if not os.path.exists(mesh_file_path):
+            raise ValueError(f'Mesh file not found: {mesh_file_path}')
+        return 'mesh', Mesh(
+            name=name, pose=pose,
+            file_path=mesh_file_path,
+            scale=dims, color=color,
+        )
+
+    raise ValueError(f'Object type "{obj_type}" not recognized')
+
 
 class ObstacleManager:
     """
@@ -439,53 +488,20 @@ class ObstacleManager:
         color = [request.color.r, request.color.g, request.color.b, request.color.a]
 
         try:
-            match request.type:
-                case request.CUBOID:
-                    self._append('cuboid', Cuboid(name=request.name, pose=pose, dims=dims, color=color))
-
-                case request.CAPSULE:
-                    self._append('capsule', Capsule(
-                        name=request.name, pose=pose,
-                        base=[0, 0, 0], tip=[0, 0, dims[1]],
-                        radius=dims[0], color=color,
-                    ))
-
-                case request.CYLINDER:
-                    self._append('cylinder', Cylinder(
-                        name=request.name, pose=pose,
-                        radius=dims[0], height=dims[1], color=color,
-                    ))
-
-                case request.SPHERE:
-                    self._append('sphere', Sphere(
-                        name=request.name, pose=pose, radius=dims[0], color=color,
-                    ))
-
-                case request.MESH:
-                    if not os.path.exists(request.mesh_file_path):
-                        response.success = False
-                        response.message = f'Mesh file not found: {request.mesh_file_path}'
-                        return response
-                    self._append('mesh', Mesh(
-                        name=request.name, pose=pose,
-                        file_path=request.mesh_file_path,
-                        scale=dims, color=color,
-                    ))
-                    node.get_logger().info(
-                        f"Added MESH obstacle '{request.name}' "
-                        f"(handled natively by Mapper TSDF in v2)"
-                    )
-
-                case _:
-                    response.success = False
-                    response.message = f'Object type "{request.type}" not recognized'
-                    return response
-
+            bucket, obstacle = build_obstacle(
+                request.name, request.type, pose, dims, color, request.mesh_file_path)
         except Exception as e:
             response.success = False
             response.message = f'Failed to add obstacle: {e}'
             node.get_logger().error(response.message)
             return response
+
+        self._append(bucket, obstacle)
+        if bucket == 'mesh':
+            node.get_logger().info(
+                f"Added MESH obstacle '{request.name}' "
+                f"(handled natively by Mapper TSDF in v2)"
+            )
 
         response.success = True
         response.message = (
