@@ -62,7 +62,7 @@ result = planner.plan_pose(goal, start_state, max_attempts=5)
 
 Waypoint sequences use the `L` dimension of the batched tensor; goalsets use `G`.
 
-**MPC.** `ModelPredictiveControl(ModelPredictiveControlCfg.create(robot=…, scene_model=…, optimization_dt=…, num_control_points=…))`, then `optimize_next_action(current_state)` in the control loop. See [MPC Implementation](concepts/mpc-implementation.md) for how `curobo_ros` wraps it (`ReactiveController` / `MPCController`).
+**MPC.** `ModelPredictiveControl(ModelPredictiveControlCfg.create(robot=…, scene_model=…, optimization_dt=…, num_control_points=…))`, then `optimize_next_action(current_state)` in the control loop. See [MPC Implementation](concepts/mpc-implementation.md) for how `curobo_ros` wraps it (`ReactiveController` / `MPPIController` / `LBFGSController`).
 
 **Perception.** Depth frames are pushed: `mapper.integrate(CameraObservation(depth, intrinsics, pose))`; solvers read the resulting ESDF through the shared `Scene`. No nvblox, no `MeshBloxilization` — a `Mesh` goes straight into the `Scene`.
 

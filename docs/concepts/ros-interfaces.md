@@ -2,12 +2,14 @@
 
 This page is the normative reference for every topic, service, and action exposed by `curobo_ros`. All interface types come from the companion package [`curobo_msgs`](https://github.com/Lab-CORO/curobo_msgs) unless stated otherwise.
 
-The package installs two executables:
+The package installs four executables — two nodes, and two diagnostic tools that talk to a running planner:
 
 | Executable | Node name | Role |
 |---|---|---|
 | `curobo_trajectory_planner` | `unified_planner` | Motion planning, obstacle management, IK/FK, robot execution |
 | `robot_segmentation` | `curobo_depth_map_robot_segmentation` | Removes the robot from depth images before perception |
+| `benchmark_voxel_grid` | *(tool)* | Times `get_voxel_grid` at a chosen `voxel_size` — see [Parameters](parameters.md) |
+| `run_pose_matrix` | `pose_matrix_runner` | Replays a fixed matrix of Cartesian goals against the reactive controller, so a tuning change can be attributed |
 
 All planner interfaces are namespaced under the node name: `/unified_planner/<name>`.
 
@@ -52,8 +54,8 @@ Type: `curobo_msgs/srv/SetPlanner`. Switches the active planner. Request field `
 |---|---|---|
 | `CLASSIC` | 0 | Implemented (default) |
 | `MPC` | 1 | Implemented (closed-loop reactive control, MPPI) |
-| `LBFGS` | 2 | Implemented (closed-loop reactive control, LBFGS + B-spline, was `BATCH`/unimplemented) |
-| `CONSTRAINED` | 3 | **Not implemented** — the call fails (use `trajectory_constraints` on `generate_trajectory` instead) |
+| `BATCH` | 2 | Implemented. The constant still carries its historical name in `SetPlanner.srv`, but ID 2 now selects `LBFGSController` (closed-loop reactive control, L-BFGS + B-spline) — planner key `lbfgs` |
+| *(no constant)* | 3 | No constant is defined for this ID, and the catalog has no entry: the call fails. Use `trajectory_constraints` on `generate_trajectory` instead |
 | `MULTIPOINT` | 4 | Implemented |
 | `JOINT_SPACE` | 5 | Implemented |
 | `RETARGET` | 6 | Implemented (IK-based teleoperation follower) |
@@ -178,7 +180,7 @@ Type: `curobo_msgs/srv/IkBatch`. Same as `ik` with arrays: `poses[]` in, `joint_
 
 ### `/unified_planner/fk`
 
-Type: `curobo_msgs/srv/Fk`. Request: `joint_states` (`sensor_msgs/JointState[]`). Response: `poses` (`geometry_msgs/Pose[]`), `joint_states_valid`, `error_msg`.
+Type: `curobo_msgs/srv/Fk`. Request: `joint_states` (`sensor_msgs/JointState[]`). Response: `poses` (`geometry_msgs/Pose[]`), `poses_valid` (`std_msgs/Bool[]`, one per input configuration — true when it is free of self-collision, free of scene collision, *and* within joint limits), `error_msg`.
 
 See [Tutorial 6](../tutorials/06-ik-fk-services.md) for worked examples.
 

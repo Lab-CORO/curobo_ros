@@ -13,7 +13,7 @@ The **unified planner** is the central node of `curobo_ros` (node name `unified_
 | `joint_space` | 5 | Open-loop | Goal expressed directly in joint space |
 | `retarget` | 6 | Closed-loop | IK-based pose-stream follower for teleoperation |
 
-Enum ID 3 (`CONSTRAINED`) exists in `SetPlanner.srv` but is **not implemented** — switching to it fails. Orientation/position constraints are available on the classic planner through the `trajectory_constraints` request field instead.
+Enum ID 3 has no constant in `SetPlanner.srv` and no catalog entry — switching to it fails. Orientation/position constraints are available on the classic planner through the `trajectory_constraints` request field instead.
 
 The catalog lives in one place, `PlannerFactory._PLANNER_CATALOG` (`curobo_ros/planners/planner_factory.py`); `GetPlanners` reflects it at runtime, so the service is always authoritative:
 
@@ -26,7 +26,7 @@ ros2 service call /unified_planner/get_planners curobo_msgs/srv/GetPlanners
 Every planner declares an `ExecutionMode` that changes the behavior of the `execute_trajectory` action:
 
 - **`OPEN_LOOP`** (`classic`, `multi_point`, `joint_space`): plan once, stream the interpolated trajectory to the robot, succeed when it ends. Feedback carries `step_progression` (0→1).
-- **`CLOSED_LOOP`** (`mpc`, `retarget`): the action starts a servo loop that re-solves continuously, tracks `position_error`, and **keeps running after reaching the goal** (feedback `on_target: true`, state `ON_TARGET`). Retarget the goal live by publishing to `/unified_planner/mpc_goal`; stop by cancelling the goal. See [MPC Implementation](mpc-implementation.md).
+- **`CLOSED_LOOP`** (`mpc`, `lbfgs`, `retarget`): the action starts a servo loop that re-solves continuously, tracks `position_error`, and **keeps running after reaching the goal** (feedback `on_target: true`, state `ON_TARGET`). Retarget the goal live by publishing to `/unified_planner/mpc_goal`; stop by cancelling the goal. See [MPC Implementation](mpc-implementation.md).
 
 ## Two base classes
 
@@ -76,7 +76,8 @@ curobo_ros/planners/
 ├── multi_point_planner.py
 ├── joint_space_planner.py
 ├── reactive_controller.py   # closed-loop base (servo loop)
-├── mpc_planner.py           # MPCController
+├── mppi_planner.py          # MPPIController      (planner key `mpc`)
+├── lbfgs_planner.py         # LBFGSController     (planner key `lbfgs`)
 ├── retarget_controller.py   # RetargetController
 └── planner_factory.py       # catalog + PlannerManager
 ```

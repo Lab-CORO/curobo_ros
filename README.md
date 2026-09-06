@@ -16,7 +16,7 @@ GPU-accelerated motion planning for **ROS 2** — powered by [cuRobo](https://cu
 ## Features
 
 - **Unified planner node** — one node (`unified_planner`) hosts every algorithm behind a single `generate_trajectory` service and `execute_trajectory` action
-- **Five planners** — `classic` (single pose), `multi_point` (waypoints), `joint_space`, `mpc` (Model Predictive Control, closed-loop), `retarget` (teleoperation follower); switch at runtime with `set_planner`
+- **Six planners** — `classic` (single pose), `multi_point` (waypoints), `joint_space`, `mpc` (MPPI model predictive control, closed-loop), `lbfgs` (L-BFGS + B-spline model predictive control, closed-loop), `retarget` (teleoperation follower); switch at runtime with `set_planner`
 - **Robot backends as strategies** — emulator, velocity streaming, or position streaming to a real robot, switchable at runtime; bring your own robot with a YAML descriptor
 - **Obstacle management** — primitives and meshes, object attachment to the flange, per-link collision toggling, collision distance queries, voxel grid introspection
 - **Batch IK/FK services** — GPU-parallel kinematics with collision-aware IK

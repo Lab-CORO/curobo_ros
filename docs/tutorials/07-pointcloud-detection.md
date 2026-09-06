@@ -83,7 +83,7 @@ Then plan through the space the obstacle occupies ([Tutorial 1](01-first-traject
 
 ## 4. Remove the robot from its own view (`robot_segmentation`)
 
-If the camera sees the robot arm, the arm becomes an "obstacle" for itself. The second executable of the package subtracts the robot from the depth image before integration:
+If the camera sees the robot arm, the arm becomes an "obstacle" for itself. The package's second node subtracts the robot from the depth image before integration:
 
 ```bash
 ros2 run curobo_ros robot_segmentation

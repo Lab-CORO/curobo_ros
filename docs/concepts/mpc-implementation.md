@@ -22,7 +22,8 @@ TrajectoryPlanner (abstract Strategy)
 │   ├── MultiPointPlanner
 │   └── JointSpacePlanner
 └── ReactiveController       # closed-loop: a control loop, no precomputed traj
-    ├── MPCController         # cuRobo ModelPredictiveControl
+    ├── MPPIController        # cuRobo ModelPredictiveControl (MPPI recipe)
+    ├── LBFGSController       # cuRobo ModelPredictiveControl (L-BFGS + B-spline)
     └── RetargetController    # cuRobo MotionRetargeter (IK teleop follower)
 ```
 
@@ -63,9 +64,9 @@ A concrete controller implements only the cuRobo-specific hooks:
 | `apply_live_goal(raw)` | retarget the goal during execution |
 | `is_converged()` | stop condition (default: position error < threshold) |
 
-## `MPCController` — cuRobo lifecycle
+## `MPPIController` — cuRobo lifecycle
 
-`curobo_ros/planners/mpc_planner.py` is a thin wrapper over cuRobo's canonical
+`curobo_ros/planners/mppi_planner.py` is a thin wrapper over cuRobo's canonical
 reactive lifecycle:
 
 ```python
@@ -96,12 +97,12 @@ mpc.update_world(scene)                           # dynamic obstacles (driven by
 
 Two mechanisms keep the real robot stable:
 
-- `mpc_command_interval` (default `0.24` s) paces the loop in fixed windows:
+- `mpc_command_interval` (default `0.12` s) paces the loop in fixed windows:
   each command window fully executes on the robot before the next solve, and the
   robot state is read *after* execution (fresh and velocity-consistent). `0`
   reverts to free-running solves.
-- A velocity boundary-continuity cap (`_VBC_CAP_DPS = 5.0` deg/s in
-  `mpc_planner.py`) limits the velocity discontinuity at window boundaries to
+- A velocity boundary-continuity cap (`_VBC_CAP_DPS = 120.0` deg/s in
+  `mppi_planner.py`) limits the velocity discontinuity at window boundaries to
   avoid ratcheting/runaway.
 
 ### Goal state
@@ -152,7 +153,7 @@ Reactive control reuses the **unified** interface — no dedicated action:
 | `mpc_solver_type` | `'mppi_acceleration'` | solver recipe (see above) |
 | `mpc_step_dt` | `0.03` | cuRobo `optimization_dt` |
 | `mpc_horizon_steps` | `30` | cuRobo `num_control_points` |
-| `mpc_command_interval` | `0.24` | fixed command-window pacing (s); `0` = free-running |
+| `mpc_command_interval` | `0.12` | fixed command-window pacing (s); `0` = free-running |
 
 The full family (`mpc_warm_start_iters`, `mpc_mppi_num_particles`,
 `mpc_vel_feedback_alpha`, `retarget_*`, …) is listed in
@@ -172,4 +173,4 @@ same `execute_trajectory` / `mpc_goal` interface — no node changes required.
 - [cuRobo concepts](https://nvlabs.github.io/curobo/latest/concepts/index.html)
 - [Unified Planner](unified-planner.md) · [MPC tutorial](../tutorials/05-mpc-planner.md)
 - Canonical code: `curobo_ros/planners/reactive_controller.py`,
-  `curobo_ros/planners/mpc_planner.py`
+  `curobo_ros/planners/mppi_planner.py`, `curobo_ros/planners/lbfgs_planner.py`

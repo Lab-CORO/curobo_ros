@@ -40,7 +40,7 @@ There is no world floor added automatically at startup: if you want a ground pla
 
 | Parameter | Default | Effect | Kind |
 |---|---|---|---|
-| `planner_type` | `'classic'` | Planner selected at startup (`classic`, `mpc`, `multi_point`, `joint_space`, `retarget`) — switch at runtime with `set_planner` | Startup |
+| `planner_type` | `'classic'` | Planner selected at startup (`classic`, `mpc`, `lbfgs`, `multi_point`, `joint_space`, `retarget`) — switch at runtime with `set_planner` | Startup |
 | `max_attempts` | `1` | Planning retries per request | Plan-time |
 | `interpolation_dt` | `0.025` | Time step (s) of the interpolated output trajectory | Build-time |
 | `voxel_size` | `0.05` | Voxel size (m) shared by the perception ESDF, the collision cache, and `get_voxel_grid` | Build-time |
@@ -78,7 +78,7 @@ Read by the MPC controller when it is built (first switch to `mpc`); change them
 | `mpc_cold_start_iters` | `10` | Iterations on the first solve |
 | `mpc_mppi_num_particles` | `400` | MPPI particle count (`mppi_acceleration` only) |
 | `mpc_vel_feedback_alpha` | `1.0` | Velocity feedback blend when reading robot state |
-| `mpc_command_interval` | `0.24` | Fixed command pacing (s): each command window executes fully before re-solving. `0` = re-solve as fast as possible |
+| `mpc_command_interval` | `0.12` | Fixed command pacing (s): each command window executes fully before re-solving. `0` = re-solve as fast as possible |
 | `convergence_threshold` | `0.01` | End-effector error (m) considered "on target" |
 | `max_mpc_iterations` | `1000` | Safety cap on servo steps per goal |
 | `mpc_debug` | `false` | Write per-step diagnostic CSVs to the ROS log directory |

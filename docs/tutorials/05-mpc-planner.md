@@ -96,7 +96,7 @@ Then run the action and stream poses to `/unified_planner/mpc_goal` exactly as a
 |---|---|
 | Switch to MPC takes long | First-time solver build — expected |
 | `mpc_goal` messages ignored | No reactive planner active, or no action goal running |
-| Sluggish tracking | Check `mpc_command_interval` (0.24 s pacing by default); see [MPC Implementation](../concepts/mpc-implementation.md) |
+| Sluggish tracking | Check `mpc_command_interval` (0.12 s pacing by default); see [MPC Implementation](../concepts/mpc-implementation.md) |
 | Arm oscillates near target on hardware | Keep the validated `mppi_acceleration` defaults; check the driver executes velocities faithfully |
 
 ## Next steps
