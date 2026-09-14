@@ -1,40 +1,69 @@
 #!/usr/bin/env python3
 """
-Shared MPC config-loading helpers used by both LBFGSController
-(lbfgs_planner.py) and MPPIController (mppi_planner.py).
+Shared MPC config helpers used by both LBFGSController (lbfgs_planner.py) and
+MPPIController (mppi_planner.py). The cost/optimizer tuning values (see
+config/mpc/{mppi,lbfgs}_params.yaml) are real ROS 2 parameters -- declared
+per-leaf with declare_from_defaults() below, overridden at launch by the
+node's own standard `parameters=[...]` YAML loading (no custom parsing) --
+and reassembled into the nested dict cuRobo's optimizer_configs expects with
+read_nested(). This replaced an earlier hand-rolled YAML loader
+(_load_mpc_config) that read the same shape from an app-specific file the
+node parsed itself; ROS 2's own parameter-file loading does that job now.
 """
 
 import copy
 
-import yaml
-
 from curobo.content import get_task_configs_path
 from curobo._src.util.config_io import resolve_config, join_path
-from curobo._src.util.config_io import Loader as _CUROBO_YAML_LOADER
 
 
-def _load_mpc_config(config_path: str) -> dict:
-    """Load an MPC cost/optimizer YAML (see config/mpc/{mppi,lbfgs}_mpc.yaml).
+def _flatten(prefix: str, value, out: dict = None) -> dict:
+    """Nested dict -> {dotted.path: leaf_value}, e.g.
+    _flatten('', {'rollout': {'cost_cfg': {'weight': [1.0, 2.0]}}})
+    -> {'rollout.cost_cfg.weight': [1.0, 2.0]}. Lists/scalars are leaves;
+    only dicts recurse."""
+    if out is None:
+        out = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _flatten(f"{prefix}.{k}" if prefix else str(k), v, out)
+    else:
+        out[prefix] = value
+    return out
 
-    NOT routed through cuRobo's resolve_config/get_task_configs_path: these
-    are our own files (paths come from the mpc_mppi_config_file /
-    mpc_lbfgs_config_file ROS params), not cuRobo package-relative ones.
 
-    Loaded with cuRobo's own patched Loader (config_io.py), not plain
-    yaml.safe_load -- PyYAML's default float resolver requires a decimal
-    point in the mantissa, so exponent notation like "1e-3" (no dot) silently
-    parses as the STRING '1e-3' instead of a float. That reached a CUDA line
-    search kernel launch and crashed with "TypeError: the argument is of
-    unsupported type: <class 'str'>" (debug 2026-08-14,
-    lbfgs_mpc.yaml's line_search_wolfe_c_1). cuRobo's stock YAMLs use the same
-    "1e-3" spelling and only work because config_io.py patches this loader's
-    float regex at import time; reusing it here (rather than yaml.safe_load)
-    keeps our hand-edited files forgiving of the same spelling."""
-    with open(config_path, 'r') as f:
-        cfg = yaml.load(f, Loader=_CUROBO_YAML_LOADER)
-    if not isinstance(cfg, dict):
-        raise ValueError(f"MPC config file did not parse to a dict: {config_path}")
-    return cfg
+def _unflatten(flat: dict) -> dict:
+    """Inverse of _flatten: {'rollout.cost_cfg.weight': [1.0, 2.0]}
+    -> {'rollout': {'cost_cfg': {'weight': [1.0, 2.0]}}}."""
+    out = {}
+    for dotted_name, value in flat.items():
+        node = out
+        parts = dotted_name.split('.')
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+    return out
+
+
+def declare_from_defaults(node, prefix: str, defaults: dict) -> None:
+    """Declare one ROS parameter per leaf of `defaults` (a nested dict),
+    named '<prefix>.<dotted path>' -- e.g. prefix='mpc_mppi' declares
+    'mpc_mppi.rollout.cost_cfg.weight'. Values in a params YAML loaded at
+    launch (see config/mpc/{mppi,lbfgs}_params.yaml, rooted at `/**:`)
+    override these defaults; without one, the values below apply. Skips
+    names already declared -- build_solver() can rerun across planner
+    rebuilds (PlannerManager)."""
+    for dotted, value in _flatten('', defaults).items():
+        name = f"{prefix}.{dotted}"
+        if not node.has_parameter(name):
+            node.declare_parameter(name, value)
+
+
+def read_nested(node, prefix: str) -> dict:
+    """Inverse of declare_from_defaults(): reconstruct the nested dict from
+    the node's current parameter values under `prefix`."""
+    raw = node.get_parameters_by_prefix(prefix)
+    return _unflatten({name: p.value for name, p in raw.items()})
 
 
 def _build_metrics_rollout_cfg(cost_cfg_source: dict) -> dict:

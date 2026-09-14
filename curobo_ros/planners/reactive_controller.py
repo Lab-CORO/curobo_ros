@@ -63,6 +63,13 @@ class ReactiveController(TrajectoryPlanner):
         self._live_goal_lock = threading.Lock()
         self._latest_goal = None
         self._latest_goal_fresh = False
+        # How long _apply_live_goal_guarded() waits for gpu_lock before
+        # deferring the goal by one cycle. Small on purpose: the point is to
+        # absorb a lock about to be released, NOT to queue behind the depth
+        # callback, which holds it across a full torch.cuda.synchronize()
+        # (measured 24-86 ms). Raising this trades cycle time for goal
+        # freshness; 0 would make it purely non-blocking.
+        self._live_goal_lock_timeout_s = 0.005
 
         # Tunables (overwritten from the per-call config in plan()).
         self.convergence_threshold = 0.03      # meters
@@ -118,6 +125,27 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_loop_iter = 0
         self._diag_cheap_ms_before_resolve = 0.0
         self._diag_batch_wall_ms = 0.0
+
+        # Per-phase decomposition of the "outside step()" window -- the gap
+        # between one step() returning and the next one starting, which is
+        # ~42% of an LBFGS cycle and used to be measured only as a lump (see
+        # LBFGSController._last_cycle_breakdown). Written by
+        # _execute_immediate and _close_state_loop as each phase runs,
+        # snapshotted by LBFGSController.step() when the window closes.
+        # _diag_perception_ms / _diag_live_goal_ms above are reused (the paced
+        # path already fills them the same way).
+        self._diag_perception_ran = 0
+        self._diag_live_goal_wait_ms = 0.0
+        self._diag_live_goal_apply_ms = 0.0
+        self._diag_send_command_ms = 0.0
+        self._diag_read_state_ms = 0.0
+        self._diag_fk_err_ms = 0.0
+        self._diag_csv_write_ms = 0.0
+        self._diag_feedback_ms = 0.0
+
+        # Phase-boundary timing mode; see _mark(). Off unless a subclass turns
+        # it on (LBFGSController's `lbfgs_profile_sync` ROS param).
+        self._profile_sync = False
 
         self._batch_size = 1
 
@@ -276,6 +304,72 @@ class ReactiveController(TrajectoryPlanner):
         """Current end-effector position via the solver's forward kinematics."""
         return self._compute_ee_pose(current_state)[0]
 
+    def _reset_phase_counters(self):
+        """Zero the outside-step phase timers (per goal).
+
+        They are read as a residual against a window length, so carrying a
+        previous goal's values into a goal whose first window is zero-length
+        yields a negative remainder. Called from setup().
+        """
+        self._diag_perception_ms = 0.0
+        self._diag_perception_ran = 0
+        self._diag_live_goal_ms = 0.0
+        self._diag_live_goal_wait_ms = 0.0
+        self._diag_live_goal_apply_ms = 0.0
+        self._diag_send_command_ms = 0.0
+        self._diag_read_state_ms = 0.0
+        self._diag_fk_err_ms = 0.0
+        self._diag_csv_write_ms = 0.0
+        self._diag_feedback_ms = 0.0
+
+    def _mark(self) -> float:
+        """Instant of a phase boundary, for the per-phase cycle breakdown.
+
+        Under ``_profile_sync`` this drains the CUDA queue first. Without it
+        the GPU cost of a phase is billed to the NEXT phase -- whichever one
+        contains the first blocking ``.item()`` -- so the split between solve,
+        FK and the outside-step phases is wrong even though their sum is
+        right. Off by default: the drain is a real per-cycle cost, and it
+        changes the very distribution being measured.
+        """
+        if self._profile_sync:
+            torch.cuda.synchronize()
+        return time.monotonic()
+
+    def _fk_pose_errors(self, state: JointState):
+        """``(xyz, ||xyz||, angular error)`` from ONE FK pass and ONE sync.
+
+        The two call sites that report a controller/real error want all three
+        together. Reaching them through ``_fk_position_error_xyz`` +
+        ``_fk_orientation_error`` runs ``_compute_ee_pose`` twice on the same
+        state and blocks on two separate ``.item()`` transfers -- defeating
+        the "one FK call for both" that ``_compute_ee_pose`` documents.
+
+        ``xyz`` is None when no Cartesian target is set; the scalars are then
+        ``inf``, matching what the single-metric helpers return. Those helpers
+        stay as they are for callers that genuinely want only one.
+        """
+        if self._target_position is None and self._target_quaternion is None:
+            return None, float('inf'), float('inf')
+        try:
+            pos, quat = self._compute_ee_pose(state)
+        except Exception:
+            return None, float('inf'), float('inf')
+
+        xyz = pos - self._target_position if self._target_position is not None else None
+        pos_err = (torch.linalg.norm(xyz) if xyz is not None
+                   else torch.tensor(float('inf'), device=pos.device, dtype=pos.dtype))
+        if self._target_quaternion is not None:
+            dot = torch.dot(quat.reshape(-1), self._target_quaternion.reshape(-1)).abs()
+            rot_err = 2.0 * torch.acos(dot.clamp(max=1.0))
+        else:
+            rot_err = torch.tensor(float('inf'), device=pos.device, dtype=pos.dtype)
+
+        # One device->host transfer for both scalars rather than two
+        # successive .item() calls, each of which is its own sync point.
+        pos_err, rot_err = torch.stack((pos_err, rot_err)).tolist()
+        return xyz, float(pos_err), float(rot_err)
+
     def _fk_position_error_xyz(self, current_state: JointState) -> Optional[torch.Tensor]:
         """Signed per-axis Cartesian error (m), base frame: ee - target.
 
@@ -384,6 +478,86 @@ class ReactiveController(TrajectoryPlanner):
             self._latest_goal_fresh = False
             return raw
 
+    def _put_back_live_goal(self, raw) -> None:
+        """Restore a goal taken but not applied -- UNLESS a newer one landed.
+
+        _take_live_goal() consumes the goal before the lock is attempted, so a
+        non-blocking acquire that simply gave up would not defer the goal, it
+        would DROP it, possibly the last one of the motion. Restoring only when
+        the slot is still empty keeps set_live_goal()'s "latest wins" semantics:
+        a fresher goal published in between must never be overwritten by the
+        stale one we failed to apply.
+        """
+        with self._live_goal_lock:
+            if not self._latest_goal_fresh:
+                self._latest_goal = raw
+                self._latest_goal_fresh = True
+
+    def _apply_live_goal_guarded(self) -> None:
+        """Take and apply the pending live goal, without blocking on gpu_lock.
+
+        apply_live_goal() CANNOT capture a CUDA graph: its only GPU call is
+        update_goal_tool_poses(run_ik=False), whose cuRobo path
+        (solver_mpc.py:432 -> manager_goal.py:264 -> solver_core.py:223) is an
+        in-place copy into the existing goal buffer plus a loop of
+        rollout.update_params(). A reallocation there is impossible by
+        construction -- update_goal_buffer() would return update_reference=True
+        and log_and_raise. So this site only needs gpu_lock for the WEAKER
+        guarantee "do not issue GPU ops while another thread is capturing", the
+        same one the depth camera and ros_service_manager already take
+        non-blocking.
+
+        Blocking here was measured at 20 ms/cycle amortized (live_goal_wait_ms,
+        diag 2026-09-09), and always on cycles where our own perception refresh
+        did NOT run -- i.e. waiting on the depth callback, which holds the lock
+        across mapper.integrate() AND a full torch.cuda.synchronize()
+        (camera_depth_map_strategy.py:242). That synchronize is load-bearing --
+        it is what guarantees no kernel of ours is still in flight at release --
+        so the fix belongs on this side, not there.
+
+        Not fully non-blocking: a short timeout still absorbs the common case
+        where the lock is about to be released, and only a genuinely long hold
+        defers the goal by one cycle. Deferring is cheap (a newer goal
+        supersedes it anyway); dropping it is not.
+        """
+        self._diag_live_goal_wait_ms = 0.0
+        self._diag_live_goal_apply_ms = 0.0
+        self._diag_live_goal_ms = 0.0
+
+        raw = self._take_live_goal()
+        if raw is None:
+            return
+
+        t_goal0 = self._mark()
+        if not self.node.gpu_lock.acquire(timeout=self._live_goal_lock_timeout_s):
+            self._put_back_live_goal(raw)
+            self._diag_live_goal_wait_ms = (self._mark() - t_goal0) * 1000.0
+            self._diag_live_goal_ms = self._diag_live_goal_wait_ms
+            self.node.get_logger().debug(
+                f"{self.get_planner_name()}: gpu_lock busy - live goal deferred "
+                f"to next cycle", throttle_duration_sec=2.0)
+            return
+        try:
+            t_goal1 = self._mark()
+            self.apply_live_goal(raw)
+            t_goal2 = self._mark()
+        except Exception as e:
+            # The goal is NOT put back: apply_live_goal raising means the goal
+            # itself was rejected, and retrying it every cycle would just loop
+            # on the same failure. Matches the previous behaviour here.
+            self.node.get_logger().error(
+                f"{self.get_planner_name()}: live goal rejected "
+                f"({e}) - keeping previous goal",
+                throttle_duration_sec=1.0,
+            )
+            return
+        finally:
+            self.node.gpu_lock.release()
+
+        self._diag_live_goal_wait_ms = (t_goal1 - t_goal0) * 1000.0
+        self._diag_live_goal_apply_ms = (t_goal2 - t_goal1) * 1000.0
+        self._diag_live_goal_ms = (self._mark() - t_goal0) * 1000.0
+
     def _step_guard(self):
         """gpu_lock for a step() that may capture a CUDA graph, else no lock.
         """
@@ -476,23 +650,29 @@ class ReactiveController(TrajectoryPlanner):
                 if goal_handle is None and tstep >= self.max_iterations:
                     break
 
+                # Phase timers below feed the "outside step()" breakdown. Note
+                # the window they belong to: it closes when the next step()
+                # starts, so it spans the TAIL of the previous iteration
+                # (send_command/close_state_loop/feedback) plus the HEAD of
+                # this one (perception/live_goal). LBFGSController.step()
+                # snapshots them at exactly that boundary -- see its
+                # _snapshot_outside_breakdown.
+                self._diag_perception_ms = 0.0
+                self._diag_perception_ran = 0
                 if (self.perception_refresh_period > 0
                         and tstep % self.perception_refresh_period == 0
                         and hasattr(self.node, 'refresh_perception_world')):
+                    t_perc0 = self._mark()
                     self.node.refresh_perception_world(active_only=True)
+                    self._diag_perception_ms = (self._mark() - t_perc0) * 1000.0
+                    self._diag_perception_ran = 1
 
-
-                raw = self._take_live_goal()
-                if raw is not None:
-                    try:
-                        with self.node.gpu_lock:
-                            self.apply_live_goal(raw)
-                    except Exception as e:
-                        self.node.get_logger().error(
-                            f"{self.get_planner_name()}: live goal rejected "
-                            f"({e}) - keeping previous goal",
-                            throttle_duration_sec=1.0,
-                        )
+                # Still split into lock WAIT and actual work: they have
+                # opposite fixes and lumping them together cannot tell apart
+                # gpu_lock contention from expensive work. wait_ms is now
+                # capped by _live_goal_lock_timeout_s -- a wait AT that cap
+                # means the goal was deferred, not applied.
+                self._apply_live_goal_guarded()
 
                 st_time = time.time()
                 with self._step_guard():
@@ -500,14 +680,21 @@ class ReactiveController(TrajectoryPlanner):
                 if tstep > 5:
                     self._step_times.append(time.time() - st_time)
 
+                t_send0 = self._mark()
                 self._send_command(robot_context, action)
+                self._diag_send_command_ms = (self._mark() - t_send0) * 1000.0
 
                 predicted_state = self._state_from_action(action)
+                # _close_state_loop times its own sub-phases (read_state, the
+                # error FK, the CSV write) into _diag_read_state_ms /
+                # _diag_fk_err_ms / _diag_csv_write_ms.
                 current_state = self._close_state_loop(robot_context, predicted_state)
                 self._last_action = action
 
                 # if goal_handle is not None and tstep % 5 == 0:
+                t_fb0 = self._mark()
                 self._publish_feedback(goal_handle, action)
+                self._diag_feedback_ms = (self._mark() - t_fb0) * 1000.0
 
                 now = time.time()
                 if now - self._last_log_time > 1.0 and bool(self.node.get_parameter('mpc_debug').value):
@@ -603,22 +790,10 @@ class ReactiveController(TrajectoryPlanner):
                     self._diag_loop_iter = loop_iter
                     loop_iter += 1
 
-                    # Under gpu_lock, failure narrowed to the goal — see
-                    # _execute_immediate for why.
-                    self._diag_live_goal_ms = 0.0
-                    raw = self._take_live_goal()
-                    if raw is not None:
-                        try:
-                            t_goal0 = time.monotonic()
-                            with self.node.gpu_lock:
-                                self.apply_live_goal(raw)
-                            self._diag_live_goal_ms = (time.monotonic() - t_goal0) * 1000.0
-                        except Exception as e:
-                            self.node.get_logger().error(
-                                f"{self.get_planner_name()}: live goal rejected "
-                                f"({e}) - keeping previous goal",
-                                throttle_duration_sec=1.0,
-                            )
+                    # Same non-blocking treatment as _execute_immediate --
+                    # see _apply_live_goal_guarded for why gpu_lock is not
+                    # needed blocking here.
+                    self._apply_live_goal_guarded()
 
                     st_time = time.time()
                     with self._step_guard():

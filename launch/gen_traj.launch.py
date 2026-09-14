@@ -146,7 +146,10 @@ def launch_setup(context, *args, **kwargs):
             package='curobo_ros',
             executable='curobo_trajectory_planner',
             output='screen',
-            parameters=[{
+            parameters=[
+                LaunchConfiguration('mppi_params_file'),
+                LaunchConfiguration('lbfgs_params_file'),
+                {
                 'robot': robot_name,
                 'robot_config_file': LaunchConfiguration('robot_config_file'),
                 'cameras_config_file': LaunchConfiguration('cameras_config_file'),
@@ -184,10 +187,8 @@ def launch_setup(context, *args, **kwargs):
                 'mapper_image_height': 720,
                 # Sparse voxel topic publish rate (Hz); <= 0 disables it.
                 'sparse_voxel_publish_rate': 7.0,
-                # MPC cost/optimizer config files (see mpc_planner.py / config/mpc/).
-                'mpc_mppi_config_file': LaunchConfiguration('mpc_mppi_config_file'),
-                'mpc_lbfgs_config_file': LaunchConfiguration('mpc_lbfgs_config_file'),
-            }]
+                },
+            ]
         ),
 
         # Trajectory preview pipeline (the translucent ghost robot in RViz).
@@ -282,17 +283,21 @@ def generate_launch_description():
         description='Chemin vers le fichier de configuration du monde (world config YAML)'
     )
 
+    # Real ROS 2 parameters files (rooted at `/**:`), not custom-parsed YAML
+    # -- see config/mpc/{mppi,lbfgs}_params.yaml for the values and their
+    # tuning history. lbfgs_params.yaml is inert by default (its own header
+    # explains why); `lbfgs_apply_custom_config:=true` opts in.
     _curobo_ros_config_dir = os.path.join(
         get_package_share_directory('curobo_ros'), 'config', 'mpc')
-    declare_mpc_mppi_config_file = DeclareLaunchArgument(
-        'mpc_mppi_config_file',
-        default_value=os.path.join(_curobo_ros_config_dir, 'mppi_mpc.yaml'),
-        description="Chemin vers le fichier YAML de config cout/optimiseur MPPI (voir config/mpc/)"
+    declare_mppi_params_file = DeclareLaunchArgument(
+        'mppi_params_file',
+        default_value=os.path.join(_curobo_ros_config_dir, 'mppi_params.yaml'),
+        description="Chemin vers le fichier de parametres ROS 2 MPPI (voir config/mpc/)"
     )
-    declare_mpc_lbfgs_config_file = DeclareLaunchArgument(
-        'mpc_lbfgs_config_file',
-        default_value=os.path.join(_curobo_ros_config_dir, 'lbfgs_mpc.yaml'),
-        description="Chemin vers le fichier YAML de config cout/optimiseur LBFGS (voir config/mpc/)"
+    declare_lbfgs_params_file = DeclareLaunchArgument(
+        'lbfgs_params_file',
+        default_value=os.path.join(_curobo_ros_config_dir, 'lbfgs_params.yaml'),
+        description="Chemin vers le fichier de parametres ROS 2 LBFGS (voir config/mpc/)"
     )
 
     return LaunchDescription([
@@ -302,8 +307,8 @@ def generate_launch_description():
         declare_camera_config_file,
         declare_gui,
         declare_world_file,
-        declare_mpc_mppi_config_file,
-        declare_mpc_lbfgs_config_file,
+        declare_mppi_params_file,
+        declare_lbfgs_params_file,
         # The defaults below MUST stay aligned with the declare_parameter() calls
         # in unified_planner_node.py: they are forwarded to the node and therefore
         # override its own defaults.

@@ -401,7 +401,18 @@ class MPCDiagnostics:
         ``get_command_sequence()``). The full horizon the optimizer actually
         reasoned over (collision costs, goal convergence, etc.) is
         ``result.robot_state_sequence`` instead, already FK'd (untrimmed).
+
+        Skipped entirely when nobody is subscribed: measured 6.1ms/cycle on the
+        LBFGS servo loop (1.4% of a 443ms cycle), spent on a device->host
+        transfer of the whole horizon plus the Path build. Everything this
+        method computes feeds ONLY _path_pub -- volatile depth-10 QoS, no
+        transient_local -- so an early return is observably neutral for both
+        planners sharing this class. `ros2 bag record` counts as a subscriber,
+        so profiling still works; don't remove this guard because a topic
+        "looks dead" with no listener attached.
         """
+        if self._path_pub.get_subscription_count() == 0:
+            return
         try:
             state_seq = getattr(result, 'robot_state_sequence', None)
             if state_seq is not None and state_seq.tool_poses is not None:
@@ -646,7 +657,19 @@ class MPCDiagnostics:
         pays for more CPU/GPU work on top of the overrun (cf. cost_breakdown's
         and horizon_diag's own crash-safety notes on keeping per-step
         diagnostics cheap).
+
+        Skipped entirely when nobody is subscribed -- the same reasoning as the
+        budget_exceeded branch below, applied one level up: an already-costly
+        cycle should not pay for diagnostics no one reads. Measured 37.7ms/cycle
+        on the LBFGS servo loop (8.5% of a 443ms cycle): the trajectory build,
+        the arrival FK and cost_breakdown are all real GPU/CPU work. Everything
+        here feeds ONLY _step_diag_pub (volatile depth-10, no transient_local),
+        so the early return is observably neutral for both planners sharing this
+        class, and `ros2 bag record` counts as a subscriber.
         """
+        if self._step_diag_pub.get_subscription_count() == 0:
+            return
+
         # Not always populated by the solver (observed None from
         # LBFGSController's robot_state_sequence slice) -- self.solver.joint_names
         # is the same list and always set.

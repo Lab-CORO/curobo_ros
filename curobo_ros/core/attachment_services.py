@@ -37,12 +37,25 @@ from rclpy.qos import (QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy,
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from std_srvs.srv import Trigger
 from curobo.types import JointState, Pose, DeviceCfg
-from curobo.sphere_fit import estimate_sphere_count
+from curobo.sphere_fit import (estimate_sphere_count, fit_spheres_to_mesh,
+                               SphereFitType)
 
 from curobo_msgs.srv import AttachObject
 from curobo_ros.core.obstacle_manager import build_obstacle
 
 ATTACH_LINK = "attached_object"
+
+# MorphIt gradient steps used to fit the payload's collision spheres.
+# curobo's fit_spheres_to_mesh defaults to 200, which AttachmentManager.
+# fit_spheres hardcodes. That default dominates attach latency (~2.7 s on the
+# Orin) and it is NOT proportional to the sphere count -- it is 200 steps over
+# the mesh, so fitting ATTACH_LINK's 4 slots costs the same as fitting 100.
+# At a 4-sphere budget the last 150 steps buy almost nothing. Measured coverage
+# at 50 vs 200 steps, over box primitives and over non-convex collision meshes
+# (robotiq_85 base/finger, ur_to_robotiq adapter): 0.975/0.983, 0.984/0.975,
+# 0.940/0.944, 0.919/0.938 -- within noise either way, and max uncovered gap
+# never differed by more than ~1 mm. So 50, for a 2.4-3.7x faster attach.
+MORPHIT_ITERATIONS = 50
 
 
 class AttachmentServices:
@@ -411,7 +424,13 @@ class AttachmentServices:
             # from the same robot YAML, so they all allocate the same budget.
             n_slots = primary.kinematics_params.get_sphere_index_from_link_name(
                 ATTACH_LINK).shape[0]
-            n_needed = self._estimate_sphere_need(obstacle)
+            # Build the payload's trimesh ONCE and reuse it for both the
+            # estimate and the fit. For a single obstacle this is byte-for-byte
+            # what AttachmentManager._obstacles_to_trimesh would rebuild inside
+            # fit_spheres -- and for a mesh-file payload that rebuild is a
+            # second load and re-process of the same file off disk.
+            payload_mesh = obstacle.get_trimesh_mesh(transform_with_pose=True)
+            n_needed = self._estimate_sphere_need(payload_mesh)
             if n_needed > n_slots:
                 self.node.get_logger().warn(
                     f"Attached payload needs about {n_needed} collision "
@@ -426,7 +445,8 @@ class AttachmentServices:
             # count. n_needed == 0 means the estimate failed -> fall back.
             n_fit = min(n_needed, n_slots) if n_needed > 0 else n_slots
 
-            sphere_tensor = primary.fit_spheres([obstacle], num_spheres=n_fit)
+            sphere_tensor = self._fit_payload_spheres(
+                primary, payload_mesh, n_fit)
 
             wrote_any = False
             active_failed = False
@@ -510,18 +530,48 @@ class AttachmentServices:
             f"on {len(managers)} solver(s)")
 
     @staticmethod
-    def _estimate_sphere_need(obstacle) -> int:
+    def _estimate_sphere_need(payload_mesh) -> int:
         """cuRobo's own estimate of how many spheres this geometry needs.
 
         Same heuristic the AttachmentManager applies when ``num_spheres=None``
         (bounding-box volume, 1 sphere per 15 cm3, capped at 100). Returns 0 if
         it can't be computed, so a failure here never blocks an attach.
+
+        Cheap (a bounding box over ``payload_mesh``, sub-millisecond) -- it only
+        picks a NUMBER and fits nothing, so it is never the slow part of an
+        attach. The cost is in _fit_payload_spheres below.
         """
         try:
-            return estimate_sphere_count(
-                obstacle.get_trimesh_mesh(transform_with_pose=True))
+            return estimate_sphere_count(payload_mesh)
         except Exception:
             return 0
+
+    @staticmethod
+    def _fit_payload_spheres(manager, payload_mesh, num_spheres: int):
+        """Fit ``num_spheres`` to ``payload_mesh``, as AttachmentManager.
+        fit_spheres does but on the shorter MorphIt schedule set by
+        MORPHIT_ITERATIONS (see the constant for the measurements).
+
+        Deliberately still MORPHIT and not SphereFitType.VOXEL, which would be
+        ~600x faster again (4 ms): at a 4-sphere budget voxel fitting measured
+        0.41 coverage and left a 9 cm gap of payload uncovered. This model is
+        what the planner drives the real arm against, so that trade is not on.
+
+        Bypasses ``manager.fit_spheres()`` ONLY because that wrapper does not
+        expose ``iterations``. Everything else is kept identical to it: same
+        surface_radius default, same fit type, same device cfg, same
+        centers/radii -> [n, 4] packing. The single side effect skipped is its
+        ``_last_fit_result`` bookkeeping, which nothing in curobo_ros reads.
+        """
+        result = fit_spheres_to_mesh(
+            payload_mesh,
+            num_spheres=num_spheres,
+            surface_radius=0.002,   # AttachmentManager.fit_spheres' default
+            fit_type=SphereFitType.MORPHIT,
+            iterations=MORPHIT_ITERATIONS,
+            device_cfg=manager._device_cfg,
+        )
+        return torch.cat([result.centers, result.radii.unsqueeze(-1)], dim=-1)
 
     def detach(self) -> bool:
         """Release the attached payload (reset link spheres) on every live

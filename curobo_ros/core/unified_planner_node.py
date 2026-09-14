@@ -25,7 +25,6 @@ import traceback
 import rclpy
 import torch
 import tf2_ros
-from ament_index_python.packages import get_package_share_directory
 from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -152,30 +151,19 @@ class UnifiedPlannerNode(Node):
         self.declare_parameter('mpc_solver_type', 'mppi_acceleration')
         self.declare_parameter('mpc_mppi_num_particles', 400)
         self.declare_parameter('mpc_vel_feedback_alpha', 1.0)
-        # Cost/optimizer config for each MPC backend (MPCController.build_solver,
-        # curobo_ros/planners/mpc_planner.py), as plain editable YAML instead of
-        # values baked into the code -- see config/mpc/{mppi,lbfgs}_mpc.yaml for
-        # the shipped defaults and the tuning history recorded in their comments.
-        # Override with an absolute path (ros2 launch .../mpc_mppi_config_file:=
-        # /path/to/custom.yaml) to point at a different file without touching
-        # this package; forwarded from leeloo's control.launch.py and curobo_ros's
-        # gen_traj.launch.py.
-        _mpc_config_dir = os.path.join(get_package_share_directory('curobo_ros'), 'config', 'mpc')
-        self.declare_parameter(
-            'mpc_mppi_config_file', os.path.join(_mpc_config_dir, 'mppi_mpc.yaml'))
-        self.declare_parameter(
-            'mpc_lbfgs_config_file', os.path.join(_mpc_config_dir, 'lbfgs_mpc.yaml'))
-        # LBFGSController build params (curobo_ros/planners/lbfgs_planner.py) --
-        # a separate reactive controller from MPCController, built directly on
-        # cuRobo's optimize_next_action() API (see that file's module
-        # docstring). Iteration counts/horizon are NOT ROS params here: they
-        # live in lbfgs_config_file's own YAML (warm_start_iters/
-        # cold_start_iters/horizon, popped by build_solver() before the rest
-        # of the dict is handed to optimizer_configs) -- see
-        # config/mpc/lbfgs_reactive.yaml. Only the "which file"/"log or not"
-        # runtime toggles are ROS params, matching mpc_debug's pattern below.
-        self.declare_parameter(
-            'lbfgs_config_file', os.path.join(_mpc_config_dir, 'lbfgs_reactive.yaml'))
+        # Cost/optimizer config for each MPC backend is now real ROS params,
+        # not app-parsed YAML: MPPIController declares/reads the 'mpc_mppi.*'
+        # tree (mppi_planner.py's _MPPI_DEFAULTS, overridable via
+        # config/mpc/mppi_params.yaml at launch) and LBFGSController does the
+        # same for 'lbfgs.*' (lbfgs_planner.py's _LBFGS_DEFAULTS /
+        # config/mpc/lbfgs_params.yaml, opt-in via lbfgs_apply_custom_config).
+        # Declared lazily where they're used (each controller's
+        # build_solver()), same pattern as the lazily-declared params below.
+        #
+        # 'lbfgs_debug' right below is UNRELATED to 'lbfgs.lbfgs_debug' above:
+        # this flat one is node-wide diagnostic instrumentation (reused by
+        # obstacle_manager.py's perception-timing logging), not the LBFGS
+        # solver's store_debug toggle.
         self.declare_parameter('lbfgs_debug', False)
         # Fixed-interval command pacing (seconds). 0.0 = off (re-solve/re-send as
         # fast as the solve allows, ~70ms — replaces the previous window before the

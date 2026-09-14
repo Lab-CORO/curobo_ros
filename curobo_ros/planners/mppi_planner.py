@@ -25,7 +25,7 @@ from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
-from .mpc_common import _load_mpc_config, _build_metrics_rollout_cfg, _extract_cspace_reg_weights
+from .mpc_common import declare_from_defaults, read_nested, _build_metrics_rollout_cfg, _extract_cspace_reg_weights
 from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 
@@ -81,13 +81,98 @@ def _build_mppi_transition_model(step_dt: float, horizon: int, interpolation_ste
     }
 
 
-def _build_mppi_optimizer_config(config_path: str, num_iters: int, num_particles: int = 800) -> dict:
-    """Load the MPPI cost/optimizer config from YAML (see config/mpc/mppi_mpc.yaml
-    and the mpc_mppi_config_file ROS param) and apply the two fields that stay
-    under separate, already-existing ROS params rather than living in the file:
-    optimizer.num_iters (mpc_warm_start_iters) and optimizer.num_particles
-    (mpc_mppi_num_particles)."""
-    cfg = _load_mpc_config(config_path)
+# Fallback defaults for every 'mpc_mppi.*' ROS param declared below --
+# applied only if the node is launched without config/mpc/mppi_params.yaml
+# (the params file is where these values actually get tuned; see its own
+# comments for the dated engineering history behind each one). Two fields
+# from the original mppi_mpc.yaml are deliberately NOT here:
+# optimizer.num_iters/num_particles, which stay driven by the separate
+# mpc_warm_start_iters/mpc_mppi_num_particles ROS params (applied below,
+# same as before).
+_MPPI_DEFAULTS = {
+    'cspace_regularization_weight': [0.3, 1.0, 0.0, 0.0, 0.0],
+    'rollout': {
+        'cost_cfg': {
+            'cspace_cfg': {
+                'activation_distance': [0.01, 0.01, 0.01, 0.01, 0.01],
+                'squared_l2_regularization_weight': [0.0, 0.0, 0.0, 0.0, 0.0],
+                'weight': [10.0, 0.0, 0.0, 0.0, 0.0],
+                'cost_type': 'STATE',
+                'retime_weights': False,
+                'retime_regularization_weights': True,
+                'cspace_target_weight': 0.0,
+                'cspace_non_terminal_weight_factor': 0.05,
+            },
+            'tool_pose_cfg': {
+                'use_lie_group': True,
+                'weight': [5000.0, 2000.0],
+                '_terminal_pose_convergence_tolerance': [0.0, 0.0],
+                '_non_terminal_pose_axes_weight_factor': [0.05, 0.05, 0.05, 0.05, 0.05, 0.05],
+            },
+        },
+        'constraint_cfg': {
+            'scene_collision_cfg': {
+                'activation_distance': 0.12,
+                'use_speed_metric': True,
+                'use_sweep': True,
+                'use_sweep_kernel': True,
+                'weight': 10000.0,
+            },
+            'self_collision_cfg': {'weight': 100000.0},
+            'cspace_cfg': {
+                'weight': [5000.0, 0.0, 0.0, 0.0, 0.0],
+                'activation_distance': [0.2, 0.0, 0.0, 0.0, 0.0],
+                'cost_type': 'STATE',
+            },
+        },
+    },
+    'optimizer': {
+        'solver_type': 'mppi',
+        'solver_name': 'mppi',
+        'inner_iters': 1,
+        'null_act_frac': 0.05,
+        'beta': 0.1,
+        'gamma': 0.98,
+        'kappa': 0.0001,
+        'init_cov': 0.05,
+        'update_cov': True,
+        'cov_type': 'DIAG_A',
+        'step_size_mean': 0.9,
+        'step_size_cov': 0.1,
+        'sample_mode': 'BEST',
+        'squash_fn': 'CLAMP',
+        'base_action': 'REPEAT',
+        'random_mean': False,
+        'seed': 0,
+        'sample_per_problem': True,
+        'sample_params': {
+            'fixed_samples': True,
+            'n_knots': 5,
+            'filter_coeffs': [0.3, 0.3, 0.4],
+            'sample_ratio': {
+                'halton': 0.3,
+                'halton-knot': 0.7,
+                'random': 0.0,
+                'random-knot': 0.0,
+                'stomp': 0.0,
+            },
+            'seed': 0,
+        },
+        'store_debug': False,
+        'sync_cuda_time': True,
+        'use_coo_sparse': True,
+    },
+}
+
+
+def _build_mppi_optimizer_config(node, num_iters: int, num_particles: int) -> dict:
+    """Declare (if needed) and read back every 'mpc_mppi.*' ROS param (see
+    _MPPI_DEFAULTS above and config/mpc/mppi_params.yaml), then apply the two
+    fields that stay under separate, already-existing ROS params rather than
+    their own 'mpc_mppi.optimizer.*' entries: optimizer.num_iters
+    (mpc_warm_start_iters) and optimizer.num_particles (mpc_mppi_num_particles)."""
+    declare_from_defaults(node, 'mpc_mppi', _MPPI_DEFAULTS)
+    cfg = read_nested(node, 'mpc_mppi')
     cfg["optimizer"]["num_iters"] = num_iters
     cfg["optimizer"]["num_particles"] = num_particles
     return cfg
@@ -138,8 +223,7 @@ class MPPIController(ReactiveController):
         self._command_interval = node.get_parameter('mpc_command_interval').get_parameter_value().double_value
 
         num_particles = node.get_parameter('mpc_mppi_num_particles').get_parameter_value().integer_value
-        mppi_config_path = node.get_parameter('mpc_mppi_config_file').get_parameter_value().string_value
-        mppi_optimizer_cfg = _build_mppi_optimizer_config(mppi_config_path, warm_iters, num_particles)
+        mppi_optimizer_cfg = _build_mppi_optimizer_config(node, warm_iters, num_particles)
         # cspace_regularization_weight lives at the top level of the YAML
         # (see its comment there) but is a create()-level kwarg, not part of
         # an optimizer_configs entry -- pop it off before handing the rest
