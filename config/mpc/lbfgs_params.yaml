@@ -1,0 +1,128 @@
+# LBFGS (B-spline control space) cost/optimizer config for LBFGSController
+# (curobo_ros/planners/lbfgs_planner.py).
+#
+# INERT UNLESS `lbfgs_apply_custom_config: true` IS ALSO SET (see the inline
+# param below, or pass it in this node's other parameters). By default
+# LBFGSController runs on cuRobo's own stock lbfgs_mpc.yml -- these values
+# have never been validated against this controller (only against the now-
+# deleted MPCController these were originally tuned for; see the history
+# below), so they are opt-in, not automatically applied. Flip the switch
+# only after validating on hardware.
+#
+# This is a REAL ROS 2 parameters file, loaded by the node's own standard
+# `parameters=[...]` mechanism (see leeloo's control.launch.py /
+# curobo_ros's gen_traj.launch.py) -- not custom-parsed. `/**:` matches any
+# node name. Every key below becomes a ROS parameter named
+# `lbfgs.<dotted path>`; edit values here instead of in code --
+# lbfgs_planner.py's `_LBFGS_DEFAULTS` only supplies fallback defaults for
+# when this file isn't passed.
+#
+# History: `rollout`/`optimizer` below are a snapshot of the now-deleted
+# config/mpc/lbfgs_mpc.yaml (the classic MPCController's own LBFGS file, from
+# a `mpc_planner.py`/`MPCController` that no longer exist in this repo) as of
+# 2026-08-17 -- same proven-on-hardware-FOR-THAT-CONTROLLER cost weights and
+# Approx-Wolfe LBFGS tuning: the non_terminal_pose_axes_weight_factor fix,
+# the reverted joint-limit hard constraint, the 1.0e-3-not-1e-3 YAML gotcha.
+# Kept as a separate param tree from MPPI's, not shared, for two reasons:
+# (1) warm_start_iters/cold_start_iters/horizon below are
+# ModelPredictiveControlCfg.create() kwargs, not optimizer_configs fields --
+# LBFGSController.build_solver() pops them off before handing the rest to
+# optimizer_configs; (2) the two controllers can then be cost-tuned
+# independently without one's changes silently affecting the other.
+#
+# `horizon` has NO direct create() kwarg for the B-spline transition model
+# this controller uses (unlike MPPI's ACCELERATION transition model) -- see
+# lbfgs_planner.py's build_solver() for why it is declared here but not
+# currently threaded into create(). Verify that mapping before relying on it.
+#
+# Every float below keeps an explicit decimal point (e.g. 0.0, not 0; 0.001
+# rather than 1e-3) so a ROS params-file array parses as a double_array, not
+# an integer_array -- cuRobo's optimizer expects floats throughout.
+/**:
+  ros__parameters:
+    lbfgs_apply_custom_config: false
+
+    lbfgs:
+      # cuRobo's own store_debug default (see lbfgs_planner.py's
+      # _build_lbfgs_custom_config -- this maps to create()'s store_debug
+      # kwarg, which also forces use_cuda_graph off when true).
+      lbfgs_debug: false
+      warm_start_iters: 100
+      cold_start_iters: 200
+      horizon: 30
+
+      rollout:
+        cost_cfg:
+          cspace_cfg:
+            activation_distance: [0.01, 0.01, 0.01, 0.01, 0.01]  # torque
+
+            squared_l2_regularization_weight:
+              - 10.0    # velocity
+              - 100.0   # acceleration
+              - 10.0    # jerk
+              - 0.0     # torque smooth
+              - 0.0     # energy smooth
+            weight:
+              - 1000.0
+              - 1000.0
+              - 1000.0
+              - 100.0
+              - 0.0     # torque limit
+            cost_type: STATE
+            retime_weights: false
+            retime_regularization_weights: true
+            cspace_target_weight: 0.0
+            cspace_non_terminal_weight_factor: 0.05
+
+          tool_pose_cfg:
+            use_lie_group: false
+            weight: [5000.0, 1000.0]
+            _terminal_pose_convergence_tolerance: [0.005, 0.0001]
+            _non_terminal_pose_axes_weight_factor: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+
+        constraint_cfg:
+          scene_collision_cfg:
+            activation_distance: 0.01
+            use_speed_metric: true
+            use_sweep: true
+            use_sweep_kernel: true
+            weight: 10000.0
+          self_collision_cfg:
+            weight: 100000.0
+
+          # No cspace_cfg (joint-limit) hard constraint here on purpose -- ported
+          # from lbfgs_mpc.yaml's "TRIED AND REVERTED" note (2026-08-14, that
+          # file's own header, before it was deleted): it caused overshoot/
+          # oscillation under LBFGS's B-spline control-point optimization.
+
+      optimizer:
+        solver_type: lbfgs
+        solver_name: lbfgs
+        cost_convergence: 1.0e-11
+        cost_delta_threshold: 0.0
+        cost_relative_threshold: 1.0
+        epsilon: 0.01
+        fixed_iters: true
+        history: 27
+        inner_iters: 25
+        last_best: 10
+        line_search_scale: [0.01, 0.1, 0.5, 1.0]
+        line_search_type: approx_wolfe
+        num_iters: 50
+        num_problems: 1
+        stable_mode: true
+        step_scale: 0.98
+        store_debug: false
+        sync_cuda_time: false
+        use_coo_sparse: true
+        use_cuda_kernel: true
+        use_cuda_line_search_kernel: true
+        use_cuda_update_best_kernel: true
+        use_shared_buffers_kernel: true
+        # 0.001, NOT 1e-3 -- see lbfgs_mpc.yaml's old header comment (now deleted,
+        # see git history) for why: a plain scientific-notation mantissa without a
+        # decimal point can silently parse as a string in a YAML-1.1 float
+        # resolver and reach a CUDA kernel launch as the wrong type.
+        line_search_wolfe_c_1: 0.001
+        line_search_wolfe_c_2: 0.98
+        return_best_action: true
