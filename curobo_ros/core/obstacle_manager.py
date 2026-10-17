@@ -660,14 +660,7 @@ class ObstacleManager:
             voxel_grid, grid_min, size = self._compute_dense_voxel_grid(node, voxel_size)
         except Exception as e:
             node.get_logger().error(f'get_voxel_grid: computation failed ({e})')
-            response.voxel_grid.resolutions = rnp.msgify(
-                Vector3, np.array([voxel_size, voxel_size, voxel_size])
-            )
-            response.voxel_grid.size_x = 0
-            response.voxel_grid.size_y = 0
-            response.voxel_grid.size_z = 0
-            response.voxel_grid.data = []
-            return response
+            return self.empty_voxel_grid_response(node, response)
 
         response.voxel_grid.resolutions = rnp.msgify(
             Vector3, np.array([voxel_size, voxel_size, voxel_size])
@@ -679,6 +672,18 @@ class ObstacleManager:
         response.voxel_grid.origin.y = float(grid_min[1])
         response.voxel_grid.origin.z = float(grid_min[2])
         response.voxel_grid.data = voxel_grid.flatten().tolist()
+        return response
+
+    def empty_voxel_grid_response(self, node, response):
+        """Fill a GetVoxelGrid response with a 0x0x0 grid (failure / busy)."""
+        voxel_size = self._resolve_voxel_size(node)
+        response.voxel_grid.resolutions = rnp.msgify(
+            Vector3, np.array([voxel_size, voxel_size, voxel_size])
+        )
+        response.voxel_grid.size_x = 0
+        response.voxel_grid.size_y = 0
+        response.voxel_grid.size_z = 0
+        response.voxel_grid.data = []
         return response
 
     def publish_sparse_voxel_grid(self, node, publisher):

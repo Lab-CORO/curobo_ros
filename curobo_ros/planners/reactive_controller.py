@@ -53,6 +53,8 @@ class ReactiveController(TrajectoryPlanner):
 
         # The cuRobo reactive solver, built lazily from the shared context.
         self.solver = None
+        # Neutral state the CUDA graphs are primed on (see prime_cuda_graphs).
+        self._warm_state = None
 
         # Goal / loop state.
         self.start_state: Optional[JointState] = None
@@ -72,7 +74,7 @@ class ReactiveController(TrajectoryPlanner):
         self._live_goal_lock_timeout_s = 0.005
 
         # Tunables (overwritten from the per-call config in plan()).
-        self.convergence_threshold = 0.03      # meters
+        self.convergence_threshold = 0.005      # meters
 
         self.convergence_threshold_rad = 0.05  # radians
 
@@ -170,14 +172,20 @@ class ReactiveController(TrajectoryPlanner):
         one that lost its sphere state to a rebuild.
         """
         if self.solver is None:
-            self.solver = self.build_solver()
-            try:
-                replay = getattr(self.node, 'replay_attachment', None)
-                if replay is not None:
-                    replay(self)
-            except Exception as e:
-                self.node.get_logger().warn(
-                    f"{self.get_planner_name()}: attachment replay failed: {e}")
+            # Under gpu_lock (RLock, so free when the caller already holds it):
+            # build_solver() issues CUDA work and prime_cuda_graphs() below
+            # CAPTURES graphs, neither of which may overlap the perception
+            # thread. plan() reaches here without the lock.
+            with self.node.gpu_lock:
+                self.solver = self.build_solver()
+                try:
+                    replay = getattr(self.node, 'replay_attachment', None)
+                    if replay is not None:
+                        replay(self)
+                except Exception as e:
+                    self.node.get_logger().warn(
+                        f"{self.get_planner_name()}: attachment replay failed: {e}")
+                self.prime_cuda_graphs()
         return self.solver
 
     def rebuild_solver(self):
@@ -187,7 +195,149 @@ class ReactiveController(TrajectoryPlanner):
         requires a full rebuild rather than a world update.
         """
         self.solver = None
+        self._warm_state = None
         return self.ensure_solver()
+
+    # ------------------------------------------------------------------
+    # CUDA graph priming: capture every graph BEFORE the servo loop runs
+    # ------------------------------------------------------------------
+    #
+    # cuRobo captures its CUDA graphs lazily, on the first call of each
+    # GraphExecutor -- and a solver holds SEVERAL of them, captured on
+    # DIFFERENT step() calls: GradientOptCore's `_opt_iters` runs on every
+    # optimize(), but `_prepare_initial_iteration_state` is only dispatched
+    # when no reinitialize()d iteration state is cached, i.e. from the SECOND
+    # solve after setup() (gradient_opt_core.py:_optimize_impl); the metrics
+    # rollout has two more (rollout_robot.py compute_metrics_from_*). Capture
+    # is process-global: any concurrent CUDA op (voxel publisher, depth
+    # integrate) invalidates it and poisons the whole CUDA context
+    # (cudaErrorStreamCaptureInvalidated, see log 2026-09-14 11:35). The
+    # servo loop only holds gpu_lock for the single step flagged by
+    # take_graph_capture_pending(), so a capture on step 2+ raced the 7 Hz
+    # voxel publisher and crashed the goal.
+    #
+    # Fix: prime_cuda_graphs() runs warm solves under gpu_lock until NO
+    # executor is left uncaptured, so every later step() only replays. The
+    # loop is driven by the enumeration below (not a hardcoded solve count),
+    # and anything still pending at the cap is logged by name -- that WARN is
+    # the signal that cuRobo grew a new lazily-captured path. _step_guard is
+    # kept as a belt.
+
+    _PRIME_MAX_SOLVES = 4
+
+    def _iter_graph_executors(self):
+        """Yield (name, GraphExecutor) for every lazily-captured graph the
+        solver owns. Two container shapes: gradient optimizers keep
+        `_executors` on `optimizer._core` (lbfgs.py), particle optimizers ARE
+        the core and keep it directly (particle_opt_core.py); rollouts keep
+        them as plain attributes (rollout_robot.py).
+        """
+        core = getattr(self.solver, 'core', None)
+        if core is None:
+            return
+        for i, opt in enumerate(getattr(core, 'optimizers', None) or []):
+            for holder in (opt, getattr(opt, '_core', None)):
+                for name, ex in (getattr(holder, '_executors', None) or {}).items():
+                    if ex is not None:
+                        yield f"optimizer[{i}].{name}", ex
+        rollouts = [('metrics_rollout', getattr(core, 'metrics_rollout', None))]
+        rollouts += [(f"additional_metrics_rollouts[{k}]", r) for k, r in
+                     (getattr(core, 'additional_metrics_rollouts', None) or {}).items()]
+        for prefix, r in rollouts:
+            if r is None:
+                continue
+            for attr in ('_compute_metrics_from_state_executor',
+                         '_compute_metrics_from_action_executor'):
+                ex = getattr(r, attr, None)
+                if ex is not None:
+                    yield f"{prefix}.{attr}", ex
+
+    def pending_graph_executors(self) -> list:
+        """Names of graph executors that would CAPTURE on their next call."""
+        return [name for name, ex in self._iter_graph_executors()
+                if getattr(ex, '_use_cuda_graph', False)
+                and getattr(ex, '_graph_input', None) is None]
+
+    def _prime_solve(self) -> bool:
+        """One throw-away solve on a neutral state, to trigger lazy captures.
+
+        Default covers the ModelPredictiveControl-based controllers
+        (optimize_action_sequence). Controllers whose solver has no such
+        entry point (RetargetController.solve_frame needs a goal) return
+        False and keep relying on _step_guard.
+        """
+        solve = getattr(self.solver, 'optimize_action_sequence', None)
+        if solve is None:
+            return False
+        if self._warm_state is None:
+            self._warm_state, warm_goal = self._make_warm_state_and_goal(self.solver)
+            self.solver.setup(self._warm_state)
+            self.solver.update_goal_tool_poses(warm_goal, run_ik=False)
+        solve(self._warm_state)
+        return True
+
+    @staticmethod
+    def _make_warm_state_and_goal(solver):
+        """Neutral (default joint state, zero velocity) state and the tool
+        pose it already satisfies -- a goal any solver can be primed on."""
+        state = solver.default_joint_state.clone().unsqueeze(0)
+        state.velocity = torch.zeros_like(state.position)
+        state.acceleration = torch.zeros_like(state.position)
+        kin = solver.compute_kinematics(state)
+        goal = GoalToolPose.from_poses(
+            {solver.tool_frames[0]: Pose(
+                position=kin.tool_poses.position.reshape(-1, 3)[:1],
+                quaternion=kin.tool_poses.quaternion.reshape(-1, 4)[:1],
+            )},
+            ordered_tool_frames=solver.tool_frames,
+            num_goalset=1,
+        )
+        return state, goal
+
+    def prime_cuda_graphs(self) -> bool:
+        """Capture every pending CUDA graph now, under the caller's gpu_lock.
+
+        Idempotent and cheap when nothing is pending (one enumeration, no
+        solve). Must run before the servo loop: after build_solver() and
+        after every _release_all_solver_cuda_graphs() (planner switch), both
+        funnelled through UnifiedPlannerNode._setup_planner. Returns True when
+        no executor is left pending.
+
+        Scope: "no EXISTING executor is uncaptured". cuRobo creates some
+        executors lazily (rollout_robot.py compute_metrics_from_*), and one
+        first created inside the servo loop would still capture there,
+        unguarded and unreported -- none does on today's MPC path.
+        """
+        if self.solver is None:
+            return False
+        pending = self.pending_graph_executors()
+        if not pending:
+            return True
+        log = self.node.get_logger()
+        n = 0
+        while pending and n < self._PRIME_MAX_SOLVES:
+            t0 = time.monotonic()
+            try:
+                if not self._prime_solve():
+                    log.info(f"{self.get_planner_name()}: no prime solve for this "
+                             f"solver; leaving {len(pending)} graph(s) to capture "
+                             f"in the guarded first step: {pending}")
+                    return False
+            except Exception as e:
+                log.error(f"{self.get_planner_name()}: prime solve {n + 1} failed: {e}")
+                return False
+            n += 1
+            still = self.pending_graph_executors()
+            log.info(f"{self.get_planner_name()}: prime solve {n} captured "
+                     f"{[p for p in pending if p not in still]} "
+                     f"in {(time.monotonic() - t0) * 1000:.0f} ms")
+            pending = still
+        if pending:
+            log.warn(f"{self.get_planner_name()}: {len(pending)} CUDA graph(s) still "
+                     f"uncaptured after {n} prime solves -- they will capture inside "
+                     f"the servo loop, unguarded: {pending}")
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # cuRobo-specific hooks (implemented by concrete controllers)
@@ -579,7 +729,7 @@ class ReactiveController(TrajectoryPlanner):
                 message=f"{self.get_planner_name()} solver not initialized.",
             )
 
-        self.convergence_threshold = config.get('convergence_threshold', 0.01)
+        self.convergence_threshold = config.get('convergence_threshold', 0.005)
         self.convergence_threshold_rad = config.get('convergence_threshold_rad', 0.05)
         self.convergence_hold_steps = int(config.get('convergence_hold_steps', 1))
         self.max_iterations = config.get('max_iterations', 1000)

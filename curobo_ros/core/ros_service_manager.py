@@ -264,8 +264,24 @@ class RosServiceManager:
         return self.obstacle_manager.remove_all_objects(node, request, response)
 
     def _callback_get_voxel_grid(self, node, request: GetVoxelGrid, response):
-        """Delegate get_voxel_grid service to ObstacleManager"""
-        return self.obstacle_manager.get_voxel_grid(node, request, response)
+        """Delegate get_voxel_grid service to ObstacleManager.
+
+        Same GPU query as _publish_sparse_voxel_grid, so the same non-blocking
+        gpu_lock guard: a call landing during a CUDA graph capture would
+        invalidate it. Busy -> empty 0x0x0 grid (the caller must still get a
+        reply), never a wait on the planner.
+        """
+        gpu_lock = getattr(node, 'gpu_lock', None)
+        if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
+            node.get_logger().warn(
+                "gpu_lock busy (CUDA graph capture in progress) - get_voxel_grid "
+                "returns an empty grid")
+            return self.obstacle_manager.empty_voxel_grid_response(node, response)
+        try:
+            return self.obstacle_manager.get_voxel_grid(node, request, response)
+        finally:
+            if gpu_lock is not None:
+                gpu_lock.release()
 
     def _callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         """Delegate get_collision_distance service to ConfigWrapper"""

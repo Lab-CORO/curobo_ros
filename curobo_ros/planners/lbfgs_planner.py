@@ -163,7 +163,7 @@ import time
 from typing import Any
 
 import torch
-from curobo.types import JointState, Pose, GoalToolPose
+from curobo.types import JointState
 from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
@@ -381,21 +381,13 @@ class LBFGSController(ReactiveController):
         config = ModelPredictiveControlCfg.create(**create_kwargs)
         solver = ModelPredictiveControl(config)
 
-        warmup_state = solver.default_joint_state.clone().unsqueeze(0)
-        warmup_state.velocity = torch.zeros_like(warmup_state.position)
-        warmup_state.acceleration = torch.zeros_like(warmup_state.position)
+        # Neutral state + the pose it already satisfies. Kept in _warm_state:
+        # prime_cuda_graphs() (ReactiveController) re-solves on it to capture
+        # every CUDA graph before the servo loop runs.
+        warmup_state, warmup_goal = self._make_warm_state_and_goal(solver)
         solver.setup(warmup_state)
-
-        warmup_kin = solver.compute_kinematics(warmup_state)
-        warmup_goal = GoalToolPose.from_poses(
-            {solver.tool_frames[0]: Pose(
-                position=warmup_kin.tool_poses.position.reshape(-1, 3)[:1],
-                quaternion=warmup_kin.tool_poses.quaternion.reshape(-1, 4)[:1],
-            )},
-            ordered_tool_frames=solver.tool_frames,
-            num_goalset=1,
-        )
         solver.update_goal_tool_poses(warmup_goal, run_ik=False)
+        self._warm_state = warmup_state
 
         node.lbfgs = solver
 

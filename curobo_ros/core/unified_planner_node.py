@@ -228,6 +228,13 @@ class UnifiedPlannerNode(Node):
         # decide whether their next solver call needs gpu_lock. Guards only the
         # step(s) that can actually capture; steps that only replay stay
         # unguarded so the perception thread isn't starved. cf. debug 2026-07-28.
+        #
+        # This flag is take-and-clear, so it guards ONE step -- but cuRobo
+        # captures on several (2026-09-14: _prepare_initial_iteration_state
+        # captured on step 2, unguarded, and the voxel publisher invalidated
+        # it). The real guarantee is now ReactiveController.prime_cuda_graphs()
+        # in _setup_planner, which captures everything under gpu_lock before
+        # the loop starts; this flag stays as a belt.
         self._graph_capture_pending = True
         self._graph_capture_pending_lock = threading.Lock()
 
@@ -949,6 +956,14 @@ class UnifiedPlannerNode(Node):
                     self.get_logger().info("On-demand warmup: reactive controller")
                     self._ensure_ground_plane()
                 planner.ensure_solver()
+                # Capture every CUDA graph NOW, while gpu_lock is held, so the
+                # servo loop only ever replays. Covers both a fresh solver and
+                # one whose graphs _ensure_exclusive_graph just released (the
+                # take_graph_capture_pending() guard only protects the FIRST
+                # step, but cuRobo captures on several -- see
+                # ReactiveController.prime_cuda_graphs).
+                if self.config_wrapper_motion.use_cuda_graph:
+                    planner.prime_cuda_graphs()
 
     # ------------------------------------------------------------------
     # CUDA graph exclusivity (only the active solver holds a live graph)
