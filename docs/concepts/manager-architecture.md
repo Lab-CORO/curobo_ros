@@ -43,7 +43,7 @@ Parses `cameras_config_file` into a `CameraContext` and instantiates one camera 
 
 ### 5. `RosServiceManager` (`ros_service_manager.py`)
 
-Registers the obstacle/introspection services and the visualization publishers (scene markers, collision spheres, sparse voxel grid) with their timers. It guards GPU-touching timers with a non-blocking `gpu_lock` acquire so visualization never stalls planning.
+Registers the obstacle/introspection services and the visualization publishers (scene markers, collision spheres, sparse voxel grid) with their timers. It guards GPU-touching timers with `SolverHost.try_access()` (non-blocking) so visualization never stalls planning.
 
 ## Self-registering service groups
 
