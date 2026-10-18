@@ -34,7 +34,6 @@ import time
 import traceback
 from abc import abstractmethod
 from collections import deque
-from contextlib import nullcontext
 from typing import Any, Optional
 
 import torch
@@ -65,7 +64,7 @@ class ReactiveController(TrajectoryPlanner):
         self._live_goal_lock = threading.Lock()
         self._latest_goal = None
         self._latest_goal_fresh = False
-        # How long _apply_live_goal_guarded() waits for gpu_lock before
+        # How long _apply_live_goal_guarded() waits for the GPU lock before
         # deferring the goal by one cycle. Small on purpose: the point is to
         # absorb a lock about to be released, NOT to queue behind the depth
         # callback, which holds it across a full torch.cuda.synchronize()
@@ -172,11 +171,11 @@ class ReactiveController(TrajectoryPlanner):
         one that lost its sphere state to a rebuild.
         """
         if self.solver is None:
-            # Under gpu_lock (RLock, so free when the caller already holds it):
+            # Under the GPU lock (RLock, so free when the caller already holds it):
             # build_solver() issues CUDA work and prime_cuda_graphs() below
             # CAPTURES graphs, neither of which may overlap the perception
             # thread. plan() reaches here without the lock.
-            with self.node.gpu_lock:
+            with self.node.solver_host.exclusive():
                 self.solver = self.build_solver()
                 try:
                     replay = getattr(self.node, 'replay_attachment', None)
@@ -212,11 +211,11 @@ class ReactiveController(TrajectoryPlanner):
     # is process-global: any concurrent CUDA op (voxel publisher, depth
     # integrate) invalidates it and poisons the whole CUDA context
     # (cudaErrorStreamCaptureInvalidated, see log 2026-09-14 11:35). The
-    # servo loop only holds gpu_lock for the single step flagged by
-    # take_graph_capture_pending(), so a capture on step 2+ raced the 7 Hz
+    # servo loop only holds the GPU lock for the single step flagged by
+    # SolverHost.capture_guard(), so a capture on step 2+ raced the 7 Hz
     # voxel publisher and crashed the goal.
     #
-    # Fix: prime_cuda_graphs() runs warm solves under gpu_lock until NO
+    # Fix: prime_cuda_graphs() runs warm solves under the GPU lock until NO
     # executor is left uncaptured, so every later step() only replays. The
     # loop is driven by the enumeration below (not a hardcoded solve count),
     # and anything still pending at the cap is logged by name -- that WARN is
@@ -295,11 +294,11 @@ class ReactiveController(TrajectoryPlanner):
         return state, goal
 
     def prime_cuda_graphs(self) -> bool:
-        """Capture every pending CUDA graph now, under the caller's gpu_lock.
+        """Capture every pending CUDA graph now, under the caller's exclusive GPU access.
 
         Idempotent and cheap when nothing is pending (one enumeration, no
         solve). Must run before the servo loop: after build_solver() and
-        after every _release_all_solver_cuda_graphs() (planner switch), both
+        after every SolverHost.release_all_graphs() (planner switch), both
         funnelled through UnifiedPlannerNode._setup_planner. Returns True when
         no executor is left pending.
 
@@ -644,7 +643,7 @@ class ReactiveController(TrajectoryPlanner):
                 self._latest_goal_fresh = True
 
     def _apply_live_goal_guarded(self) -> None:
-        """Take and apply the pending live goal, without blocking on gpu_lock.
+        """Take and apply the pending live goal, without blocking on the GPU lock.
 
         apply_live_goal() CANNOT capture a CUDA graph: its only GPU call is
         update_goal_tool_poses(run_ik=False), whose cuRobo path
@@ -652,7 +651,7 @@ class ReactiveController(TrajectoryPlanner):
         in-place copy into the existing goal buffer plus a loop of
         rollout.update_params(). A reallocation there is impossible by
         construction -- update_goal_buffer() would return update_reference=True
-        and log_and_raise. So this site only needs gpu_lock for the WEAKER
+        and log_and_raise. So this site only needs the GPU lock for the WEAKER
         guarantee "do not issue GPU ops while another thread is capturing", the
         same one the depth camera and ros_service_manager already take
         non-blocking.
@@ -679,42 +678,39 @@ class ReactiveController(TrajectoryPlanner):
             return
 
         t_goal0 = self._mark()
-        if not self.node.gpu_lock.acquire(timeout=self._live_goal_lock_timeout_s):
-            self._put_back_live_goal(raw)
-            self._diag_live_goal_wait_ms = (self._mark() - t_goal0) * 1000.0
-            self._diag_live_goal_ms = self._diag_live_goal_wait_ms
-            self.node.get_logger().debug(
-                f"{self.get_planner_name()}: gpu_lock busy - live goal deferred "
-                f"to next cycle", throttle_duration_sec=2.0)
-            return
-        try:
-            t_goal1 = self._mark()
-            self.apply_live_goal(raw)
-            t_goal2 = self._mark()
-        except Exception as e:
-            # The goal is NOT put back: apply_live_goal raising means the goal
-            # itself was rejected, and retrying it every cycle would just loop
-            # on the same failure. Matches the previous behaviour here.
-            self.node.get_logger().error(
-                f"{self.get_planner_name()}: live goal rejected "
-                f"({e}) - keeping previous goal",
-                throttle_duration_sec=1.0,
-            )
-            return
-        finally:
-            self.node.gpu_lock.release()
+        with self.node.solver_host.try_access(
+                timeout=self._live_goal_lock_timeout_s) as acquired:
+            if not acquired:
+                self._put_back_live_goal(raw)
+                self._diag_live_goal_wait_ms = (self._mark() - t_goal0) * 1000.0
+                self._diag_live_goal_ms = self._diag_live_goal_wait_ms
+                self.node.get_logger().debug(
+                    f"{self.get_planner_name()}: GPU busy - live goal deferred "
+                    f"to next cycle", throttle_duration_sec=2.0)
+                return
+            try:
+                t_goal1 = self._mark()
+                self.apply_live_goal(raw)
+                t_goal2 = self._mark()
+            except Exception as e:
+                # The goal is NOT put back: apply_live_goal raising means the goal
+                # itself was rejected, and retrying it every cycle would just loop
+                # on the same failure. Matches the previous behaviour here.
+                self.node.get_logger().error(
+                    f"{self.get_planner_name()}: live goal rejected "
+                    f"({e}) - keeping previous goal",
+                    throttle_duration_sec=1.0,
+                )
+                return
 
         self._diag_live_goal_wait_ms = (t_goal1 - t_goal0) * 1000.0
         self._diag_live_goal_apply_ms = (t_goal2 - t_goal1) * 1000.0
         self._diag_live_goal_ms = (self._mark() - t_goal0) * 1000.0
 
     def _step_guard(self):
-        """gpu_lock for a step() that may capture a CUDA graph, else no lock.
+        """Exclusive GPU access for a step() that may capture a CUDA graph, else no lock.
         """
-        take = getattr(self.node, 'take_graph_capture_pending', None)
-        if take is not None and take():
-            return self.node.gpu_lock
-        return nullcontext()
+        return self.node.solver_host.capture_guard()
 
     # ------------------------------------------------------------------
     # Planning: set up the reactive goal (no full trajectory is produced).
@@ -736,7 +732,7 @@ class ReactiveController(TrajectoryPlanner):
         self.start_state = start_state
 
         try:
-            with self.node.gpu_lock:
+            with self.node.solver_host.exclusive():
                 setup_ok = self.setup(start_state, goal_request)
             if not setup_ok:
                 return PlannerResult(success=False, message="Failed to set reactive goal")
@@ -819,7 +815,7 @@ class ReactiveController(TrajectoryPlanner):
 
                 # Still split into lock WAIT and actual work: they have
                 # opposite fixes and lumping them together cannot tell apart
-                # gpu_lock contention from expensive work. wait_ms is now
+                # GPU lock contention from expensive work. wait_ms is now
                 # capped by _live_goal_lock_timeout_s -- a wait AT that cap
                 # means the goal was deferred, not applied.
                 self._apply_live_goal_guarded()
@@ -941,7 +937,7 @@ class ReactiveController(TrajectoryPlanner):
                     loop_iter += 1
 
                     # Same non-blocking treatment as _execute_immediate --
-                    # see _apply_live_goal_guarded for why gpu_lock is not
+                    # see _apply_live_goal_guarded for why the GPU lock is not
                     # needed blocking here.
                     self._apply_live_goal_guarded()
 

@@ -42,6 +42,7 @@ from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion
 from curobo_ros.core.attachment_services import AttachmentServices
 from curobo_ros.core.ik_services import IKServices
 from curobo_ros.core.fk_services import FKServices
+from curobo_ros.core.solver_host import SolverHost
 from curobo_ros.planners import (
     PlannerFactory,
     PlannerManager,
@@ -60,15 +61,9 @@ class UnifiedPlannerNode(Node):
         # code paths that read `.device` / `.dtype` from it.
         self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
 
-        # Serializes curobo CUDA-graph *capture* (classic first plan, MPC
-        # cold-start) against concurrent GPU work on other executor threads —
-        # notably the depth-camera callback's mapper.integrate(). A GPU op
-        # launched while a stream is capturing invalidates the capture
-        # (cudaErrorStreamCaptureInvalidated). Created before cameras/solvers so
-        # it always exists when callbacks fire. RLock: the holder thread may
-        # re-enter; a different thread (depth callback) fails the non-blocking
-        # acquire and simply skips its frame.
-        self.gpu_lock = threading.RLock()
+        # Sole owner of GPU access and CUDA-graph ownership (ADR-0001).
+        # Created before cameras/solvers so it always exists when callbacks fire.
+        self.solver_host = SolverHost(self.get_logger())
 
         # Serializes goal admission: only one execute_trajectory goal may be
         # active at a time (open-loop or reactive). Guards against two
@@ -211,32 +206,8 @@ class UnifiedPlannerNode(Node):
         self.lbfgs = None           # reactive: ModelPredictiveControl (LBFGSController)
         self.retargeter = None      # reactive: MotionRetargeter (teleop)
 
-        # Which solver currently owns the single live CUDA graph. Two captured
-        # graphs cannot safely coexist in one CUDA context: the inactive one's
-        # baked device addresses get invalidated by the active one's allocator
-        # activity, so replaying it segfaults in cuGraphLaunch. We enforce
-        # "exactly one live graph" by releasing every other solver's graph
-        # whenever the owner changes (see _ensure_exclusive_graph). Keys:
-        # 'motion' for all open-loop planners (they share one MotionPlanner),
-        # 'reactive:<name>' for each reactive controller. None = no owner yet.
-        self._active_graph_owner = None
-
-        # True whenever the next call into a reactive solver may CAPTURE a CUDA
-        # graph (fresh solver, or right after a release) rather than just replay
-        # one. Capture is process-global — no other thread may issue ANY CUDA op
-        # while it's in progress — so callers use take_graph_capture_pending() to
-        # decide whether their next solver call needs gpu_lock. Guards only the
-        # step(s) that can actually capture; steps that only replay stay
-        # unguarded so the perception thread isn't starved. cf. debug 2026-07-28.
-        #
-        # This flag is take-and-clear, so it guards ONE step -- but cuRobo
-        # captures on several (2026-09-14: _prepare_initial_iteration_state
-        # captured on step 2, unguarded, and the voxel publisher invalidated
-        # it). The real guarantee is now ReactiveController.prime_cuda_graphs()
-        # in _setup_planner, which captures everything under gpu_lock before
-        # the loop starts; this flag stays as a belt.
-        self._graph_capture_pending = True
-        self._graph_capture_pending_lock = threading.Lock()
+        self.solver_host.bind_solvers(
+            self._live_solvers, self.config_wrapper_motion.use_cuda_graph)
 
         # TF buffer for AttachmentServices: AttachObject.srv's header.frame_id
         # lets a caller express the payload pose in any TF frame (typically
@@ -267,11 +238,10 @@ class UnifiedPlannerNode(Node):
         initial_planner = self.get_parameter('planner_type').get_parameter_value().string_value
         self._warmup_initial_planner(initial_planner)
         self.planner_manager.set_current_planner(initial_planner)
-        # Startup warms exactly one solver, so it is already the sole graph
-        # owner — record it so the first plan reuses that warmup graph instead
-        # of needlessly releasing and re-capturing it.
-        self._active_graph_owner = self._graph_owner_key(
-            self.planner_manager.get_current_planner())
+        # Startup warms exactly one solver: the first claim adopts it as graph
+        # owner without releasing, so the first plan reuses its warmup graph.
+        self.solver_host.claim_graphs(
+            self._graph_owner_key(self.planner_manager.get_current_planner()))
 
         # Pre-warm the voxel-grid primitive rasterization path while the executor
         # is not yet spinning (no service can be served until __init__ returns),
@@ -566,7 +536,7 @@ class UnifiedPlannerNode(Node):
         debug = self._debug_solver_update_timing()
         # ESDF recompute + world push are GPU ops — hold the lock so they never
         # overlap a concurrent depth integrate / graph capture.
-        with self.gpu_lock:
+        with self.solver_host.exclusive():
             t0 = time.monotonic() if debug else None
             refreshed = obs.refresh_esdf()
             if debug:
@@ -581,16 +551,15 @@ class UnifiedPlannerNode(Node):
         requires recreating the solvers (a world update is not sufficient).
         Registered as ObstacleManager's cache-change observer.
 
-        Held under gpu_lock: this (re)captures CUDA graphs, same invariant as
-        every other graph-capturing path in this node (see gpu_lock's other
-        acquisitions) — without it, a concurrent camera integrate()/perception
+        Held under exclusive GPU access: this (re)captures CUDA graphs
+        (ADR-0001) — without it, a concurrent camera integrate()/perception
         refresh could invalidate the graph being captured here
         (cudaErrorStreamCaptureInvalidated).
         """
         self.get_logger().info(
             "Collision cache changed - rebuilding solvers (blocking, ~20s)...")
 
-        with self.gpu_lock:
+        with self.solver_host.exclusive():
             # Motion planner (present after the initial warmup).
             if self.motion_planner is not None:
                 self.config_wrapper_motion.set_motion_gen_config(self, None, None)
@@ -621,8 +590,8 @@ class UnifiedPlannerNode(Node):
             self.replay_attachment()
 
             # Rebuilt solvers hold no graph yet — their first step() will
-            # capture, so mark it pending (see take_graph_capture_pending).
-            self._set_graph_capture_pending()
+            # capture, so mark it pending (see SolverHost.capture_guard).
+            self.solver_host.mark_capture_pending()
 
         self.get_logger().info("Solvers rebuilt after cache change")
 
@@ -652,7 +621,7 @@ class UnifiedPlannerNode(Node):
             # concurrent depth integrate can't invalidate the capture (mirrors the
             # execute-action path). Without this, the camera callback's
             # mapper.integrate() races the capture -> cudaErrorStreamCaptureInvalidated.
-            with self.gpu_lock:
+            with self.solver_host.exclusive():
                 result = planner.plan(start_state, request, config, self.robot_context)
 
             response.success = result.success
@@ -770,7 +739,7 @@ class UnifiedPlannerNode(Node):
                     self.get_logger().info(f"Planning with {planner.get_planner_name()}")
                     # First plan captures the MotionGen CUDA graph — hold the
                     # lock so a concurrent depth integrate can't invalidate it.
-                    with self.gpu_lock:
+                    with self.solver_host.exclusive():
                         result = planner.plan(start_state, goal, config, self.robot_context)
                     if not result.success:
                         self.get_logger().error(
@@ -913,33 +882,17 @@ class UnifiedPlannerNode(Node):
     # ------------------------------------------------------------------
 
     def _setup_planner(self, planner):
-        # Held under gpu_lock, same invariant as every other graph-capturing path
-        # here (refresh_perception_world, rebuild_solvers_for_cache_change, both
-        # planner.plan() call sites). This one was MISSING it, and that is not
-        # theoretical: switching MPC -> Classic mid-session with the cameras live
-        # crashed the node (2026-08-08). _warmup_classic() captures the seed-IK
-        # CUDA graph, and torch.cuda.graph() defaults to capture_error_mode
-        # "global" -- while a capture is live, ANY CUDA op from ANY thread of the
-        # process fails with cudaErrorStreamCaptureUnsupported. The depth callback
-        # honours its half of the contract (non-blocking acquire then skip the
-        # frame, camera_depth_map_strategy.py:157), but a lock nobody holds is
-        # always free, so it ran mapper.integrate() straight into the capture.
-        # The capture aborted while leaving the stream in
-        # cudaStreamCaptureStatusActive, which poisoned the CUDA context for the
-        # whole process: 106 consecutive CUDA failures, no recovery short of a
-        # node restart.
-        #
-        # gpu_lock is an RLock and is the OUTERMOST lock in the documented order
-        # (robot_context.py:17-37), so acquiring it here is deadlock-free even
-        # when a caller already holds it. Cost: the depth callback drops its
-        # frames during the ~6 s warmup -- exactly the designed behaviour.
-        with self.gpu_lock:
+        # Exclusive GPU access, like every other graph-capturing path here:
+        # _warmup_classic() captures the seed-IK graph, and a capture is
+        # process-global (ADR-0001, incident 2026-08-08). The depth callback
+        # drops its frames during the ~6 s warmup -- by design.
+        with self.solver_host.exclusive():
             # Enforce a single live CUDA graph before this planner runs: if it
             # isn't the current graph owner, release every other solver's captured
             # graph so this one re-captures (on its next call) as the sole live
             # graph. Cheap no-op when the owner is unchanged (repeated plans reuse
             # the graph).
-            self._ensure_exclusive_graph(planner)
+            self.solver_host.claim_graphs(self._graph_owner_key(planner))
 
             # Open-loop planners share one MotionPlanner instance (class-level).
             if isinstance(planner, SinglePlanner):
@@ -956,11 +909,11 @@ class UnifiedPlannerNode(Node):
                     self.get_logger().info("On-demand warmup: reactive controller")
                     self._ensure_ground_plane()
                 planner.ensure_solver()
-                # Capture every CUDA graph NOW, while gpu_lock is held, so the
+                # Capture every CUDA graph NOW, under exclusive access, so the
                 # servo loop only ever replays. Covers both a fresh solver and
-                # one whose graphs _ensure_exclusive_graph just released (the
-                # take_graph_capture_pending() guard only protects the FIRST
-                # step, but cuRobo captures on several -- see
+                # one whose graphs claim_graphs just released (the
+                # capture_guard() belt only protects the FIRST step, but
+                # cuRobo captures on several -- see
                 # ReactiveController.prime_cuda_graphs).
                 if self.config_wrapper_motion.use_cuda_graph:
                     planner.prime_cuda_graphs()
@@ -981,101 +934,17 @@ class UnifiedPlannerNode(Node):
             return f'reactive:{planner.get_planner_name()}'
         return None
 
-    def _ensure_exclusive_graph(self, planner):
-        """Guarantee the given planner is the sole owner of a live CUDA graph."""
-        self._ensure_exclusive_graph_key(self._graph_owner_key(planner))
+    def _live_solvers(self):
+        """Every live solver object, for SolverHost.release_all_graphs.
 
-    def _ensure_exclusive_graph_key(self, owner_key):
-        """Make owner_key the sole live-graph owner, releasing all others.
-
-        No-op if graphs are disabled or the owner is unchanged. Otherwise release
-        every captured graph (the incoming solver re-captures cleanly, alone, on
-        its next call) and record the new owner. See _active_graph_owner.
+        Transitional: goes away once SolverHost owns the solvers.
         """
-        if not self.config_wrapper_motion.use_cuda_graph:
-            return
-        if owner_key is None or owner_key == self._active_graph_owner:
-            return
-        self.get_logger().info(
-            f"CUDA graph owner {self._active_graph_owner} -> {owner_key}: releasing "
-            f"other captured graphs so only the active solver holds one")
-        self._release_all_solver_cuda_graphs()
-        self._active_graph_owner = owner_key
-
-    def _release_all_solver_cuda_graphs(self):
-        """Free every solver's captured CUDA graph (frees the graph + its pool).
-
-        reset_cuda_graph() -> GraphExecutor.reset() calls CUDAGraph.reset(), which
-        releases the graph's private memory pool; the solver itself and its shared
-        collision world are untouched (it re-captures on next use). Held under the
-        GPU lock so it can't overlap a concurrent capture / depth integrate.
-        """
-        with self.gpu_lock:
-            if self.motion_planner is not None:
-                for name in ('trajopt_solver', 'ik_solver'):
-                    self._safe_reset_graph(getattr(self.motion_planner, name, None))
-            self._safe_reset_graph(self.mpc)
-            self._safe_reset_graph(self.lbfgs)
-            self._safe_reset_graph(self.retargeter)
-            # Every solver now holds no graph — its next call captures.
-            self._set_graph_capture_pending()
-
-    def _set_graph_capture_pending(self):
-        """Mark that the next reactive solver call may capture a CUDA graph."""
-        with self._graph_capture_pending_lock:
-            self._graph_capture_pending = True
-
-    def take_graph_capture_pending(self) -> bool:
-        """Atomically take-and-clear: True if the next solver call may capture.
-
-        Callers (ReactiveController._step_guard) use this to decide whether
-        their next step() needs gpu_lock — capture is process-global (see
-        _graph_capture_pending's docstring), replay is not. Take-and-clear
-        mirrors _take_live_goal(): exactly one caller sees True per release.
-        """
-        with self._graph_capture_pending_lock:
-            pending = self._graph_capture_pending
-            self._graph_capture_pending = False
-            return pending
-
-    def _safe_reset_graph(self, solver):
-        """Release a solver's captured CUDA graph(s); never raise into callers.
-
-        Uses reset_cuda_graph(), NOT destroy(): SolverCore.destroy() shares its
-        body with reset_cuda_graph() (resets optimizer/metrics_rollout/additional
-        rollouts) but drops both of reset_cuda_graph()'s guards (use_cuda_graph,
-        _task_initialized). Calling it unconditionally on metrics_rollout was
-        tried and found to orphan its constraint tensors -- con_scene_collision
-        froze at a huge constant instead of tracking live geometry (see debug
-        2026-07-25) -- while cost_tool_pose_pos kept updating from the same
-        get_current_metrics() call, proving the rollout's buffers were left in a
-        stale/half-reset state rather than actually corrupted geometry.
-
-        reset_cuda_graph() alone still has the original gap: IKSolver.reset_cuda_graph()
-        never reaches the nested SeedIKSolver's private Levenberg-Marquardt
-        GraphExecutor. That gap is what caused the original cuGraphLaunch segfault
-        on Classic after MPC. So instead of destroy(), reach seed_ik_solver
-        explicitly and narrowly: SeedIKSolver.destroy() only resets its own two
-        GraphExecutors and touches no rollout/collision state, so it's safe to
-        call unconditionally. Also recurse into a nested ik_solver (MpcSolver owns
-        one for goal-state IK; MpcSolver.reset_cuda_graph() only forwards to
-        self.core and never releases it, so its seed-IK graphs were never being
-        freed at all).
-        """
-        if solver is None:
-            return
-        try:
-            if hasattr(solver, 'reset_cuda_graph'):
-                solver.reset_cuda_graph()
-            seed_ik_solver = getattr(solver, 'seed_ik_solver', None)
-            if seed_ik_solver is not None:
-                seed_ik_solver.destroy()
-            nested_ik_solver = getattr(solver, 'ik_solver', None)
-            if nested_ik_solver is not None and nested_ik_solver is not solver:
-                self._safe_reset_graph(nested_ik_solver)
-        except Exception as e:
-            self.get_logger().warn(
-                f"CUDA graph release failed on {type(solver).__name__}: {e}")
+        solvers = []
+        if self.motion_planner is not None:
+            for name in ('trajopt_solver', 'ik_solver'):
+                solvers.append(getattr(self.motion_planner, name, None))
+        solvers.extend([self.mpc, self.lbfgs, self.retargeter])
+        return solvers
 
     def _get_planner_config(self, planner) -> dict:
         if isinstance(planner, SinglePlanner):

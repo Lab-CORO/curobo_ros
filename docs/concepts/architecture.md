@@ -122,7 +122,7 @@ classDiagram
 - `JointPoseStrategy` — streams positions only.
 - `GhostStrategy` — not switchable; always publishes the planned trajectory on `/trajectory` for the RViz preview robot (namespace `preview/`).
 
-`RobotContext` (`curobo_ros/robot/robot_context.py`) enforces a strict lock order (`gpu_lock > strategy_lock > buffer_lock`) and uses buffer epochs to refuse superseded trajectories.
+`RobotContext` (`curobo_ros/robot/robot_context.py`) enforces a strict lock order (GPU lock from `SolverHost` `> strategy_lock > buffer_lock`, see ADR-0001) and uses buffer epochs to refuse superseded trajectories.
 
 ## Configuration and managers
 

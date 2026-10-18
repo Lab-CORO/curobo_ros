@@ -173,21 +173,17 @@ class RosServiceManager:
         (cudaErrorStreamCaptureInvalidated), breaking every later plan until restart.
 
         Same non-blocking guard as the depth camera: if the planner is capturing a
-        graph it holds gpu_lock; skip this publish cycle rather than race it. Never
+        graph it holds the GPU lock; skip this publish cycle rather than race it. Never
         blocks the planner (non-blocking acquire) and costs nothing when idle.
         """
-        gpu_lock = getattr(node, 'gpu_lock', None)
-        if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
-            node.get_logger().warn(
-                "gpu_lock busy (CUDA graph capture in progress) - skipping this "
-                "voxel grid publish cycle",
-                throttle_duration_sec=5.0)
-            return  # planner is capturing a CUDA graph — skip this cycle
-        try:
+        with node.solver_host.try_access() as acquired:
+            if not acquired:
+                node.get_logger().warn(
+                    "GPU busy (CUDA graph capture in progress) - skipping this "
+                    "voxel grid publish cycle",
+                    throttle_duration_sec=5.0)
+                return  # planner is capturing a CUDA graph — skip this cycle
             self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
-        finally:
-            if gpu_lock is not None:
-                gpu_lock.release()
 
     def publish_scene_obstacles(self, node):
         """Publish scene obstacles as a MarkerArray.
@@ -267,21 +263,17 @@ class RosServiceManager:
         """Delegate get_voxel_grid service to ObstacleManager.
 
         Same GPU query as _publish_sparse_voxel_grid, so the same non-blocking
-        gpu_lock guard: a call landing during a CUDA graph capture would
+        GPU lock guard: a call landing during a CUDA graph capture would
         invalidate it. Busy -> empty 0x0x0 grid (the caller must still get a
         reply), never a wait on the planner.
         """
-        gpu_lock = getattr(node, 'gpu_lock', None)
-        if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
-            node.get_logger().warn(
-                "gpu_lock busy (CUDA graph capture in progress) - get_voxel_grid "
-                "returns an empty grid")
-            return self.obstacle_manager.empty_voxel_grid_response(node, response)
-        try:
+        with node.solver_host.try_access() as acquired:
+            if not acquired:
+                node.get_logger().warn(
+                    "GPU busy (CUDA graph capture in progress) - get_voxel_grid "
+                    "returns an empty grid")
+                return self.obstacle_manager.empty_voxel_grid_response(node, response)
             return self.obstacle_manager.get_voxel_grid(node, request, response)
-        finally:
-            if gpu_lock is not None:
-                gpu_lock.release()
 
     def _callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         """Delegate get_collision_distance service to ConfigWrapper"""
@@ -335,7 +327,7 @@ class RosServiceManager:
 
         Runs on a 2 Hz timer independent of planning, and (like
         _publish_sparse_voxel_grid) queries kinematics on the GPU via
-        compute_kinematics -- without the same non-blocking gpu_lock guard, it
+        compute_kinematics -- without the same non-blocking GPU lock guard, it
         will eventually overlap a MotionGen/MPC CUDA graph capture and
         invalidate it (cudaErrorStreamCaptureInvalidated), poisoning the whole
         process's CUDA context until restart. Enabling this viz is also the
@@ -345,14 +337,13 @@ class RosServiceManager:
         if not self.collision_spheres_enabled:
             return
 
-        gpu_lock = getattr(node, 'gpu_lock', None)
-        if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
-            node.get_logger().warn(
-                "gpu_lock busy (CUDA graph capture in progress) - skipping "
-                "this collision sphere publish cycle",
-                throttle_duration_sec=5.0)
-            return  # planner is capturing a CUDA graph — skip this cycle
-        try:
+        with node.solver_host.try_access() as acquired:
+            if not acquired:
+                node.get_logger().warn(
+                    "GPU busy (CUDA graph capture in progress) - skipping "
+                    "this collision sphere publish cycle",
+                    throttle_duration_sec=5.0)
+                return  # planner is capturing a CUDA graph — skip this cycle
             # Source spheres from the MotionPlanner's kinematics when available — it
             # carries attaches (our robot_model_manager kin_model does not), so the
             # fitted attached-object spheres show and ride the arm. attached_mask
@@ -370,9 +361,6 @@ class RosServiceManager:
             else:
                 robot_spheres = self.robot_model_manager.get_collision_spheres()
                 attached_mask = [False] * len(robot_spheres)
-        finally:
-            if gpu_lock is not None:
-                gpu_lock.release()
 
         # Create marker array — prepend a DELETEALL to clear stale markers
         marker_array = MarkerArray()

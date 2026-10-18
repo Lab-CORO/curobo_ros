@@ -14,15 +14,15 @@ from curobo_ros.robot.robot_description import load_robot_description
 # ---------------------------------------------------------------------------
 # Lock order (strict, total), robot command path:
 #
-#   gpu_lock (node, RLock)  >  strategy_lock (RobotContext)  >  buffer_lock
+#   GPU lock (SolverHost, RLock)  >  strategy_lock (RobotContext)  >  buffer_lock
 #   (per-strategy, RLock, see JointCommandStrategy)
 #
 #   _pending_lock / _live_goal_lock / _goal_lock (reactive_controller.py /
 #   unified_planner_node.py) are leaves: never held while acquiring another
 #   lock.
 #
-# gpu_lock -> strategy_lock already exists today (unified_planner_node.py
-# `with self.gpu_lock: planner.plan(...)` -> single_planner.py
+# GPU lock -> strategy_lock already exists today (unified_planner_node.py
+# `with self.solver_host.exclusive(): planner.plan(...)` -> single_planner.py
 # `robot_context.set_command(...)`); the reverse never occurs anywhere under
 # curobo_ros/robot/. This module only adds a rank BELOW strategy_lock.
 #
@@ -30,11 +30,11 @@ from curobo_ros.robot.robot_description import load_robot_description
 #  1. Leaves are never held while acquiring another lock (verified: the
 #     pending-action locks only guard plain assignments).
 #  2. buffer_lock is terminal: strategy modules under curobo_ros/robot/ never
-#     reference strategy_lock or gpu_lock, and every outgoing call made while
+#     reference strategy_lock or the GPU lock, and every outgoing call made while
 #     holding buffer_lock (e.g. a topic publish) is done via a snapshot taken
 #     under the lock, then used after it is released.
-#  3. strategy_lock never acquires gpu_lock.
-#  4. gpu_lock -> strategy_lock is strictly descending, hence consistent.
+#  3. strategy_lock never acquires the GPU lock.
+#  4. GPU lock -> strategy_lock is strictly descending, hence consistent.
 #  5. The emulator's playback thread only ever acquires buffer_lock (rank 1),
 #     holding nothing else.
 #  6. Every lock-then-join sequence (e.g. replacing the playback thread) joins

@@ -817,7 +817,7 @@ class LBFGSController(ReactiveController):
         commands (execute_trajectory.cpp:62-83).
 
         The first call after a goal never sleeps (``_next_publish_t`` is None),
-        which is also the call that may capture a CUDA graph under gpu_lock
+        which is also the call that may capture a CUDA graph under the GPU lock
         (``_step_guard``) -- so the sleep does not hold that lock.
         """
         if self._next_publish_t is not None:

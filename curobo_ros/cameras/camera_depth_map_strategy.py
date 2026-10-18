@@ -199,7 +199,7 @@ class DepthMapCameraStrategy(CameraStrategy):
             # ---- GPU section: EVERY CUDA op is under the lock ----
             # depth->cuda, pose->cuda, rgb alloc AND mapper.integrate are all GPU
             # ops. If curobo is capturing a CUDA graph (plan / MPC cold-start) it
-            # holds gpu_lock, so skip the WHOLE frame — issuing ANY of these ops
+            # holds exclusive GPU access, so skip the WHOLE frame — issuing ANY of these ops
             # mid-capture raises cudaErrorStreamCaptureUnsupported and poisons the
             # process's CUDA context. (Previously only integrate() was guarded, so
             # the depth->cuda copy above still raced the capture.)
@@ -210,13 +210,12 @@ class DepthMapCameraStrategy(CameraStrategy):
                     "Unified planner should expose `node.mapper` (curobo.perception.Mapper).",
                     throttle_duration_sec=5.0)
                 return
-            gpu_lock = getattr(self.node, 'gpu_lock', None)
-            if gpu_lock is not None and not gpu_lock.acquire(blocking=False):
-                self.node.get_logger().debug(
-                    "depth frame skipped (GPU capture in progress)",
-                    throttle_duration_sec=2.0)
-                return
-            try:
+            with self.node.solver_host.try_access() as acquired:
+                if not acquired:
+                    self.node.get_logger().debug(
+                        "depth frame skipped (GPU capture in progress)",
+                        throttle_duration_sec=2.0)
+                    return
                 depth_tensor = torch.from_numpy(depth_img_float).to(
                     device=self.tensor_args.device, dtype=self.tensor_args.dtype)
 
@@ -241,9 +240,6 @@ class DepthMapCameraStrategy(CameraStrategy):
                 mapper.integrate(data_camera)
                 torch.cuda.synchronize()
                 self.depth_map = depth_tensor
-            finally:
-                if gpu_lock is not None:
-                    gpu_lock.release()
 
         except CvBridgeError as e:
             self.node.get_logger().error(f"CvBridge error: {e}")

@@ -53,9 +53,9 @@ Kinematics and attachment services live outside the five managers as small self-
 
 These are the rules the code is written against — keep them when contributing:
 
-- **Lock order**: `gpu_lock > strategy_lock > buffer_lock` (documented in `robot_context.py`). Never acquire in the other direction.
-- **`gpu_lock`** (an RLock on the node) serializes CUDA-graph capture against camera integration. Camera callbacks use a *non-blocking* acquire and drop the frame if planning holds the GPU.
-- **One live CUDA graph**: the node tracks graph ownership across solvers (`_ensure_exclusive_graph`); a planner switch releases the previous solver's captured graph.
+- **GPU access goes through `SolverHost`** (`curobo_ros/core/solver_host.py`, see [ADR-0001](../adr/0001-gpu-access-invariants.md)). Capturing paths take `exclusive()`; periodic work (camera integration, voxel/sphere publishers, live goals) takes `try_access()` and skips its cycle when refused.
+- **Lock order**: GPU lock (`SolverHost`) `> strategy_lock > buffer_lock` (documented in `robot_context.py`). Never acquire in the other direction.
+- **One live CUDA graph**: `SolverHost.claim_graphs()` tracks graph ownership across solvers; a planner switch releases the previous solver's captured graph.
 - **Single goal admission**: `execute_trajectory` accepts one goal at a time; `set_planner` and `set_collision_cache` are refused while a goal is active.
 - **Buffer epochs**: `RobotContext` stamps trajectories with an epoch and refuses commands from a superseded plan.
 

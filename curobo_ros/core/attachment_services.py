@@ -356,7 +356,7 @@ class AttachmentServices:
         it (see the rollback below).
 
         Sphere-fitting and every AttachmentManager.update() call are GPU
-        operations — held under node.gpu_lock so they can't overlap a
+        operations — held under exclusive GPU access so they can't overlap a
         concurrent CUDA-graph capture or depth-camera integrate.
         """
         if self._attached_spheres is not None:
@@ -378,7 +378,7 @@ class AttachmentServices:
             # call is still in flight. Harmless ONLY because _attached_spheres
             # is still None at this point, so reapply() no-ops immediately --
             # which is precisely why the state is memorized at the END of this
-            # method (see the bottom of the gpu_lock block). Hoisting that
+            # method (see the bottom of the GPU lock block). Hoisting that
             # memorization earlier would silently replay a half-built attach.
             self.node._warmup_classic()
             managers = self._targets()
@@ -411,7 +411,7 @@ class AttachmentServices:
         active_ids = self._active_kinematics_param_ids()
         offset = self._identity_offset(grasp_end_state)
 
-        with self.node.gpu_lock:
+        with self.node.solver_host.exclusive():
             primary = managers[0]
             # cuRobo's automatic fit (num_spheres=None) sizes itself to the
             # obstacle's geometry, not to what the robot YAML allocated for
@@ -589,7 +589,7 @@ class AttachmentServices:
         """
         if self._attached_spheres is None:
             return False
-        with self.node.gpu_lock:
+        with self.node.solver_host.exclusive():
             for am in self._targets():
                 try:
                     am.detach(ATTACH_LINK)
@@ -639,7 +639,7 @@ class AttachmentServices:
         if not managers:
             return
         offset = self._identity_offset(self._attached_state)
-        with self.node.gpu_lock:
+        with self.node.solver_host.exclusive():
             for am in managers:
                 try:
                     am.update(self._attached_spheres, self._attached_state,
