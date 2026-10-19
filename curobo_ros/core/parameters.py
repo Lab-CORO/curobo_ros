@@ -333,7 +333,9 @@ def warn_unused_overrides(node) -> None:
     # rclpy has no public accessor: Node fills _parameter_overrides from the
     # command line, the params files and NodeOptions.
     for name in sorted(getattr(node, '_parameter_overrides', {})):
-        if node.has_parameter(name):
+        # A schema name not declared yet is declared on use (e.g.
+        # max_joint_accel_dps, by the joint_speed strategy): not unused.
+        if node.has_parameter(name) or name in SPECS:
             continue
         if name in REMOVED:
             node.get_logger().warn(

@@ -94,7 +94,8 @@ def node():
     rclpy.init()
     n = rclpy.create_node('test_parameters', parameter_overrides=_yaml_overrides()
                           + [Parameter('voxel_size', value=0.03),
-                             Parameter('mpc_solver_type', value='lbfgs_bspline')])
+                             Parameter('mpc_solver_type', value='lbfgs_bspline'),
+                             Parameter('max_joint_accel_dps', value=1000.0)])
     yield n
     n.destroy_node()
     rclpy.shutdown()
@@ -141,3 +142,4 @@ def test_unused_overrides_are_reported(node, monkeypatch):
     monkeypatch.setattr(node, 'get_logger', lambda: logger)
     parameters.warn_unused_overrides(node)
     assert any('mpc_solver_type' in w and 'no longer exists' in w for w in warns)
+    assert not any('max_joint_accel_dps' in w for w in warns)
