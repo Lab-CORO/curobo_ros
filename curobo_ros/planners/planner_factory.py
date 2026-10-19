@@ -126,6 +126,20 @@ class PlannerFactory:
         return key, None
 
     @classmethod
+    def canonical_key(cls, planner_type: str) -> str:
+        """Resolve an alias ('mppi', 'teleop', ...) to its catalog key.
+
+        Unknown names and custom registered planners (not in the catalog) are
+        returned normalized but otherwise unchanged.
+        """
+        planner_type = planner_type.lower().strip()
+        planner_class = cls._PLANNER_REGISTRY.get(planner_type)
+        for key, catalog_class, _, _ in cls._PLANNER_CATALOG:
+            if catalog_class is planner_class:
+                return key
+        return planner_type
+
+    @classmethod
     def get_catalog(cls) -> list:
         """
         Return catalog entries for all available (non-alias) planners.
@@ -221,6 +235,8 @@ class PlannerManager:
         Returns:
             Planner instance
         """
+        # Aliases share the canonical key's instance: one wrapper, one solver.
+        planner_type = PlannerFactory.canonical_key(planner_type)
         if planner_type not in self._planners:
             self._planners[planner_type] = PlannerFactory.create_planner(
                 planner_type, self.node, self.config_wrapper
@@ -235,6 +251,7 @@ class PlannerManager:
         Args:
             planner_type: Type of planner to activate
         """
+        planner_type = PlannerFactory.canonical_key(planner_type)
         # Skip if already using this planner
         if self._current_planner_type == planner_type:
             return
