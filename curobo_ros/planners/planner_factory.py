@@ -31,10 +31,9 @@ class PlannerFactory:
     # Single source of truth: (internal_key, class, enum_id, display_name)
     # enum_id matches SetPlanner.Request constants (0=CLASSIC, 1=MPC, …)
     # 'mpc' stays the catalog key/enum for the MPPI-backed controller (rather
-    # than a new 'mppi' key) so callers already passing planner_type='mpc' or
-    # reading node.mpc (ReactiveController.build_solver, config_wrapper_motion.py)
-    # keep working unchanged -- LBFGS already has its own 'lbfgs' key/node.lbfgs,
-    # so 'mpc' unambiguously means "the other reactive controller" now.
+    # than a new 'mppi' key) so callers already passing planner_type='mpc'
+    # keep working unchanged -- LBFGS already has its own 'lbfgs' key, so
+    # 'mpc' unambiguously means "the other reactive controller" now.
     _PLANNER_CATALOG = [
         ('classic',     ClassicPlanner,    0, 'Classic'),
         ('mpc',         MPPIController,     1, 'MPC'),

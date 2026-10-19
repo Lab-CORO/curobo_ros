@@ -55,7 +55,7 @@ These are the rules the code is written against — keep them when contributing:
 
 - **GPU access goes through `SolverHost`** (`curobo_ros/core/solver_host.py`, see [ADR-0001](../adr/0001-gpu-access-invariants.md)). Capturing paths take `exclusive()`; periodic work (camera integration, voxel/sphere publishers, live goals) takes `try_access()` and skips its cycle when refused.
 - **Lock order**: GPU lock (`SolverHost`) `> strategy_lock > buffer_lock` (documented in `robot_context.py`). Never acquire in the other direction.
-- **One live CUDA graph**: `SolverHost.claim_graphs()` tracks graph ownership across solvers; a planner switch releases the previous solver's captured graph.
+- **One live CUDA graph**: `SolverHost.activate()` tracks graph ownership across solvers; a planner switch releases the previous solver's captured graph.
 - **Single goal admission**: `execute_trajectory` accepts one goal at a time; `set_planner` and `set_collision_cache` are refused while a goal is active.
 - **Buffer epochs**: `RobotContext` stamps trajectories with an epoch and refuses commands from a superseded plan.
 
@@ -78,7 +78,7 @@ This is why there is no per-solver world synchronization anywhere else in the co
 
 ## Backward-compat aliases
 
-`node.motion_gen` survives only as an alias to `node.motion_planner` (`config_wrapper_motion.py`) for old call sites. New code must use v2 names — there is no `MotionGen`, `WorldConfig`, or nvblox anywhere in the package. See [Migration to cuRobo v2](../MIGRATION_V2.md).
+Every solver (MotionPlanner, IK, FK, MPPI, LBFGS, Retarget) is held by `SolverHost` and asked by key on each use; there is no `node.motion_planner`/`node.motion_gen` attribute any more. New code must use v2 names — there is no `MotionGen`, `WorldConfig`, or nvblox anywhere in the package. See [Migration to cuRobo v2](../MIGRATION_V2.md).
 
 ## Related pages
 

@@ -1,51 +1,138 @@
 """
-SolverHost: the single owner of GPU access and CUDA-graph ownership.
+SolverHost: sole owner of every cuRobo solver, of GPU access and of CUDA-graph
+ownership.
 
 Enforces the invariants of docs/adr/0001-gpu-access-invariants.md in one place:
 one live CUDA graph, capture is process-global, GPU lock is the outermost lock.
-Callers never see the lock; they ask for one of two access modes:
+
+Solvers. Each solver is identified by its key ('motion', 'ik', 'fk', 'mpc',
+'lbfgs', 'retarget') and registered with a builder. The host decides WHEN to
+build (lazily on ``ensure``, again on ``rebuild``); the builder decides HOW and
+keeps its own parameter reads. Callers never keep a reference: they ask
+``get(key)`` on each use, so a rebuild is seen everywhere at once. Classic,
+Multi-Point and Joint-Space all use the one 'motion' solver.
+
+GPU access. Two modes, the lock itself is never exposed:
 
 - ``exclusive()``: blocking, re-entrant. Anything that may capture a CUDA graph
-  (plan, warmup, rebuild, priming) or must not interleave with a capture.
+  (plan, build, rebuild, priming) or must not interleave with a capture.
 - ``try_access(timeout)``: non-blocking (or short-timeout). Periodic/best-effort
   GPU work; when refused, the caller skips its work this cycle.
 
 Deliberately free of rclpy / torch / curobo imports so it can be unit-tested
 without a GPU. Solvers are duck-typed (``reset_cuda_graph``, ``seed_ik_solver``,
 ``ik_solver``).
-
-Transitional (step A of the refactor, see GLOSSARY.md): the solvers still live
-on the node, so the node binds a provider that lists them and computes the graph
-owner key itself. ``bind_solvers``, ``claim_graphs``, ``mark_capture_pending`` and
-``capture_guard`` become internal once SolverHost owns the solvers (step B).
 """
 
 import threading
 from contextlib import contextmanager, nullcontext
 
 
-class SolverHost:
-    """Owns the GPU lock and decides which solver holds the live CUDA graph."""
+class _Entry:
+    __slots__ = ('build', 'graph_parts', 'prime', 'solver')
 
-    def __init__(self, logger):
+    def __init__(self, build, graph_parts, prime):
+        self.build = build
+        self.graph_parts = graph_parts
+        self.prime = prime
+        self.solver = None
+
+
+class SolverHost:
+    """Owns the solvers, the GPU lock and the single live CUDA graph."""
+
+    def __init__(self, logger, use_cuda_graph: bool = False):
         self._logger = logger
+        self._use_cuda_graph = bool(use_cuda_graph)
         # RLock: a thread holding exclusive access may re-enter either mode.
         self._lock = threading.RLock()
-        self._use_cuda_graph = False
-        self._solvers_provider = list
+        # Registration order is the rebuild order (shared solvers first).
+        self._entries = {}
+        self._built_hooks = []
         # Which solver currently owns the single live CUDA graph. None = no
-        # owner yet: the first claim adopts without releasing (startup warms
-        # exactly one solver, so it is already the sole owner).
+        # owner yet: the first activation adopts without releasing (startup
+        # warms exactly one solver, so it is already the sole owner).
         self._graph_owner = None
         # True whenever the next reactive solver call may CAPTURE a graph
         # (fresh solver, or right after a release) rather than just replay.
         self._capture_pending = True
         self._capture_pending_lock = threading.Lock()
 
-    def bind_solvers(self, solvers_provider, use_cuda_graph: bool) -> None:
-        """Transitional: callable returning every live solver object."""
-        self._solvers_provider = solvers_provider
-        self._use_cuda_graph = bool(use_cuda_graph)
+    # ------------------------------------------------------------------
+    # Solvers
+    # ------------------------------------------------------------------
+
+    def register(self, key, build, graph_parts=None, prime=None) -> None:
+        """Declare how solver ``key`` is built. Does not build it.
+
+        build:       ``() -> solver``. May raise; the slot then stays empty.
+        graph_parts: ``solver -> iterable`` of the objects whose CUDA graphs
+                     are released when another solver takes the graph. None =
+                     this solver never holds a graph (IK, FK).
+        prime:       ``() -> None``, run after the built hooks (so it captures
+                     with the attached payload already written).
+
+        Re-registering a key replaces its builder and keeps a built solver.
+        """
+        entry = self._entries.get(key)
+        if entry is None:
+            self._entries[key] = _Entry(build, graph_parts, prime)
+        else:
+            entry.build, entry.graph_parts, entry.prime = build, graph_parts, prime
+
+    def on_built(self, callback) -> None:
+        """Subscribe ``callback(key, solver)``, run after every (re)build."""
+        self._built_hooks.append(callback)
+
+    def get(self, key):
+        """The live solver for ``key``, or None. No side effects."""
+        entry = self._entries.get(key)
+        return entry.solver if entry is not None else None
+
+    def ensure(self, key):
+        """The solver for ``key``, built first if it does not exist yet."""
+        entry = self._entries[key]
+        if entry.solver is None:
+            with self._lock:
+                if entry.solver is None:
+                    self._build(key, entry)
+        return entry.solver
+
+    def rebuild(self, key):
+        """Recreate solver ``key`` from scratch, whether or not it exists."""
+        entry = self._entries[key]
+        with self._lock:
+            entry.solver = None
+            self._build(key, entry)
+            self.mark_capture_pending()
+        return entry.solver
+
+    def rebuild_all(self) -> None:
+        """Recreate every solver that exists (e.g. collision-cache change).
+
+        Never-built solvers stay unbuilt. Rebuilt solvers hold no graph yet, so
+        the next reactive step may capture: mark it pending.
+        """
+        with self._lock:
+            # Snapshot: a built hook may create a planner wrapper, which
+            # registers a new (unbuilt) key mid-loop.
+            for key, entry in list(self._entries.items()):
+                if entry.solver is not None:
+                    entry.solver = None
+                    self._build(key, entry)
+            self.mark_capture_pending()
+
+    def _build(self, key, entry) -> None:
+        # Caller holds the lock. The slot is filled before the hooks run, so a
+        # hook (or prime) reading get(key) sees the new solver.
+        entry.solver = entry.build()
+        for hook in self._built_hooks:
+            try:
+                hook(key, entry.solver)
+            except Exception as e:
+                self._logger.warn(f"solver '{key}' built-hook failed: {e}")
+        if entry.prime is not None:
+            entry.prime()
 
     # ------------------------------------------------------------------
     # Access modes
@@ -75,48 +162,53 @@ class SolverHost:
     # CUDA graph ownership (only the active solver holds a live graph)
     # ------------------------------------------------------------------
 
-    def claim_graphs(self, owner_key) -> None:
-        """Make owner_key the sole live-graph owner, releasing all others.
+    def activate(self, key) -> None:
+        """Make solver ``key`` the sole live-graph owner, releasing all others.
 
-        No-op if graphs are disabled, owner_key is None or unchanged. Two
-        captured graphs cannot coexist in one CUDA context: the inactive one's
-        baked device addresses get invalidated by the active one's allocator
-        activity, so replaying it segfaults in cuGraphLaunch.
+        Only the planner-activation path calls this; ``get`` never does. No-op
+        if graphs are disabled, key is None or unchanged. Two captured graphs
+        cannot coexist in one CUDA context: the inactive one's baked device
+        addresses get invalidated by the active one's allocator activity, so
+        replaying it segfaults in cuGraphLaunch.
         """
-        if not self._use_cuda_graph or owner_key is None:
+        if not self._use_cuda_graph or key is None:
             return
-        if owner_key == self._graph_owner:
+        if key == self._graph_owner:
             return
         if self._graph_owner is None:
-            self._graph_owner = owner_key
+            self._graph_owner = key
             return
         self._logger.info(
-            f"CUDA graph owner {self._graph_owner} -> {owner_key}: releasing "
+            f"CUDA graph owner {self._graph_owner} -> {key}: releasing "
             f"other captured graphs so only the active solver holds one")
-        self.release_all_graphs()
-        self._graph_owner = owner_key
+        self._release_all_graphs()
+        self._graph_owner = key
 
-    def release_all_graphs(self) -> None:
+    def _release_all_graphs(self) -> None:
         """Free every solver's captured CUDA graph (frees graph + its pool).
 
         The solvers themselves and their shared collision world are untouched;
         each re-captures on next use.
         """
         with self._lock:
-            for solver in self._solvers_provider():
-                self._safe_reset_graph(solver)
+            for entry in list(self._entries.values()):
+                if entry.solver is None or entry.graph_parts is None:
+                    continue
+                for part in entry.graph_parts(entry.solver):
+                    self._safe_reset_graph(part)
             self.mark_capture_pending()
 
     def mark_capture_pending(self) -> None:
-        """Transitional: the next reactive solver call may capture a graph."""
+        """The next reactive solver call may capture a graph."""
         with self._capture_pending_lock:
             self._capture_pending = True
 
     def capture_guard(self):
-        """Transitional belt: exclusive access for ONE step that may capture.
+        """Belt: exclusive access for ONE step that may capture.
 
         Take-and-clear, so exactly one caller gets the lock per release.
-        Priming (ReactiveController.prime_cuda_graphs) is the real guarantee.
+        Priming (ReactiveController.prime_cuda_graphs) is the real guarantee;
+        this goes away once priming is trusted alone.
         """
         with self._capture_pending_lock:
             pending = self._capture_pending

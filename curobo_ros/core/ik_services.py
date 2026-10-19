@@ -43,8 +43,9 @@ class IKServices:
         self._node = node
         self._config = config_wrapper
 
-        self._ik_solver: InverseKinematics | None = None
         self._ik_batch_size: int = 0  # 0 = not yet warmed up
+        # The solver lives in SolverHost ('ik'); no CUDA graphs to release.
+        node.solver_host.register('ik', self._build)
 
         # Device / dtype resolved from config_wrapper (set by RobotModelManager).
         self._device = getattr(config_wrapper, '_device', torch.device('cuda'))
@@ -132,24 +133,26 @@ class IKServices:
         self._ik_solver.update_world(scene)
         self._node.get_logger().info("IKServices: world updated")
 
-    def rebuild(self):
-        """Recreate the IK solver after a collision-cache change.
-
-        The collision cache is fixed at solver creation, so a cache change
-        requires a rebuild (reusing the last batch size). No-op if the solver
-        was never initialized.
-        """
-        if self._ik_solver is None:
-            return
-        self._init(max(1, self._ik_batch_size))
-        self._node.get_logger().info("IKServices: solver rebuilt after cache change")
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @property
+    def _ik_solver(self) -> InverseKinematics | None:
+        return self._node.solver_host.get('ik')
+
     def _init(self, batch_size: int):
         """Create (or recreate) the IK solver for the given batch size."""
+        self._ik_batch_size = batch_size
+        self._node.solver_host.rebuild('ik')
+
+    def _build(self) -> InverseKinematics:
+        """SolverHost builder for 'ik', at the current batch size.
+
+        A collision-cache rebuild (SolverHost.rebuild_all) reuses the last
+        batch size.
+        """
+        batch_size = max(1, self._ik_batch_size)
         # Primitives only at construction; update_world() pushes the perception
         # layer by copy afterwards. See primitives_only_scene().
         scene = self._config.obstacle_manager.primitives_only_scene()
@@ -167,20 +170,20 @@ class IKServices:
             collision_cache=self._config.collision_cache,
             use_cuda_graph=False,
         )
-        self._ik_solver = InverseKinematics(cfg)
-        self._ik_batch_size = batch_size
+        ik_solver = InverseKinematics(cfg)
 
         # Warmup: solve a batch of random configs to prime CUDA kernels.
-        q_sample = self._ik_solver.sample_configs(batch_size)
+        q_sample = ik_solver.sample_configs(batch_size)
         js = CuRoboJS.from_position(
-            q_sample, joint_names=self._ik_solver.kinematics.joint_names
+            q_sample, joint_names=ik_solver.kinematics.joint_names
         )
-        kin_state = self._ik_solver.compute_kinematics(js)
+        kin_state = ik_solver.compute_kinematics(js)
         goal = kin_state.tool_poses.as_goal()
-        self._ik_solver.solve_pose(goal_tool_poses=goal)
+        ik_solver.solve_pose(goal_tool_poses=goal)
         torch.cuda.synchronize()
 
         self._node.get_logger().info("IK solver ready")
+        return ik_solver
 
     def _solve(self, poses):
         """

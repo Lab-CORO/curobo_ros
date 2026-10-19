@@ -275,6 +275,8 @@ def _build_lbfgs_custom_config(node) -> dict:
 class LBFGSController(ReactiveController):
     """Closed-loop MPC on cuRobo's stock config + optimize_action_sequence()."""
 
+    SOLVER_KEY = 'lbfgs'
+
     def get_planner_name(self) -> str:
         return "LBFGS Model Predictive Control"
 
@@ -388,8 +390,6 @@ class LBFGSController(ReactiveController):
         solver.setup(warmup_state)
         solver.update_goal_tool_poses(warmup_goal, run_ik=False)
         self._warm_state = warmup_state
-
-        node.lbfgs = solver
 
         # RViz-facing publisher for the MPC's predicted end-effector path
         # (nav_msgs/Path on 'mpc_predicted_path', under this node's namespace).

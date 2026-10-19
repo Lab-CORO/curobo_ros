@@ -36,6 +36,8 @@ from .reactive_controller import ReactiveController
 class RetargetController(ReactiveController):
     """Closed-loop teleop controller built on cuRobo ``MotionRetargeter`` (v2)."""
 
+    SOLVER_KEY = 'retarget'
+
     def get_planner_name(self) -> str:
         return "Motion Retargeting (Teleop)"
 
@@ -68,9 +70,6 @@ class RetargetController(ReactiveController):
         )
         solver = MotionRetargeter(cfg)
 
-        # Publish where the node expects it (symmetry with self.node.mpc) so the
-        # world-update path can reach this solver.
-        node.retargeter = solver
         node.get_logger().info(
             f"Retargeter built: tool={tool}, global IK 64 seeds, use_mpc={use_mpc}"
         )

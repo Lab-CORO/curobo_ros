@@ -39,9 +39,9 @@ context owned by `ConfigWrapperMotion`:
 
 There is **no** separate world/manager stack for MPC. Switching to/from MPC keeps
 the exact same robot and obstacles, and a `set_collision_cache` change rebuilds all
-solvers from the one cache (no manual copy). `node.mpc` is the single reference to
-the built solver, used by `update_all_solvers_world()` and the collision-distance
-service.
+solvers from the one cache (no manual copy). `SolverHost` (key `'mpc'`) is the
+single holder of the built solver; the controller asks `solver_host.get('mpc')` on
+each use.
 
 ## `ReactiveController` — the shared loop
 
@@ -58,7 +58,7 @@ A concrete controller implements only the cuRobo-specific hooks:
 
 | Hook | Responsibility |
 |---|---|
-| `build_solver()` | create the cuRobo solver from the shared context; publish `node.mpc` |
+| `build_solver()` | create and return the cuRobo solver from the shared context (SolverHost stores it) |
 | `setup(state, goal)` | set the initial goal on the solver |
 | `step(state)` | one optimization step → next action; update `_last_position_error` |
 | `apply_live_goal(raw)` | retarget the goal during execution |

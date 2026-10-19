@@ -6,9 +6,10 @@ Supports multiple planning strategies (Classic, MPC, Multi-Point, Joint-Space)
 and allows dynamic switching between them.
 
 v2 notes:
-- MotionGen → MotionPlanner (wired via ConfigWrapperMotion as `node.motion_planner`).
-- MpcSolver → ModelPredictiveControl (built by MPCController from the shared
-  context, published as `node.mpc`).
+- MotionGen → MotionPlanner (built by ConfigWrapperMotion, held by SolverHost
+  as 'motion').
+- MpcSolver → ModelPredictiveControl (built by MPPIController from the shared
+  context, held by SolverHost as 'mpc').
 - TensorDeviceType → DeviceCfg. We read device/dtype from the wrapper.
 - WorldConfig → Scene (obstacle_manager.get_scene()), the single source of
   truth, propagated to solvers via update_world(scene).
@@ -42,6 +43,7 @@ from curobo_ros.core.config_wrapper_motion import ConfigWrapperMotion
 from curobo_ros.core.attachment_services import AttachmentServices
 from curobo_ros.core.ik_services import IKServices
 from curobo_ros.core.fk_services import FKServices
+from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 from curobo_ros.core.solver_host import SolverHost
 from curobo_ros.planners import (
     PlannerFactory,
@@ -60,10 +62,6 @@ class UnifiedPlannerNode(Node):
         # v2 device config — kept as `tensor_args` for backward-compat with
         # code paths that read `.device` / `.dtype` from it.
         self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
-
-        # Sole owner of GPU access and CUDA-graph ownership (ADR-0001).
-        # Created before cameras/solvers so it always exists when callbacks fire.
-        self.solver_host = SolverHost(self.get_logger())
 
         # Serializes goal admission: only one execute_trajectory goal may be
         # active at a time (open-loop or reactive). Guards against two
@@ -189,6 +187,10 @@ class UnifiedPlannerNode(Node):
 
         # Single shared context for every solver (robot + obstacles + scene +
         # collision cache). The MPC solver is built lazily from this same context.
+        # Sole owner of the solvers, GPU access and CUDA-graph ownership
+        # (ADR-0001). Created before cameras/solvers so it always exists when
+        # their callbacks fire.
+        self.solver_host = SolverHost(self.get_logger(), resolve_use_cuda_graph(self))
         self.config_wrapper_motion = ConfigWrapperMotion(self, self.robot_context)
 
         # Adopt the canonical joint order/DOF into the RobotContext descriptor now
@@ -198,16 +200,6 @@ class UnifiedPlannerNode(Node):
         # Shared Scene for all planners — references ObstacleManager's Scene.
         # All planners see the same obstacles after update_world(scene).
         self.shared_scene = self.config_wrapper_motion.obstacle_manager.get_scene()
-
-        # Solvers (created on demand).
-        self.motion_planner = None  # v2 alias
-        self.motion_gen = None      # legacy alias, kept for older code paths
-        self.mpc = None             # reactive: ModelPredictiveControl (MPCController)
-        self.lbfgs = None           # reactive: ModelPredictiveControl (LBFGSController)
-        self.retargeter = None      # reactive: MotionRetargeter (teleop)
-
-        self.solver_host.bind_solvers(
-            self._live_solvers, self.config_wrapper_motion.use_cuda_graph)
 
         # TF buffer for AttachmentServices: AttachObject.srv's header.frame_id
         # lets a caller express the payload pose in any TF frame (typically
@@ -238,10 +230,9 @@ class UnifiedPlannerNode(Node):
         initial_planner = self.get_parameter('planner_type').get_parameter_value().string_value
         self._warmup_initial_planner(initial_planner)
         self.planner_manager.set_current_planner(initial_planner)
-        # Startup warms exactly one solver: the first claim adopts it as graph
-        # owner without releasing, so the first plan reuses its warmup graph.
-        self.solver_host.claim_graphs(
-            self._graph_owner_key(self.planner_manager.get_current_planner()))
+        # Startup warms exactly one solver: the first activation adopts it as
+        # graph owner without releasing, so the first plan reuses its warmup graph.
+        self.solver_host.activate(self.planner_manager.get_current_planner().SOLVER_KEY)
 
         # Pre-warm the voxel-grid primitive rasterization path while the executor
         # is not yet spinning (no service can be served until __init__ returns),
@@ -324,38 +315,12 @@ class UnifiedPlannerNode(Node):
 
     def _warmup_classic(self):
         """Warm up MotionPlanner for Classic/MultiPoint/JointSpace planners."""
-        if self.motion_planner is None:
+        if self.solver_host.get('motion') is None:
             self.get_logger().info("  -> Initializing MotionPlanner...")
-            self.config_wrapper_motion.set_motion_gen_config(self, None, None)
-            # The wrapper sets both self.motion_planner and self.motion_gen.
-            SinglePlanner.set_motion_planner(self.motion_planner)
-            self.get_logger().info("  -> MotionPlanner ready and shared with SinglePlanner")
-            self.replay_attachment()
+            self.solver_host.ensure('motion')
+            self.get_logger().info("  -> MotionPlanner ready")
         else:
             self.get_logger().info("  -> MotionPlanner already initialized (cache)")
-
-    def replay_attachment(self, planner=None):
-        """Re-apply the currently attached object's collision spheres onto a
-        solver just built or rebuilt (fresh MotionPlanner from _warmup_classic
-        / rebuild_solvers_for_cache_change, or a reactive controller's fresh
-        solver from ReactiveController.ensure_solver()).
-
-        Resolved lazily via getattr rather than a direct
-        self.attachment_services.reapply() call: the main call site is
-        ReactiveController.ensure_solver() in reactive_controller.py, which
-        has no import path back to this node module (and shouldn't grow one
-        just for this). No-op if attachment_services isn't ready yet (also
-        covers a hypothetical call before __init__ reaches line ~248) or
-        nothing is attached. Never raises -- a replay failure must not fail
-        the solver build/rebuild that triggered it.
-        """
-        attach_svc = getattr(self, 'attachment_services', None)
-        if attach_svc is None:
-            return
-        try:
-            attach_svc.reapply(planner)
-        except Exception as e:
-            self.get_logger().warn(f"replay_attachment failed: {e}")
 
     def _ensure_ground_plane(self):
         """No-op: the ground is the `floor` cuboid of the loaded world file.
@@ -376,18 +341,14 @@ class UnifiedPlannerNode(Node):
         return
 
     def _warmup_reactive(self, key: str):
-        """Build a reactive controller's solver on demand from the shared context.
-
-        Each reactive controller's build_solver() publishes its solver where the
-        node expects it (self.mpc / self.lbfgs / self.retargeter).
-        """
+        """Build a reactive controller's solver on demand (held by SolverHost)."""
         self._ensure_ground_plane()
         self.planner_manager.get_planner(key).ensure_solver()
         self.get_logger().info(f"  -> Reactive '{key}' solver ready")
 
     def _warmup_mpc(self):
         """Warm up the v2 ModelPredictiveControl solver on demand."""
-        if self.mpc is not None:
+        if self.solver_host.get('mpc') is not None:
             self.get_logger().info("  -> MPC solver already initialized (cache)")
             return
         self.get_logger().info("  -> Initializing MPC solver...")
@@ -395,7 +356,7 @@ class UnifiedPlannerNode(Node):
 
     def _warmup_lbfgs(self):
         """Warm up the LBFGSController's ModelPredictiveControl solver on demand."""
-        if self.lbfgs is not None:
+        if self.solver_host.get('lbfgs') is not None:
             self.get_logger().info("  -> LBFGS solver already initialized (cache)")
             return
         self.get_logger().info("  -> Initializing LBFGS solver...")
@@ -471,7 +432,7 @@ class UnifiedPlannerNode(Node):
 
         # Single uniform loop over every planner in PlannerFactory's catalog
         # -- no isinstance(SinglePlanner)/isinstance(ReactiveController)
-        # here, and no separate self.motion_planner special case. A planner
+        # here, and no separate MotionPlanner special case. A planner
         # only gets the scene if it actually has a live solver, its
         # world_identity() hasn't already been updated THIS call (dedup:
         # ClassicPlanner/MultiPointPlanner/JointSpacePlanner all resolve to
@@ -479,8 +440,8 @@ class UnifiedPlannerNode(Node):
         # push the identical scene into it 3 times), and (when active_only)
         # its identity matches the currently active planner's. get_planner()
         # only constructs the lightweight Python wrapper (cheap, cached) --
-        # has_solver() is False until that planner's own ensure_solver()/
-        # SinglePlanner.set_motion_planner has actually run, so a
+        # has_solver() is False until SolverHost has built that planner's
+        # solver, so a
         # never-used catalog entry costs nothing extra here.
         updated_identities = set()
         for key, _eid, _name in PlannerFactory.get_catalog():
@@ -559,39 +520,10 @@ class UnifiedPlannerNode(Node):
         self.get_logger().info(
             "Collision cache changed - rebuilding solvers (blocking, ~20s)...")
 
-        with self.solver_host.exclusive():
-            # Motion planner (present after the initial warmup).
-            if self.motion_planner is not None:
-                self.config_wrapper_motion.set_motion_gen_config(self, None, None)
-                SinglePlanner.set_motion_planner(self.motion_planner)
-
-            # IK (only if it was initialized). IKServices reads the canonical
-            # (motion) cache directly, so no sync is needed.
-            self.ik_services.rebuild()
-
-            # FK's collision checker is sized off the same cache (poses_valid).
-            self.fk_services.rebuild()
-
-            # Reactive controllers (only if initialized). Built from the SAME
-            # shared cache, so just rebuild their solvers — no manual cache copy.
-            if self.mpc is not None:
-                self.planner_manager.get_planner('mpc').rebuild_solver()
-            if self.lbfgs is not None:
-                self.planner_manager.get_planner('lbfgs').rebuild_solver()
-            if self.retargeter is not None:
-                self.planner_manager.get_planner('retarget').rebuild_solver()
-
-            # Covers the classic/multi_point/joint_space MotionPlanner rebuild
-            # above, which (unlike the reactive rebuild_solver() calls just
-            # above -- routed through ReactiveController.ensure_solver(),
-            # which already replays) has no per-controller replay hook of its
-            # own. Redundant-but-harmless for the reactive solvers: reapply()
-            # is idempotent.
-            self.replay_attachment()
-
-            # Rebuilt solvers hold no graph yet — their first step() will
-            # capture, so mark it pending (see SolverHost.capture_guard).
-            self.solver_host.mark_capture_pending()
+        # Every built solver, in registration order (MotionPlanner, IK, FK,
+        # then the reactive controllers); each rebuild replays the attached
+        # payload (SolverHost.on_built) and marks the next capture pending.
+        self.solver_host.rebuild_all()
 
         self.get_logger().info("Solvers rebuilt after cache change")
 
@@ -892,14 +824,13 @@ class UnifiedPlannerNode(Node):
             # graph so this one re-captures (on its next call) as the sole live
             # graph. Cheap no-op when the owner is unchanged (repeated plans reuse
             # the graph).
-            self.solver_host.claim_graphs(self._graph_owner_key(planner))
+            self.solver_host.activate(planner.SOLVER_KEY)
 
-            # Open-loop planners share one MotionPlanner instance (class-level).
+            # Open-loop planners share the one 'motion' solver.
             if isinstance(planner, SinglePlanner):
-                if self.motion_planner is None:
+                if self.solver_host.get('motion') is None:
                     self.get_logger().info("On-demand warmup: open-loop planner")
                     self._warmup_classic()
-                planner.set_motion_gen(self.motion_planner)
 
             # Reactive controllers build their own solver from the shared context.
             # ensure_solver() is idempotent (no-op once built), so just make sure a
@@ -911,40 +842,12 @@ class UnifiedPlannerNode(Node):
                 planner.ensure_solver()
                 # Capture every CUDA graph NOW, under exclusive access, so the
                 # servo loop only ever replays. Covers both a fresh solver and
-                # one whose graphs claim_graphs just released (the
+                # one whose graphs activate() just released (the
                 # capture_guard() belt only protects the FIRST step, but
                 # cuRobo captures on several -- see
                 # ReactiveController.prime_cuda_graphs).
                 if self.config_wrapper_motion.use_cuda_graph:
                     planner.prime_cuda_graphs()
-
-    # ------------------------------------------------------------------
-    # CUDA graph exclusivity (only the active solver holds a live graph)
-    # ------------------------------------------------------------------
-
-    def _graph_owner_key(self, planner):
-        """Stable key identifying which captured graph a planner would use.
-
-        All open-loop planners share one MotionPlanner (one graph) -> 'motion'.
-        Each reactive controller owns its own solver/graph -> 'reactive:<name>'.
-        """
-        if isinstance(planner, SinglePlanner):
-            return 'motion'
-        if isinstance(planner, ReactiveController):
-            return f'reactive:{planner.get_planner_name()}'
-        return None
-
-    def _live_solvers(self):
-        """Every live solver object, for SolverHost.release_all_graphs.
-
-        Transitional: goes away once SolverHost owns the solvers.
-        """
-        solvers = []
-        if self.motion_planner is not None:
-            for name in ('trajopt_solver', 'ik_solver'):
-                solvers.append(getattr(self.motion_planner, name, None))
-        solvers.extend([self.mpc, self.lbfgs, self.retargeter])
-        return solvers
 
     def _get_planner_config(self, planner) -> dict:
         if isinstance(planner, SinglePlanner):

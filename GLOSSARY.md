@@ -10,14 +10,15 @@ names; when a term is sharpened or a new concept gets a name, update it here.
 
 **SolverHost** (`curobo_ros/core/solver_host.py`)
 : The single owner of every solver and of GPU access. It decides *when* a
-  solver is built, warmed up, rebuilt, given a new Scene or has its CUDA graphs
-  released, and it is the only thing that hands out GPU access. It does not
-  depend on rclpy. See [ADR-0001](docs/adr/0001-gpu-access-invariants.md).
+  solver is built, rebuilt or has its CUDA graphs released, it is the only
+  holder of solver references (callers ask `get(key)` on each use), and it is
+  the only thing that hands out GPU access. It does not depend on rclpy. See [ADR-0001](docs/adr/0001-gpu-access-invariants.md).
 
 **Builder**
 : The planner-provided recipe that decides *how* a solver is constructed
-  (reads its own ROS parameters, creates the cuRobo config). A solver's identity
-  is its builder: planners that declare the same builder share one solver.
+  (reads its own ROS parameters, creates the cuRobo config). Each builder is
+  registered under a solver key (`motion`, `ik`, `fk`, `mpc`, `lbfgs`,
+  `retarget`); planners declaring the same `SOLVER_KEY` share one solver.
 
 **Graph owner**
 : The one solver currently allowed to hold a live captured CUDA graph. Changing

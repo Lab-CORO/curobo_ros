@@ -2,7 +2,7 @@
 
 Reference for developers of the `curobo_ros` wrapper itself: how the code base maps onto **cuRobo v2 (v0.8.0)**, a major rewrite of the upstream API, and which v1 concepts no longer exist. Regular users do not need this page — the ROS interfaces were unaffected.
 
-The migration is **complete**: the package contains no `MotionGen`, `WorldConfig`, `TensorDeviceType`, `IKSolver`, or nvblox code. `node.motion_gen` survives only as an alias to `node.motion_planner` for old call sites.
+The migration is **complete**: the package contains no `MotionGen`, `WorldConfig`, `TensorDeviceType`, `IKSolver`, or nvblox code. The MotionPlanner is held by `SolverHost` (key `'motion'`); the old `node.motion_gen` / `node.motion_planner` attributes are gone.
 
 ## What v2 brought
 

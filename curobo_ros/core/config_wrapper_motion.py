@@ -62,6 +62,14 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.multi_env = False
         self.max_goalset = 1
 
+        # The one MotionPlanner shared by Classic/Multi-Point/Joint-Space.
+        # SolverHost decides when to build it; build_motion_planner says how.
+        # Graph release reaches its two graph-holding sub-solvers.
+        node.solver_host.register(
+            'motion', partial(self.build_motion_planner, node),
+            graph_parts=lambda mp: (getattr(mp, 'trajopt_solver', None),
+                                    getattr(mp, 'ik_solver', None)))
+
         self.motion_gen_srv = node.create_service(
             Trigger,
             node.get_name() + '/update_motion_gen_config',
@@ -71,11 +79,15 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.init_services(node)
 
     def set_motion_gen_config(self, node, _, response):
-        """
-        Build (or rebuild) the MotionPlanner and warmup.
+        """`update_motion_gen_config` service: rebuild the MotionPlanner."""
+        node.solver_host.rebuild('motion')
+        if response is not None:
+            response.success = True
+            response.message = "Motion planner config set"
+        return response
 
-        Called at init and on demand via the `update_motion_gen_config` service.
-        """
+    def build_motion_planner(self, node):
+        """Build and warm up a MotionPlanner (SolverHost builder for 'motion')."""
         # No perception voxel layer at construction — collision_cache allocates
         # the voxel storage and update_world fills it by copy. Passing the live
         # layer aliases the solver's buffer onto our ESDF tensor, which the first
@@ -101,18 +113,15 @@ class ConfigWrapperMotion(ConfigWrapper):
             max_goalset=self.max_goalset,
         )
 
-        node.motion_planner = MotionPlanner(cfg)
-        # Legacy alias — some downstream code still references `node.motion_gen`.
-        node.motion_gen = node.motion_planner
+        motion_planner = MotionPlanner(cfg)
 
         # Output sampling step of the interpolated plan. It's a trajopt config
         # field (not a MotionPlannerCfg.create arg), so set it post-build, before
-        # warmup so the interpolation buffer picks it up. Guarded: the standalone
-        # node doesn't declare this param.
+        # warmup so the interpolation buffer picks it up.
         if node.has_parameter('interpolation_dt'):
             interp_dt = node.get_parameter('interpolation_dt').get_parameter_value().double_value
             try:
-                node.motion_planner.trajopt_solver.config.interpolation_dt = interp_dt
+                motion_planner.trajopt_solver.config.interpolation_dt = interp_dt
                 node.get_logger().info(f"interpolation_dt set to {interp_dt}s")
             except AttributeError:
                 node.get_logger().warn("Could not set interpolation_dt on trajopt_solver")
@@ -124,12 +133,7 @@ class ConfigWrapperMotion(ConfigWrapper):
             rclpy.parameter.Parameter('node_is_available', rclpy.Parameter.Type.BOOL, False)
         ])
 
-        try:
-            node.motion_planner.warmup()
-        except Exception:
-            node.motion_planner = None
-            node.motion_gen = None
-            raise
+        motion_planner.warmup()
 
         node.set_parameters([
             rclpy.parameter.Parameter('node_is_available', rclpy.Parameter.Type.BOOL, True)
@@ -137,24 +141,7 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.node_is_available = True
 
         node.get_logger().info("Motion planner configured")
-
-        if response is not None:
-            response.success = True
-            response.message = "Motion planner config set"
-        return response
-
-    def update_world_config(self, node):
-        """Push the current Scene into all active solvers."""
-        scene = self.obstacle_manager.get_scene()
-        if getattr(node, 'motion_planner', None) is not None:
-            node.motion_planner.update_world(scene)
-        if getattr(node, 'mpc', None) is not None:
-            # MPCSolver has no top-level update_world(); go through its checker.
-            node.mpc.scene_collision_checker.load_collision_model(scene)
-
-        self.node.get_logger().info(
-            f"Updated world: {len(scene.cuboid)} cuboids, {len(scene.mesh)} meshes"
-        )
+        return motion_planner
 
     def callback_get_collision_distance(self, node, request: GetCollisionDistance, response):
         return _compute_sphere_distance(self, node, response)

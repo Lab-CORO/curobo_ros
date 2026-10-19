@@ -181,6 +181,8 @@ def _build_mppi_optimizer_config(node, num_iters: int, num_particles: int) -> di
 class MPPIController(ReactiveController):
     """Closed-loop MPPI built on cuRobo ``ModelPredictiveControl`` (v2)."""
 
+    SOLVER_KEY = 'mpc'
+
     def get_planner_name(self) -> str:
         return "MPPI Model Predictive Control"
 
@@ -246,7 +248,6 @@ class MPPIController(ReactiveController):
         )
         solver = ModelPredictiveControl(cfg)
 
-        node.mpc = solver
         # Diagnostics/RViz publishing lives alongside the solver it observes
         # (mpc_diagnostics.py) — a rebuild gets a fresh MPCDiagnostics too.
         self._diag = MPCDiagnostics(

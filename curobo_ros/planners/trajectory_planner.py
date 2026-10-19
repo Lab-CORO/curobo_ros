@@ -50,6 +50,10 @@ class TrajectoryPlanner(ABC):
     algorithms to be swapped dynamically.
     """
 
+    # Key of the SolverHost solver this planner drives (None = no solver).
+    # Planners sharing a key share one solver instance and one CUDA graph.
+    SOLVER_KEY: Optional[str] = None
+
     def __init__(self, node, config_wrapper):
         """
         Initialize the planner.
@@ -186,15 +190,13 @@ class TrajectoryPlanner(ABC):
         them, and can compare identities to decide "is this the currently
         active planner's solver" without any isinstance check.
 
-        Default: this planner's own identity -- correct for any planner that
-        owns its solver exclusively (every ReactiveController). SinglePlanner
-        overrides this: ALL its subclasses (ClassicPlanner, MultiPointPlanner,
-        JointSpacePlanner) share one class-level MotionPlanner instance (see
-        SinglePlanner.set_motion_planner), so they must all collapse onto the
-        SAME identity or update_all_solvers_world would push the identical
-        scene into that one shared solver three times per refresh.
+        The SolverHost key: ClassicPlanner, MultiPointPlanner and
+        JointSpacePlanner all drive the one 'motion' solver, so they collapse
+        onto the SAME identity and update_all_solvers_world pushes the scene
+        into it once, not three times per refresh. Falls back to this
+        planner's own identity when it has no solver key.
         """
-        return id(self)
+        return self.SOLVER_KEY if self.SOLVER_KEY is not None else id(self)
 
     def attachment_managers(self) -> list:
         """cuRobo AttachmentManager(s) whose link_spheres this planner's solver reads.

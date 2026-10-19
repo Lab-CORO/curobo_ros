@@ -20,8 +20,8 @@ reintroduced by the next world push, and no stale CPU-side pose to freeze
 Applies to every planner that currently has a live solver (classic/
 multi_point/joint_space via the shared MotionPlanner, plus MPC and LBFGS),
 and is replayed automatically onto any solver built or rebuilt afterwards
-(TrajectoryPlanner.attachment_managers(), ReactiveController.ensure_solver(),
-UnifiedPlannerNode.replay_attachment()) — so switching planners mid-transport
+(SolverHost.on_built -> reapply(), over TrajectoryPlanner.attachment_managers())
+— so switching planners mid-transport
 never silently drops the payload's collision model. RetargetController is out
 of scope (see its attachment_managers() override).
 
@@ -92,6 +92,9 @@ class AttachmentServices:
         # mid-session -- latches onto, so "nothing attached" is an assertion
         # rather than the absence of a message.
         self._publish_attached_spheres(None)
+
+        # Replay the payload onto every solver SolverHost (re)builds.
+        node.solver_host.on_built(lambda _key, _solver: self.reapply())
 
     def active_manager(self):
         """The AttachmentManager backing whichever planner is currently active.
@@ -373,8 +376,8 @@ class AttachmentServices:
             # truly empty — an LBFGS/MPC-only session that already has A
             # solver never pays this ~25s cost just to attach.
             #
-            # This re-enters attach's own machinery: _warmup_classic() ends in
-            # UnifiedPlannerNode.replay_attachment() -> reapply(), while this
+            # This re-enters attach's own machinery: _warmup_classic() fires
+            # SolverHost's built hook -> reapply(), while this
             # call is still in flight. Harmless ONLY because _attached_spheres
             # is still None at this point, so reapply() no-ops immediately --
             # which is precisely why the state is memorized at the END of this
@@ -609,17 +612,14 @@ class AttachmentServices:
     # Replay (solvers built/rebuilt after attach)
     # ------------------------------------------------------------------
 
-    def reapply(self, planner=None) -> None:
-        """Re-write the already-fitted spheres into every (or one) live
+    def reapply(self) -> None:
+        """Re-write the already-fitted spheres into every live
         AttachmentManager. No refit: same sphere_tensor as the original
         attach, so a solver built/rebuilt after attach() carries an IDENTICAL
         collision model, not a second independent MORPHIT fit.
 
-        Call site contract: ``planner`` is an already-built solver's wrapper
-        (e.g. from ReactiveController.ensure_solver() right after
-        build_solver()) -- pass it explicitly so this reaches a solver that
-        may not be reachable via PlannerManager yet. Omit it to replay onto
-        every currently live solver (e.g. after a Classic rebuild).
+        Runs on SolverHost.on_built, after the new solver is already in its
+        slot, so _targets() reaches it.
 
         Does not re-broadcast (_publish_attached_spheres): it re-writes the
         SAME sphere_tensor with the SAME grasp state, so the composed rows are
@@ -635,7 +635,7 @@ class AttachmentServices:
         """
         if self._attached_spheres is None:
             return
-        managers = planner.attachment_managers() if planner is not None else self._targets()
+        managers = self._targets()
         if not managers:
             return
         offset = self._identity_offset(self._attached_state)

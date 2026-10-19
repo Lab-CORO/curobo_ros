@@ -24,7 +24,7 @@ class RosServiceManager:
             obstacle_manager: ObstacleManager for obstacle operations
             robot_model_manager: RobotModelManager for robot collision spheres
             config_manager: ConfigManager for base_link access
-            config_wrapper: ConfigWrapper parent for calling update_world_config()
+            config_wrapper: ConfigWrapper parent (serves get_collision_distance)
         """
         self.node = node
         self.obstacle_manager = obstacle_manager

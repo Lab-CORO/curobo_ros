@@ -65,8 +65,6 @@ class FKServices:
         self._config = config_wrapper
         self._robot_config_file = config_wrapper.robot_config_file
 
-        self._fk_model: Kinematics | None = None
-        self._collision_checker: RobotCollisionChecker | None = None
         self._fk_batch_size: int = 0  # 0 = not yet warmed up
 
         # Resolve device/dtype from the node's tensor_args if present, else default.
@@ -77,6 +75,10 @@ class FKServices:
         else:
             self._device = torch.device('cuda')
             self._dtype = torch.float32
+
+        # The (FK model, collision checker) pair lives in SolverHost ('fk');
+        # no CUDA graphs to release.
+        node.solver_host.register('fk', self._build)
 
         name = node.get_name()
         node.create_service(WarmupFK, f'{name}/warmup_fk', self._warmup_fk_callback)
@@ -162,31 +164,42 @@ class FKServices:
         self._collision_checker.update_world(scene)
         self._node.get_logger().info("FKServices: world updated")
 
-    def rebuild(self):
-        """Recreate the FK model + collision checker after a collision-cache
-        change (reusing the last warmup batch size). No-op if never initialized."""
-        if self._fk_model is None:
-            return
-        self._init(max(1, self._fk_batch_size))
-        self._node.get_logger().info("FKServices: solver rebuilt after cache change")
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @property
+    def _fk_model(self) -> Kinematics | None:
+        pair = self._node.solver_host.get('fk')
+        return pair[0] if pair is not None else None
+
+    @property
+    def _collision_checker(self) -> RobotCollisionChecker | None:
+        pair = self._node.solver_host.get('fk')
+        return pair[1] if pair is not None else None
+
     def _init(self, batch_size: int):
         """Create the FK model + collision checker, and run a warmup batch."""
-        self._node.get_logger().info(f"Initializing FK model (batch_size={batch_size})...")
-        self._fk_model = Kinematics(KinematicsCfg.from_robot_yaml_file(self._robot_config_file))
         self._fk_batch_size = batch_size
+        self._node.solver_host.rebuild('fk')
+
+    def _build(self):
+        """SolverHost builder for 'fk': (FK model, collision checker).
+
+        A collision-cache rebuild (SolverHost.rebuild_all) reuses the last
+        warmup batch size.
+        """
+        batch_size = max(1, self._fk_batch_size)
+        self._node.get_logger().info(f"Initializing FK model (batch_size={batch_size})...")
+        fk_model = Kinematics(KinematicsCfg.from_robot_yaml_file(self._robot_config_file))
 
         q = torch.rand(
-            (batch_size, self._fk_model.get_dof()),
+            (batch_size, fk_model.get_dof()),
             dtype=self._dtype,
             device=self._device,
         )
-        js = CuRoboJS.from_position(q, joint_names=self._fk_model.joint_names)
-        self._fk_model.compute_kinematics(js)
+        js = CuRoboJS.from_position(q, joint_names=fk_model.joint_names)
+        fk_model.compute_kinematics(js)
 
         # Primitives only at construction, same as IKServices/MotionPlanner;
         # update_world() pushes the perception layer by copy afterwards.
@@ -206,9 +219,10 @@ class FKServices:
             n_meshes=self._config.collision_cache,
             n_cuboids=self._config.collision_cache,
         )
-        self._collision_checker = RobotCollisionChecker(collision_cfg)
+        collision_checker = RobotCollisionChecker(collision_cfg)
 
         self._node.get_logger().info("FK model ready")
+        return fk_model, collision_checker
 
     def _positions_tensor(self, joint_states) -> torch.Tensor:
         qs = [list(js.position) for js in joint_states]

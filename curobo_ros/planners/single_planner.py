@@ -71,9 +71,9 @@ class SinglePlanner(TrajectoryPlanner):
     - MotionGenPlanConfig is gone: per-call params are kwargs on plan_pose().
     """
 
-    # Class-level shared MotionPlanner instance
-    # This is shared across ALL instances of SinglePlanner and its children
-    _shared_motion_planner: Optional[MotionPlanner] = None
+    # The one MotionPlanner shared by every SinglePlanner subclass, held by
+    # SolverHost (built by ConfigWrapperMotion.build_motion_planner).
+    SOLVER_KEY = 'motion'
 
     def __init__(self, node, config_wrapper):
         """
@@ -110,38 +110,10 @@ class SinglePlanner(TrajectoryPlanner):
         """
         return ExecutionMode.OPEN_LOOP
 
-    @classmethod
-    def set_motion_planner(cls, motion_planner: MotionPlanner):
-        """
-        Set the shared MotionPlanner instance (v2).
-
-        This is called ONCE after ConfigWrapperMotion.set_motion_gen_config()
-        completes the warmup. All SinglePlanner instances (current and future)
-        will use this same MotionPlanner instance.
-
-        Args:
-            motion_planner: Warmed-up MotionPlanner instance from ConfigWrapperMotion
-
-        Example:
-            >>> config_wrapper = ConfigWrapperMotion(node, robot)
-            >>> config_wrapper.set_motion_gen_config(node, None, None)
-            >>> SinglePlanner.set_motion_planner(node.motion_planner)
-        """
-        cls._shared_motion_planner = motion_planner
-
-    # Legacy alias: keeps older call sites (`set_motion_gen`, `.motion_gen`) working
-    # during the v2 transition.
-    set_motion_gen = set_motion_planner
-
     @property
     def motion_planner(self) -> Optional[MotionPlanner]:
-        """Access the shared MotionPlanner instance."""
-        return self._shared_motion_planner
-
-    @property
-    def motion_gen(self) -> Optional[MotionPlanner]:
-        """Legacy alias for motion_planner."""
-        return self._shared_motion_planner
+        """The shared MotionPlanner, asked from SolverHost on each use."""
+        return self.node.solver_host.get(self.SOLVER_KEY)
 
     # ------------------------------------------------------------------
     # Cartesian trajectory constraints (v2: ToolPoseCriteria)
@@ -227,10 +199,7 @@ class SinglePlanner(TrajectoryPlanner):
         if self.motion_planner is None:
             return PlannerResult(
                 success=False,
-                message=(
-                    "MotionPlanner not initialized. "
-                    "Call SinglePlanner.set_motion_planner() after warmup."
-                ),
+                message="MotionPlanner not initialized (warmup not run).",
             )
 
         # Store for execution
@@ -518,9 +487,7 @@ class SinglePlanner(TrajectoryPlanner):
     # World/collision-model propagation (TrajectoryPlanner overrides)
     # ------------------------------------------------------------------
     # All SinglePlanner subclasses (ClassicPlanner, MultiPointPlanner,
-    # JointSpacePlanner) share ONE class-level MotionPlanner instance (see
-    # set_motion_planner/_shared_motion_planner above) -- these three
-    # overrides teach the base TrajectoryPlanner interface that fact, so
+    # JointSpacePlanner) share the one 'motion' solver (SOLVER_KEY), so
     # unified_planner_node.update_all_solvers_world never needs an
     # isinstance(planner, SinglePlanner) special case: it can just ask any
     # planner has_solver()/world_identity() and call update_world().
@@ -531,15 +498,6 @@ class SinglePlanner(TrajectoryPlanner):
     def update_world(self, scene) -> None:
         if self.motion_planner is not None:
             self.motion_planner.update_world(scene)
-
-    def world_identity(self):
-        # id() of the SHARED class-level instance, not id(self) -- every
-        # SinglePlanner subclass instance must collapse onto this one value
-        # so update_all_solvers_world's dedup only pushes the scene into the
-        # shared MotionPlanner once, not once per wrapper class. None is a
-        # valid (if arbitrary) identity here: has_solver() already gates out
-        # the not-yet-built case before a caller would compare identities.
-        return id(self.motion_planner)
 
     def attachment_managers(self) -> list:
         """cuRobo AttachmentManager for the shared MotionPlanner, or [].

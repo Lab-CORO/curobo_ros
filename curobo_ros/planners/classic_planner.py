@@ -3,7 +3,7 @@
 Classic trajectory planner (v2: MotionPlanner.plan_pose).
 
 v2 notes:
-- MotionGen → MotionPlanner (wired via SinglePlanner._shared_motion_planner).
+- MotionGen → MotionPlanner (SolverHost's shared 'motion' solver).
 - MotionGenPlanConfig is gone: per-call params are kwargs on plan_pose().
 - Pose → ToolPose, wrapped in GoalToolPose.
 - PoseCostMetric was removed upstream in v2. Trajectory-axis constraints

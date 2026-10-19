@@ -50,10 +50,16 @@ class ReactiveController(TrajectoryPlanner):
     def __init__(self, node, config_wrapper):
         super().__init__(node, config_wrapper)
 
-        # The cuRobo reactive solver, built lazily from the shared context.
-        self.solver = None
         # Neutral state the CUDA graphs are primed on (see prime_cuda_graphs).
         self._warm_state = None
+
+        # The cuRobo reactive solver lives in SolverHost under SOLVER_KEY:
+        # built lazily from the shared context by build_solver(), payload
+        # replayed by the on_built hook, then every CUDA graph primed.
+        node.solver_host.register(
+            self.SOLVER_KEY, self._build_fresh_solver,
+            graph_parts=lambda solver: (solver,),
+            prime=self.prime_cuda_graphs)
 
         # Goal / loop state.
         self.start_state: Optional[JointState] = None
@@ -161,41 +167,24 @@ class ReactiveController(TrajectoryPlanner):
     # Solver lifecycle
     # ------------------------------------------------------------------
 
+    @property
+    def solver(self):
+        """The cuRobo reactive solver, asked from SolverHost on each use."""
+        return self.node.solver_host.get(self.SOLVER_KEY)
+
     def ensure_solver(self):
-        """Build the cuRobo solver once, lazily, from the shared context.
+        """Build the cuRobo solver once, lazily (SolverHost.ensure).
 
-        Single funnel for both first-time lazy construction AND
-        rebuild_solver() (which just clears self.solver and calls this) --
-        replaying any currently-attached object's spheres here covers both:
-        a solver that never saw the attach because it didn't exist yet, and
-        one that lost its sphere state to a rebuild.
+        The build runs under exclusive GPU access: build_solver() issues CUDA
+        work and prime_cuda_graphs() CAPTURES graphs, neither of which may
+        overlap the perception thread. plan() reaches here without the lock.
         """
-        if self.solver is None:
-            # Under the GPU lock (RLock, so free when the caller already holds it):
-            # build_solver() issues CUDA work and prime_cuda_graphs() below
-            # CAPTURES graphs, neither of which may overlap the perception
-            # thread. plan() reaches here without the lock.
-            with self.node.solver_host.exclusive():
-                self.solver = self.build_solver()
-                try:
-                    replay = getattr(self.node, 'replay_attachment', None)
-                    if replay is not None:
-                        replay(self)
-                except Exception as e:
-                    self.node.get_logger().warn(
-                        f"{self.get_planner_name()}: attachment replay failed: {e}")
-                self.prime_cuda_graphs()
-        return self.solver
+        return self.node.solver_host.ensure(self.SOLVER_KEY)
 
-    def rebuild_solver(self):
-        """Recreate the solver from scratch (e.g. after a collision-cache change).
-
-        The collision cache size is fixed at solver creation, so a change
-        requires a full rebuild rather than a world update.
-        """
-        self.solver = None
+    def _build_fresh_solver(self):
+        """SolverHost builder: a new solver, primed from a new warm state."""
         self._warm_state = None
-        return self.ensure_solver()
+        return self.build_solver()
 
     # ------------------------------------------------------------------
     # CUDA graph priming: capture every graph BEFORE the servo loop runs
@@ -298,8 +287,8 @@ class ReactiveController(TrajectoryPlanner):
 
         Idempotent and cheap when nothing is pending (one enumeration, no
         solve). Must run before the servo loop: after build_solver() and
-        after every SolverHost.release_all_graphs() (planner switch), both
-        funnelled through UnifiedPlannerNode._setup_planner. Returns True when
+        after every SolverHost.activate() that released graphs (planner
+        switch, funnelled through UnifiedPlannerNode._setup_planner). Returns True when
         no executor is left pending.
 
         Scope: "no EXISTING executor is uncaptured". cuRobo creates some

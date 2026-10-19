@@ -64,7 +64,6 @@ class ConfigWrapper(ABC):
     solvers share one robot/obstacles/scene/collision-cache.
 
     Child classes must implement:
-    - update_world_config(node): Update world configuration based on obstacles
     - callback_get_collision_distance(node, request, response): Get collision distance
     """
 
@@ -117,7 +116,7 @@ class ConfigWrapper(ABC):
             self.obstacle_manager,
             self.robot_model_manager,
             self.config_manager,
-            self,   # Pass self so RosServiceManager can call update_world_config()
+            self,   # Pass self so RosServiceManager can serve get_collision_distance
             robot   # Pass robot_context so RosServiceManager can expose get_robot_strategies
         )
 
@@ -148,30 +147,14 @@ class ConfigWrapper(ABC):
     def _register_world_observers(self, node):
         """Wire ObstacleManager mutations to solver propagation/rebuild.
 
-        Prefers the node-level orchestration methods (UnifiedPlannerNode, which
-        also refreshes IK), and falls back to this wrapper's own methods for the
-        standalone planner node.
+        The node (UnifiedPlannerNode) owns the propagation: it pushes a world
+        change into every live solver and rebuilds them on a cache change.
         """
-        # World-change observer: propagate the updated Scene to all solvers.
-        node_world_update = getattr(node, 'update_all_solvers_world', None)
-        if node_world_update is not None:
-            self.obstacle_manager.set_world_update_callback(node_world_update)
-        else:
-            self.obstacle_manager.set_world_update_callback(
-                lambda: self.update_world_config(node)
-            )
-
-        # Cache-change observer: solvers must be rebuilt (the collision cache
-        # size is fixed at solver creation, so a world update is not enough).
-        node_cache_rebuild = getattr(node, 'rebuild_solvers_for_cache_change', None)
-        if node_cache_rebuild is not None:
-            self.obstacle_manager.set_collision_cache_callback(node_cache_rebuild)
-        else:
-            wrapper_rebuild = getattr(self, 'set_motion_gen_config', None)
-            if wrapper_rebuild is not None:
-                self.obstacle_manager.set_collision_cache_callback(
-                    lambda: wrapper_rebuild(node, None, None)
-                )
+        self.obstacle_manager.set_world_update_callback(node.update_all_solvers_world)
+        # The collision cache size is fixed at solver creation, so a cache
+        # change needs a rebuild, not a world update.
+        self.obstacle_manager.set_collision_cache_callback(
+            node.rebuild_solvers_for_cache_change)
 
     def init_services(self, node=None):
         """Initialize ROS services - delegates to RosServiceManager
@@ -255,17 +238,6 @@ class ConfigWrapper(ABC):
 
     # ==================== Abstract Methods ====================
     # These must be implemented by child classes (ConfigWrapperMotion, IK, MPC)
-
-    @abstractmethod
-    def update_world_config(self, node):
-        """
-        Update world configuration based on current obstacles.
-        Must be implemented by child classes.
-
-        Args:
-            node: ROS2 node instance
-        """
-        raise NotImplementedError
 
     @abstractmethod
     def callback_get_collision_distance(self, node, request, response):
