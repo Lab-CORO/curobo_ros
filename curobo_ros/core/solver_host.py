@@ -26,7 +26,7 @@ without a GPU. Solvers are duck-typed (``reset_cuda_graph``, ``seed_ik_solver``,
 
 import functools
 import threading
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 
 
 class _Entry:
@@ -54,10 +54,6 @@ class SolverHost:
         # owner yet: the first activation adopts without releasing (startup
         # warms exactly one solver, so it is already the sole owner).
         self._graph_owner = None
-        # True whenever the next reactive solver call may CAPTURE a graph
-        # (fresh solver, or right after a release) rather than just replay.
-        self._capture_pending = True
-        self._capture_pending_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Solvers
@@ -158,9 +154,6 @@ class SolverHost:
             entry = self._entries.get(key)
             if entry is not None and entry.solver is not None and entry.prime is not None:
                 entry.prime()
-        if holders:
-            # Fresh solvers hold no graph yet: the next reactive step may capture.
-            self.mark_capture_pending()
 
     # ------------------------------------------------------------------
     # Access modes
@@ -236,24 +229,6 @@ class SolverHost:
                     continue
                 for part in entry.graph_parts(entry.solver):
                     self._safe_reset_graph(part)
-            self.mark_capture_pending()
-
-    def mark_capture_pending(self) -> None:
-        """The next reactive solver call may capture a graph."""
-        with self._capture_pending_lock:
-            self._capture_pending = True
-
-    def capture_guard(self):
-        """Belt: exclusive access for ONE step that may capture.
-
-        Take-and-clear, so exactly one caller gets the lock per release.
-        Priming (ReactiveController.prime_cuda_graphs) is the real guarantee;
-        this goes away once priming is trusted alone.
-        """
-        with self._capture_pending_lock:
-            pending = self._capture_pending
-            self._capture_pending = False
-        return self._lock if pending else nullcontext()
 
     def _safe_reset_graph(self, solver) -> None:
         """Release a solver's captured CUDA graph(s); never raise into callers.

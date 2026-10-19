@@ -816,9 +816,7 @@ class LBFGSController(ReactiveController):
         stale command instead of the zero-velocity stop an empty queue
         commands (execute_trajectory.cpp:62-83).
 
-        The first call after a goal never sleeps (``_next_publish_t`` is None),
-        which is also the call that may capture a CUDA graph under the GPU lock
-        (``_step_guard``) -- so the sleep does not hold that lock.
+        The first call after a goal never sleeps (``_next_publish_t`` is None).
         """
         if self._next_publish_t is not None:
             now = time.monotonic()

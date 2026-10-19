@@ -5,8 +5,6 @@ No GPU, rclpy or curobo needed: solvers and logger are fakes.
 """
 
 import threading
-from contextlib import nullcontext
-
 import pytest
 
 from curobo_ros.core.solver_host import SolverHost
@@ -263,13 +261,6 @@ def test_rebuild_all_tolerates_registration_from_a_hook():
     assert host.get('retarget') is None
 
 
-def test_rebuild_all_marks_capture_pending():
-    host = _host_with({'mpc': FakeSolver()})
-    host.capture_guard()
-    host.rebuild_all()
-    assert host.capture_guard() is host.exclusive()
-
-
 def test_reregister_keeps_built_solver():
     host = _host()
     host.register('mpc', FakeSolver)
@@ -406,12 +397,10 @@ def test_ensure_of_non_owner_releases_and_reprimes_owner():
     assert primes == []  # motion has no prime: it re-captures on next plan
 
 
-def test_rebuild_of_graphless_solver_neither_releases_nor_marks_pending():
+def test_rebuild_of_graphless_solver_releases_nothing():
     host, primes = _owned_host('mpc')
-    host.capture_guard()
     host.rebuild('ik')
     assert host.get('mpc').resets == 0
-    assert isinstance(host.capture_guard(), nullcontext)
     assert primes == []
 
 
@@ -427,29 +416,6 @@ def test_graphs_disabled_rebuild_all_primes_every_rebuilt_solver():
     host.rebuild_all()
     assert primes == ['mpc', 'lbfgs']
     assert host.get('mpc').resets == 0 and host.get('lbfgs').resets == 0
-
-
-# --------------------------------------------------------------- capture guard
-
-def test_capture_guard_is_take_and_clear():
-    host = _host()
-    assert host.capture_guard() is host.exclusive()
-    assert isinstance(host.capture_guard(), nullcontext)
-
-
-def test_owner_change_marks_capture_pending():
-    host = _host_with({'motion': FakeSolver()})
-    host.capture_guard()
-    host.activate('motion')
-    host.activate('mpc')
-    assert host.capture_guard() is host.exclusive()
-
-
-def test_mark_capture_pending():
-    host = _host()
-    host.capture_guard()
-    host.mark_capture_pending()
-    assert host.capture_guard() is host.exclusive()
 
 
 # ------------------------------------------------------------- graph release

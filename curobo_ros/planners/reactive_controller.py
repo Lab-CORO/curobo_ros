@@ -200,16 +200,15 @@ class ReactiveController(TrajectoryPlanner):
     # is process-global: any concurrent CUDA op (voxel publisher, depth
     # integrate) invalidates it and poisons the whole CUDA context
     # (cudaErrorStreamCaptureInvalidated, see log 2026-09-14 11:35). The
-    # servo loop only holds the GPU lock for the single step flagged by
-    # SolverHost.capture_guard(), so a capture on step 2+ raced the 7 Hz
-    # voxel publisher and crashed the goal.
+    # servo loop steps WITHOUT the GPU lock, so a capture on any step races
+    # the 7 Hz voxel publisher and crashes the goal.
     #
     # Fix: prime_cuda_graphs() runs warm solves under the GPU lock until NO
     # executor is left uncaptured, so every later step() only replays. The
     # loop is driven by the enumeration below (not a hardcoded solve count),
     # and anything still pending at the cap is logged by name -- that WARN is
-    # the signal that cuRobo grew a new lazily-captured path. _step_guard is
-    # kept as a belt.
+    # the signal that cuRobo grew a new lazily-captured path. execute() also
+    # reports any graph that captured inside the loop anyway.
 
     _PRIME_MAX_SOLVES = 4
 
@@ -260,8 +259,8 @@ class ReactiveController(TrajectoryPlanner):
 
         Default covers the ModelPredictiveControl-based controllers
         (optimize_action_sequence). Controllers whose solver has no such
-        entry point (RetargetController.solve_frame needs a goal) return
-        False and keep relying on _step_guard.
+        entry point return False: their graphs then capture inside the servo
+        loop, which execute() reports.
         """
         solve = getattr(self.solver, 'optimize_action_sequence', None)
         if solve is None:
@@ -306,7 +305,7 @@ class ReactiveController(TrajectoryPlanner):
         Scope: "no EXISTING executor is uncaptured". cuRobo creates some
         executors lazily (rollout_robot.py compute_metrics_from_*), and one
         first created inside the servo loop would still capture there,
-        unguarded and unreported -- none does on today's MPC path.
+        unguarded -- execute() reports it; none does on today's paths.
         """
         if self.solver is None:
             return False
@@ -320,8 +319,8 @@ class ReactiveController(TrajectoryPlanner):
             try:
                 if not self._prime_solve():
                     log.info(f"{self.get_planner_name()}: no prime solve for this "
-                             f"solver; leaving {len(pending)} graph(s) to capture "
-                             f"in the guarded first step: {pending}")
+                             f"solver; {len(pending)} graph(s) will capture inside "
+                             f"the servo loop, unguarded: {pending}")
                     return False
             except Exception as e:
                 log.error(f"{self.get_planner_name()}: prime solve {n + 1} failed: {e}")
@@ -716,11 +715,6 @@ class ReactiveController(TrajectoryPlanner):
         self._diag_live_goal_apply_ms = (t_goal2 - t_goal1) * 1000.0
         self._diag_live_goal_ms = (self._mark() - t_goal0) * 1000.0
 
-    def _step_guard(self):
-        """Exclusive GPU access for a step() that may capture a CUDA graph, else no lock.
-        """
-        return self.node.solver_host.capture_guard()
-
     # ------------------------------------------------------------------
     # Planning: set up the reactive goal (no full trajectory is produced).
     # ------------------------------------------------------------------
@@ -841,8 +835,7 @@ class ReactiveController(TrajectoryPlanner):
                 self._apply_live_goal_guarded()
 
                 st_time = time.time()
-                with self._step_guard():
-                    action = self.step(current_state)  # step() already syncs (FK .item())
+                action = self.step(current_state)  # step() already syncs (FK .item())
                 if tstep > 5:
                     self._step_times.append(time.time() - st_time)
 
@@ -962,8 +955,7 @@ class ReactiveController(TrajectoryPlanner):
                     self._apply_live_goal_guarded()
 
                     st_time = time.time()
-                    with self._step_guard():
-                        batch = self.step_batch(current_state, batch_size)
+                    batch = self.step_batch(current_state, batch_size)
                     if tstep > 5:
                         self._step_times.append(time.time() - st_time)
                     self._diag_batch_wall_ms = (time.time() - st_time) * 1000.0

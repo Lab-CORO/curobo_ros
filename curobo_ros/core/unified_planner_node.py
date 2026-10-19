@@ -524,7 +524,7 @@ class UnifiedPlannerNode(Node):
 
         # Every built solver, in registration order (MotionPlanner, IK, FK,
         # then the reactive controllers); each rebuild replays the attached
-        # payload (SolverHost.on_built) and marks the next capture pending.
+        # payload (SolverHost.on_built); only the graph owner is primed again.
         self.solver_host.rebuild_all()
 
         self.get_logger().info("Solvers rebuilt after cache change")
