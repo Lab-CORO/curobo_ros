@@ -296,14 +296,16 @@ class UnifiedPlannerNode(Node):
     def _warmup_initial_planner(self, planner_type: str):
         self.get_logger().info(f"Warming up {planner_type} planner...")
 
-        if planner_type in ('mpc', 'model_predictive_control'):
+        # Warm exactly the solver the initial planner will use: the first
+        # SolverHost.activate() adopts it as graph owner without releasing.
+        key = PlannerFactory.canonical_key(planner_type)
+        if key == 'mpc':
             self._warmup_mpc()
-        elif planner_type == 'lbfgs':
+        elif key == 'lbfgs':
             self._warmup_lbfgs()
-        elif planner_type in ('retarget', 'motion_retargeting', 'teleop'):
+        elif key == 'retarget':
             self._warmup_reactive('retarget')
-        elif planner_type in ('classic', 'multi_point', 'joint_space',
-                              'motion_gen', 'multipoint'):
+        elif key in ('classic', 'multi_point', 'joint_space'):
             self._warmup_classic()
         else:
             self._warmup_classic()
