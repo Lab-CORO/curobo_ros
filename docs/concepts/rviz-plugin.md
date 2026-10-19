@@ -40,7 +40,7 @@ The plugin registers four components (`rviz2_plugin.xml`):
 - **Trajectory type** — a combo box for the planner, wired to `set_planner`. The combo index maps directly to the `SetPlanner` enum: 0 Classic, 1 MPC, 2 Batch, 3 Constrained. Batch and Constrained are **not implemented** in the node — selecting them makes the switch fail (and the multi-point/joint-space/retarget planners are only reachable from the CLI).
 - **Obstacle Update** — "Update Obstacles" calls `get_voxel_grid` and publishes the result as a marker on `/visualise_voxel_grid`; the "Auto-update (Hz)" spin box repeats it periodically.
 - **Speed (Time dilatation)** — sets the `time_dilation_factor` parameter (feedback cadence — not a robot speed control in v2).
-- **Voxel size** — sets the `voxel_size` parameter and then calls `update_motion_gen_config` for you (expect the ~20 s blocking rebuild).
+- **Voxel size** — tries to set the `voxel_size` parameter, then calls `update_motion_gen_config`. `voxel_size` is a startup parameter (it sizes the ESDF and the voxel cache once, at startup), so the node refuses the change and the panel logs `Failed to set voxel_size`. Set it at launch (`voxel_size:=…`) instead.
 - **Generate Trajectory** — calls `generate_trajectory` with the arrow pose; the result is previewed by the ghost robot.
 - **Send Trajectory** — sends the `execute_trajectory` action goal (reusing the cached plan when possible).
 - **Generate and send** — both in one click.

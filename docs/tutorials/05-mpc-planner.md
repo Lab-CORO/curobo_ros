@@ -21,7 +21,7 @@ ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{plan
 
 The **first** switch to MPC builds its solver from the shared context and captures its CUDA graphs: about 2 s. Later switches skip the build and only re-capture the graphs (under 1 s for MPPI). The call returns once the solver is ready, so the action goal you send next starts immediately. Costs per planner: [Unified Planner](../concepts/unified-planner.md#measured-switch-cost).
 
-MPC parameters are read when the solver is built; if you want to change them (e.g. `mpc_solver_type`), set them **before** the first switch. Defaults are the validated `mppi_acceleration` recipe — see the [Parameters Guide](../concepts/parameters.md).
+MPC build parameters (e.g. `mpc_horizon_steps`) are read when the solver is built: set them **before** the first switch. Afterwards the solver is cached, and the node warns that the change waits for a rebuild. Defaults are the MPPI recipe validated on the real M1013; see the [Parameters Guide](../concepts/parameters.md).
 
 ## 2. Send a goal
 

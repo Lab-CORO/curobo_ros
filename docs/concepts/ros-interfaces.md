@@ -78,7 +78,7 @@ Type: `std_srvs/srv/Trigger`. Clears the cached trajectory and the RViz preview.
 
 ### `/unified_planner/update_motion_gen_config`
 
-Type: `std_srvs/srv/Trigger`. Rebuilds the motion-planning solver from the current ROS parameters. Call it after changing build-time parameters such as `voxel_size`, `collision_activation_distance`, or `interpolation_dt` at runtime. The rebuild is blocking (roughly 20 s, warmup dominates). It is **refused while an execution goal is active** (`success: false`): cancel the goal first.
+Type: `std_srvs/srv/Trigger`. Rebuilds the motion-planning solver from the current ROS parameters. Call it after changing a `MotionPlanner` build parameter (`collision_activation_distance`, `interpolation_dt`) or the robot YAML at runtime. `voxel_size` is a startup parameter: it cannot be changed at runtime. The rebuild is blocking (roughly 20 s, warmup dominates). It is **refused while an execution goal is active** (`success: false`): cancel the goal first.
 
 Not needed after `set_collision_cache` — that service rebuilds the solvers itself.
 

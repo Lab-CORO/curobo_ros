@@ -84,14 +84,16 @@ mpc.update_world(scene)                           # dynamic obstacles (driven by
 
 ### Two solver recipes
 
-`mpc_solver_type` selects how the underlying optimizer is configured:
+The recipe follows the planner selected with `set_planner` (the former
+`mpc_solver_type` parameter is gone):
 
-- **`mppi_acceleration`** (default) — a hand-tuned MPPI configuration in
+- **`mpc`** (`MPPIController`) — a hand-tuned MPPI configuration in
   ACCELERATION control space (`_build_mppi_optimizer_config`), validated on the
   real Doosan M1013 (2026-07). Tuned companions: `mpc_warm_start_iters: 5`,
   `mpc_cold_start_iters: 10`, `mpc_mppi_num_particles: 400`.
-- **`lbfgs_bspline`** — cuRobo's stock L-BFGS + B-spline MPC config. If you use
-  it, iteration counts must be multiples of 25 (e.g. 25/100).
+- **`lbfgs`** (`LBFGSController`) — cuRobo's L-BFGS + B-spline MPC config.
+  Its iteration counts are `lbfgs_warm_start_iters` / `lbfgs_cold_start_iters`,
+  multiples of 25 (e.g. 25/100).
 
 ### Command pacing and stability
 
@@ -159,15 +161,15 @@ Reactive control reuses the **unified** interface — no dedicated action:
 |---|---|---|
 | `convergence_threshold` | `0.01` | stop servoing to "on target" when position error (m) is below this |
 | `max_mpc_iterations` | `1000` | safety cap on loop iterations |
-| `mpc_solver_type` | `'mppi_acceleration'` | solver recipe (see above) |
 | `mpc_step_dt` | `0.03` | cuRobo `optimization_dt` |
 | `mpc_horizon_steps` | `30` | cuRobo `num_control_points` |
 | `mpc_command_interval` | `0.12` | fixed command-window pacing (s); `0` = free-running |
 
 The full family (`mpc_warm_start_iters`, `mpc_mppi_num_particles`,
 `mpc_vel_feedback_alpha`, `retarget_*`, …) is listed in
-[Parameters](parameters.md). MPC parameters are read when the solver is built —
-set them before the first switch to `mpc`.
+[Parameters](parameters.md). MPC build parameters are read when the solver is
+built: set them before the first switch to `mpc` (afterwards only a
+`set_collision_cache` rebuild or a restart applies them, and the node warns).
 
 ## Adding another reactive control
 
