@@ -150,9 +150,14 @@ class RetargetController(ReactiveController):
         dispatches more graphs)."""
         if self._warm_state is None:
             self._warm_state, self._warm_goal = self._make_warm_state_and_goal(self.solver)
-            self.solver.reset()
         self.solver.solve_frame(self._warm_goal)
         return True
+
+    def _prime_begin(self) -> None:
+        # A previous goal leaves a warm start: without a reset the first prime
+        # solve takes the local path and global IK (whose graphs activate()
+        # released) would capture at the next prime, at goal start.
+        self.solver.reset()
 
     def _prime_done(self) -> None:
         # A goal must start from global IK, not from the prime frames.

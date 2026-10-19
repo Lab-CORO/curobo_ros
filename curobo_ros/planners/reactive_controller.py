@@ -241,6 +241,9 @@ class ReactiveController(TrajectoryPlanner):
         solve(self._warm_state)
         return True
 
+    def _prime_begin(self) -> None:
+        """Hook run before priming (e.g. reset a warm start left by a goal)."""
+
     def _prime_done(self) -> None:
         """Hook run after priming (e.g. drop the prime solves' warm start)."""
 
@@ -281,6 +284,7 @@ class ReactiveController(TrajectoryPlanner):
         log = self.node.get_logger()
         n = 0
         try:
+            self._prime_begin()
             while n < self._PRIME_MAX_SOLVES:
                 t0 = time.monotonic()
                 mark = graph_captures.mark()
