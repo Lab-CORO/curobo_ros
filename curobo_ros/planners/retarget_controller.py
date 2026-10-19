@@ -23,14 +23,24 @@ Scene). ``solve_frame`` ignores the fed-back joint state (it warm-starts
 internally), so unlike the MPC we don't need velocity/acceleration continuity.
 """
 
+import math
+import time
 from typing import Any
+
+import torch
 
 from curobo.config_io import load_yaml
 from curobo.types import JointState
 from curobo._src.cost.tool_pose_criteria import ToolPoseCriteria
 from curobo.motion_retargeter import MotionRetargeter, MotionRetargeterCfg
 
+from curobo_ros.core.config_wrapper import resolve_interpolation_dt
+
 from .reactive_controller import ReactiveController
+
+# Bounds on the points per command: enough to bridge one servo cycle at
+# interpolation_dt, never a long blind open-loop tail.
+_MIN_POINTS, _MAX_POINTS = 2, 10
 
 
 class RetargetController(ReactiveController):
@@ -83,23 +93,75 @@ class RetargetController(ReactiveController):
             p.position.x, p.position.y, p.position.z,
             p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z,
         ]
-        # reset() clears the warm-start so the first solve_frame uses global IK.
-        self.solver.reset()
+        # Start from the robot's own configuration (local IK / MPC warm start),
+        # not from global IK: its 64 seeds may pick another IK branch (e.g. a
+        # wrist flip) far from the arm, which the joint-space velocity command
+        # below would then drive to in a straight, collision-unchecked line.
+        self._seed_from(start_state.position)
         self.goal = self._set_target(raw)
+        self._dt = resolve_interpolation_dt(self.node)
+        self._t_prev_step = None
+        self._cycle_s = None
         return True
 
     def step(self, current_state: JointState) -> JointState:
-        # solve_frame tracks self.goal and warm-starts internally; it ignores the
-        # fed-back current_state. on_target is the FK distance of the FRESH
-        # solution (not the stale previous action).
+        # solve_frame gives the joint target for self.goal (warm-started
+        # internally). The robot drivers stream VELOCITIES (leeloo's
+        # execute_trajectory -> speedj_rt), so the target becomes a
+        # proportional velocity command from the MEASURED configuration.
         result = self.solver.solve_frame(self.goal)
-        # Both errors, then the hold counter -- is_on_target() gates on all
-        # three. Leaving the orientation error at its `inf` init would silently
-        # pin on_target to False for this controller.
-        self._last_position_error = self._fk_position_error(result.joint_state)
-        self._last_orientation_error = self._fk_orientation_error(result.joint_state)
+        # Errors of the measured robot, not of the IK solution (which is on
+        # target as soon as IK converges, whether the arm moved or not).
+        self._last_position_error = self._fk_position_error(current_state)
+        self._last_orientation_error = self._fk_orientation_error(current_state)
         self._update_hold()
-        return result.joint_state
+        return self._velocity_command(current_state.position, result.joint_state.position)
+
+    def _velocity_command(self, q_now: torch.Tensor, q_target: torch.Tensor) -> JointState:
+        """[1, n, dof] command: constant velocity toward q_target, n points.
+
+        v = (q_target - q_now) / retarget_time_constant_s, each joint clamped
+        to retarget_max_joint_speed_dps. The n points (interpolation_dt apart)
+        cover one measured servo cycle, so the arm keeps moving until the next
+        command replaces the queue instead of stopping after one tick.
+        """
+        node = self.node
+        tau = float(node.get_parameter('retarget_time_constant_s').value)
+        v_max = math.radians(float(node.get_parameter('retarget_max_joint_speed_dps').value))
+
+        now = time.monotonic()
+        if self._t_prev_step is not None:
+            cycle = now - self._t_prev_step
+            self._cycle_s = cycle if self._cycle_s is None else 0.8 * self._cycle_s + 0.2 * cycle
+        self._t_prev_step = now
+        cycle_s = self._cycle_s if self._cycle_s is not None else 0.2
+        n = min(_MAX_POINTS, max(_MIN_POINTS, math.ceil(cycle_s / self._dt) + 1))
+
+        q_now = q_now.reshape(1, -1)
+        q_target = q_target.reshape(1, -1).to(q_now)
+        velocity = ((q_target - q_now) / tau).clamp(-v_max, v_max)
+        steps = torch.arange(1, n + 1, device=q_now.device, dtype=q_now.dtype).view(n, 1)
+        position = q_now + velocity * (steps * self._dt)
+        command = JointState.from_position(position.unsqueeze(0),
+                                           joint_names=self.solver.joint_names)
+        command.velocity = velocity.expand(n, -1).unsqueeze(0).clone()
+        command.acceleration = torch.zeros_like(command.velocity)
+        return command
+
+    def _seed_from(self, q: torch.Tensor) -> None:
+        """Make the next solve_frame a warm-started frame from ``q``.
+
+        Mirrors the tail of MotionRetargeter._solve_global_ik with the robot's
+        configuration in place of the global IK solution.
+        """
+        s = self.solver
+        s.reset()
+        q = q.reshape(s._num_envs, s._action_dim).to(
+            device=self._device, dtype=self._dtype).clone()
+        s._prev_solution = q
+        if s._config.use_mpc and s._mpc_solver is not None:
+            s._mpc_state = JointState.from_position(q.clone(), joint_names=s._joint_names)
+            s._mpc_solver.setup(s._mpc_state.clone())
 
     def apply_live_goal(self, raw_goal) -> bool:
         # Replace the tracked goal; the next solve_frame warm-starts from the

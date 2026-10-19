@@ -226,6 +226,12 @@ _SPECS = [
     Param('retarget_use_mpc', False, BUILD,
           'Follow frames after the first with the MPC sub-solver instead of '
           'local IK', _RETARGET),
+    Param('retarget_time_constant_s', 0.3, LIVE,
+          'Retarget velocity command: joint error / this time constant (s). '
+          'Smaller = snappier, more overshoot', bounds=(0.01, 10.0)),
+    Param('retarget_max_joint_speed_dps', 30.0, LIVE,
+          'Retarget velocity command: per-joint speed limit (deg/s)',
+          bounds=(0.1, 360.0)),
 
     # ---- command strategies -------------------------------------------------
     Param('max_joint_accel_dps', DESCRIPTOR, LIVE,

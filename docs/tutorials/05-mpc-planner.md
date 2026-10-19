@@ -79,7 +79,7 @@ For teleoperation-style *pose following* without the MPC optimization, switch to
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 6}"
 ```
 
-Then run the action and stream poses to `/unified_planner/mpc_goal` exactly as above. The first frame runs a global IK, later frames a warm-started local IK: lower latency, but it only checks collisions at the commanded configuration, with no horizon to avoid obstacles in advance. Static obstacles and the camera ESDF are both in its collision world. Set `retarget_use_mpc: true` (before the first switch) to follow frames with the MPC sub-solver instead of local IK. Use MPC when the scene is dynamic, retarget when you need snappy manual guidance.
+Then run the action and stream poses to `/unified_planner/mpc_goal` exactly as above. Each goal starts from the arm's current configuration and runs a warm-started local IK per frame, turned into a velocity command (`retarget_time_constant_s`, capped by `retarget_max_joint_speed_dps`, both live): lower latency, but it only checks collisions at the commanded configuration, with no horizon to avoid obstacles in advance. Static obstacles and the camera ESDF are both in its collision world. Set `retarget_use_mpc: true` (before the first switch) to follow frames with the MPC sub-solver instead of local IK. Use MPC when the scene is dynamic, retarget when you need snappy manual guidance.
 
 ## MPC vs Classic — when to use which
 

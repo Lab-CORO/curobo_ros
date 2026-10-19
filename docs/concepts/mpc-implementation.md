@@ -129,8 +129,14 @@ Set `mpc_debug: true` to also write per-step CSVs to the ROS log directory
 ## `RetargetController` — teleoperation
 
 `curobo_ros/planners/retarget_controller.py` wraps cuRobo's `MotionRetargeter`:
-a pose-stream follower for teleoperation. The first frame runs a global IK
-(64 seeds); subsequent frames run warm-started local IK for low latency. Weights:
+a pose-stream follower for teleoperation. Each goal starts warm from the
+robot's current configuration (local IK), so the arm never jumps to another IK
+branch; frames run warm-started local IK for low latency (the 64-seed global IK
+is only used without a warm start). The robot drivers take velocities, so each
+IK target becomes a velocity command from the measured configuration:
+`(q_target - q_measured) / retarget_time_constant_s`, clamped per joint to
+`retarget_max_joint_speed_dps`, sent as a few points that bridge one servo
+cycle. The reported error is the measured robot's, not the IK solution's. Weights:
 `retarget_position_weight` / `retarget_orientation_weight`. With
 `retarget_use_mpc`, frames after the first run the MPC sub-solver instead of
 local IK. Select it with `set_planner` enum `6` and stream poses to

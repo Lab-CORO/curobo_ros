@@ -110,6 +110,8 @@ There is no world floor added automatically at startup: if you want a ground pla
 |---|---|---|---|
 | `retarget_position_weight` | `1.0` | Retarget position weight | Build (retargeter) |
 | `retarget_orientation_weight` | `1.0` | Retarget orientation weight | Build (retargeter) |
+| `retarget_time_constant_s` | `0.3` | Retarget velocity command: joint error / this time constant (s). Smaller = snappier, more overshoot. Range 0.01–10.0 | Live |
+| `retarget_max_joint_speed_dps` | `30.0` | Retarget velocity command: per-joint speed limit (deg/s). Range 0.1–360.0 | Live |
 | `retarget_use_mpc` | `false` | Follow frames after the first with the MPC sub-solver instead of local IK | Build (retargeter) |
 
 ## Node parameters — Robot, world and command strategies
