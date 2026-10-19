@@ -178,10 +178,10 @@ class RosServiceManager:
         """
         with node.solver_host.try_access() as acquired:
             if not acquired:
-                node.get_logger().warn(
-                    "GPU busy (CUDA graph capture in progress) - skipping this "
+                node.get_logger().debug(
+                    "GPU busy (planner holds it) - skipping this "
                     "voxel grid publish cycle",
-                    throttle_duration_sec=5.0)
+                    throttle_duration_sec=2.0)
                 return  # planner is capturing a CUDA graph — skip this cycle
             self.obstacle_manager.publish_sparse_voxel_grid(node, self.sparse_voxel_pub)
 
@@ -269,9 +269,10 @@ class RosServiceManager:
         """
         with node.solver_host.try_access() as acquired:
             if not acquired:
-                node.get_logger().warn(
-                    "GPU busy (CUDA graph capture in progress) - get_voxel_grid "
-                    "returns an empty grid")
+                node.get_logger().debug(
+                    "GPU busy (planner holds it) - get_voxel_grid "
+                    "returns an empty grid",
+                    throttle_duration_sec=2.0)
                 return self.obstacle_manager.empty_voxel_grid_response(node, response)
             return self.obstacle_manager.get_voxel_grid(node, request, response)
 
@@ -339,10 +340,10 @@ class RosServiceManager:
 
         with node.solver_host.try_access() as acquired:
             if not acquired:
-                node.get_logger().warn(
-                    "GPU busy (CUDA graph capture in progress) - skipping "
+                node.get_logger().debug(
+                    "GPU busy (planner holds it) - skipping "
                     "this collision sphere publish cycle",
-                    throttle_duration_sec=5.0)
+                    throttle_duration_sec=2.0)
                 return  # planner is capturing a CUDA graph — skip this cycle
             # Source spheres from the MotionPlanner's kinematics when available — it
             # carries attaches (our robot_model_manager kin_model does not), so the
