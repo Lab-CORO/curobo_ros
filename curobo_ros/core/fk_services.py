@@ -216,8 +216,8 @@ class FKServices:
             robot_config=self._robot_config_file,
             scene_model=scene,
             device_cfg=DeviceCfg(device=collision_device, dtype=self._dtype),
-            n_meshes=self._config.collision_cache,
-            n_cuboids=self._config.collision_cache,
+            n_meshes=self._config.collision_cache["mesh"],
+            n_cuboids=self._config.collision_cache["cuboid"],
         )
         collision_checker = RobotCollisionChecker(collision_cfg)
 
