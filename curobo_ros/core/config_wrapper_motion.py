@@ -79,7 +79,24 @@ class ConfigWrapperMotion(ConfigWrapper):
         self.init_services(node)
 
     def set_motion_gen_config(self, node, _, response):
-        """`update_motion_gen_config` service: rebuild the MotionPlanner."""
+        """`update_motion_gen_config` service: rebuild the MotionPlanner.
+
+        Refused while an execution goal is active: the rebuild releases every
+        CUDA graph (SolverHost._settle), including the one a reactive goal is
+        replaying outside the GPU lock. Same guard as set_planner_callback /
+        SetCollisionCache.
+        """
+        goal_lock = getattr(node, '_goal_lock', None)
+        if goal_lock is not None:
+            with goal_lock:
+                if getattr(node, '_goal_active', False):
+                    if response is not None:
+                        response.success = False
+                        response.message = (
+                            "Cannot rebuild the motion planner while an "
+                            "execution goal is active — cancel it first.")
+                        node.get_logger().error(response.message)
+                    return response
         node.solver_host.rebuild('motion')
         if response is not None:
             response.success = True
