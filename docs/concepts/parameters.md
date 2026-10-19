@@ -89,7 +89,7 @@ Read by the MPC controller when it is built (first switch to `mpc`); change them
 |---|---|---|
 | `retarget_position_weight` | `1.0` | Position tracking weight |
 | `retarget_orientation_weight` | `1.0` | Orientation tracking weight |
-| `retarget_use_mpc` | `false` | Route retarget commands through the MPC solver instead of direct IK |
+| `retarget_use_mpc` | `false` | Follow frames after the first with the MPC sub-solver instead of local IK. Read at solver build |
 
 ## Node parameters — robot selection
 

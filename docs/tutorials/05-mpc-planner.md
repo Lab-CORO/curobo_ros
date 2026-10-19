@@ -19,7 +19,7 @@ ros2 launch curobo_ros gen_traj.launch.py robot:=emulator
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
 ```
 
-The **first** switch to MPC builds and warms up its solver from the shared context — expect several seconds. Later switches are fast (instances are cached).
+The **first** switch to MPC builds its solver from the shared context and captures its CUDA graphs: about 2 s. Later switches skip the build and only re-capture the graphs (under 1 s for MPPI). The call returns once the solver is ready, so the action goal you send next starts immediately. Costs per planner: [Unified Planner](../concepts/unified-planner.md#measured-switch-cost).
 
 MPC parameters are read when the solver is built; if you want to change them (e.g. `mpc_solver_type`), set them **before** the first switch. Defaults are the validated `mppi_acceleration` recipe — see the [Parameters Guide](../concepts/parameters.md).
 
@@ -79,7 +79,7 @@ For teleoperation-style *pose following* without the MPC optimization, switch to
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 6}"
 ```
 
-Then run the action and stream poses to `/unified_planner/mpc_goal` exactly as above. It solves warm-started IK per frame — lower latency, but no predictive obstacle avoidance along the horizon. Use MPC when the scene is dynamic, retarget when you need snappy manual guidance.
+Then run the action and stream poses to `/unified_planner/mpc_goal` exactly as above. The first frame runs a global IK, later frames a warm-started local IK: lower latency, but it only checks collisions at the commanded configuration, with no horizon to avoid obstacles in advance. Static obstacles and the camera ESDF are both in its collision world. Set `retarget_use_mpc: true` (before the first switch) to follow frames with the MPC sub-solver instead of local IK. Use MPC when the scene is dynamic, retarget when you need snappy manual guidance.
 
 ## MPC vs Classic — when to use which
 
@@ -94,7 +94,8 @@ Then run the action and stream poses to `/unified_planner/mpc_goal` exactly as a
 
 | Symptom | Cause / fix |
 |---|---|
-| Switch to MPC takes long | First-time solver build — expected |
+| Switch to MPC takes long | First switch: solver build plus CUDA-graph capture (~2 s). Later switches: graph re-capture only (<1 s for MPPI, ~2 s for L-BFGS) |
+| Log warns `CUDA graph(s) captured INSIDE the servo loop` | Priming missed a solver path; the capture ran without exclusive GPU access. Report it with the log |
 | `mpc_goal` messages ignored | No reactive planner active, or no action goal running |
 | Sluggish tracking | Check `mpc_command_interval` (0.12 s pacing by default); see [MPC Implementation](../concepts/mpc-implementation.md) |
 | Arm oscillates near target on hardware | Keep the validated `mppi_acceleration` defaults; check the driver executes velocities faithfully |

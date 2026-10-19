@@ -62,7 +62,7 @@ Type: `curobo_msgs/srv/SetPlanner`. Switches the active planner. Request field `
 
 Response: `success`, `message`, `previous_planner`, `current_planner`.
 
-Planner instances are cached: the first switch to a planner pays its warmup cost, later switches are fast. See [Unified Planner](unified-planner.md).
+Planner instances are cached: only the first switch to a planner builds its solver. Every switch to a reactive planner re-captures its CUDA graphs before returning (about 1–3 s), so the goal that follows starts at once. See [Unified Planner](unified-planner.md#measured-switch-cost).
 
 ```bash
 ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{planner_type: 1}"
@@ -78,7 +78,7 @@ Type: `std_srvs/srv/Trigger`. Clears the cached trajectory and the RViz preview.
 
 ### `/unified_planner/update_motion_gen_config`
 
-Type: `std_srvs/srv/Trigger`. Rebuilds the motion-planning solver from the current ROS parameters. Call it after changing build-time parameters such as `voxel_size`, `collision_activation_distance`, or `interpolation_dt` at runtime. The rebuild is blocking (roughly 20 s, warmup dominates).
+Type: `std_srvs/srv/Trigger`. Rebuilds the motion-planning solver from the current ROS parameters. Call it after changing build-time parameters such as `voxel_size`, `collision_activation_distance`, or `interpolation_dt` at runtime. The rebuild is blocking (roughly 20 s, warmup dominates). It is **refused while an execution goal is active** (`success: false`): cancel the goal first.
 
 Not needed after `set_collision_cache` — that service rebuilds the solvers itself.
 
@@ -161,6 +161,7 @@ Two behaviors to know:
 
 - The call is **refused while an execution goal is active** (`success: false`) — cancel the goal first.
 - On success the solvers are **rebuilt automatically** (blocking, ~20 s). Do not call `update_motion_gen_config` afterwards; the response message ends with `- solvers rebuilt (blocking, ~20s)`.
+- A request that changes nothing (same sizes as now) succeeds without rebuilding: the message is `Collision cache unchanged - no rebuild`.
 
 ## Services — kinematics (IK / FK)
 

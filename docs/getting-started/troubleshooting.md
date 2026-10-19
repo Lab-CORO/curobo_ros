@@ -343,3 +343,36 @@ point a `cameras.yaml` entry at its depth topic and pass it with
 `cameras_config_file:=`. See [Tutorial 7](../tutorials/07-pointcloud-detection.md)
 for the full configuration, including the intrinsics/extrinsics choices and the
 startup log lines that confirm frames are arriving.
+
+**Start the camera before the planner.** Each camera's intrinsics are read from
+its `camera_info` topic when the node starts. If no `camera_info` arrives
+(`Failed to receive camera info` / `Could not get camera intrinsic` in the log),
+that camera stays disabled for the whole session: start the driver, then
+restart the node.
+
+---
+
+## Planning / GPU Issues
+
+### 12. A Planner Switch Takes Several Seconds
+
+**Expected.** The first switch to a reactive planner builds its solver; every
+switch to a reactive planner re-captures its CUDA graphs before `set_planner`
+returns (about 1–3 s, see
+[Unified Planner](../concepts/unified-planner.md#measured-switch-cost)). The
+goal sent afterwards starts at once. The first `classic` plan after a switch
+also re-captures (~4 s, then ~0.6 s).
+
+### 13. `CUDA graph(s) captured INSIDE the servo loop`
+
+A solver path was not covered by priming, so its graph captured during a
+closed-loop goal, without exclusive GPU access. Concurrent GPU work during a
+capture can fail with a CUDA error. Please report it with the node log: the
+`prime solve N captured K graph(s)` lines just before show what priming did
+capture. See [ADR-0001](../adr/0001-gpu-access-invariants.md).
+
+### 14. `update_motion_gen_config` or `set_collision_cache` Returns `success: false`
+
+Both rebuild solvers and are refused while an execution goal is active. Cancel
+the goal, then call again. `set_collision_cache` with the current sizes
+succeeds without rebuilding (`Collision cache unchanged - no rebuild`).

@@ -30,7 +30,7 @@ Every planner declares an `ExecutionMode` that changes the behavior of the `exec
 
 ## Two base classes
 
-Open-loop planners subclass `SinglePlanner`, which owns a **single, class-level cuRobo `MotionPlanner`** — all three open-loop planners share the same solver instance and its warmup.
+Open-loop planners subclass `SinglePlanner`; all three share **one cuRobo `MotionPlanner`**, held by `SolverHost` under the key `'motion'`, and its warmup.
 
 Closed-loop planners subclass `ReactiveController`, which owns the whole servo loop (goal admission, live-goal plumbing, periodic perception refresh, command pacing); a concrete controller only implements five hooks: `build_solver()`, `setup()`, `step()`, `apply_live_goal()`, `is_converged()`.
 
@@ -44,9 +44,25 @@ ros2 service call /unified_planner/set_planner curobo_msgs/srv/SetPlanner "{plan
 
 What happens on a switch:
 
-- Planner instances are **cached**: the first switch to a planner builds and warms up its solver (for MPC this takes several seconds); subsequent switches are fast.
+- Planner instances and their solvers are **cached** (`SolverHost`, one entry per solver key): only the first switch to a planner **builds** its solver. Later switches never rebuild.
 - The switch is refused while an execution goal is active.
-- With `use_cuda_graph: true` the node keeps **at most one live CUDA graph**: switching between solver families releases the previous graph and re-captures on the next solve. This is why the first plan after a switch can be slower.
+- With `use_cuda_graph: true` the node keeps **at most one live CUDA graph** ([ADR-0001](../adr/0001-gpu-access-invariants.md)): a switch to another solver releases every other captured graph, and the new reactive solver **re-captures its graphs inside `set_planner`** ("priming"), before the servo loop starts. A closed-loop goal therefore starts in well under a second; the cost is paid by the switch call itself.
+- The open-loop planners are not primed: their first plan after a switch re-captures the `MotionPlanner` graphs.
+
+### Measured switch cost
+
+Emulator, both cameras live (perception ESDF active, `voxel_size: 0.05`), Jetson AGX Orin, `use_cuda_graph: true`. "1st switch" includes the solver build; "later switch" is a return to an already built planner.
+
+| Target planner | 1st switch (`set_planner`) | Later switch (`set_planner`) | Goal start → 1st feedback |
+|---|---|---|---|
+| `mpc` (MPPI) | ~2.0 s | ~0.85 s | ~0.35 s |
+| `lbfgs` | ~2.7 s | ~2.2–2.4 s | ~0.38 s |
+| `retarget` | ~3.3 s | ~1.5–3.0 s | ~0.08 s |
+| `classic` | ~0.01 s | ~0.01 s | first plan ~4.1 s, then ~0.6 s |
+
+Later switches are dominated by CUDA-graph re-capture, not by building: the L-BFGS controller captures its initial-state, optimizer-iteration and metrics graphs (~2 s); the retargeter captures the seed-IK graphs of its global and local IK (~1.5 s each). With `use_cuda_graph: false` a switch costs only the first build, but every solve is slower.
+
+The node logs one line per priming solve (`prime solve N captured K graph(s) in T ms: [...]`). A warning `CUDA graph(s) captured INSIDE the servo loop` means priming missed a path: report it, since that capture ran without exclusive GPU access.
 
 The startup planner is set by the `planner_type` parameter (default `classic`).
 

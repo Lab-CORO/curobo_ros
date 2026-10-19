@@ -129,9 +129,18 @@ Set `mpc_debug: true` to also write per-step CSVs to the ROS log directory
 `curobo_ros/planners/retarget_controller.py` wraps cuRobo's `MotionRetargeter`:
 a pose-stream follower for teleoperation. The first frame runs a global IK
 (64 seeds); subsequent frames run warm-started local IK for low latency. Weights:
-`retarget_position_weight` / `retarget_orientation_weight`; `retarget_use_mpc`
-routes commands through the MPC solver instead. Select it with `set_planner`
-enum `6` and stream poses to `/unified_planner/mpc_goal`.
+`retarget_position_weight` / `retarget_orientation_weight`. With
+`retarget_use_mpc`, frames after the first run the MPC sub-solver instead of
+local IK. Select it with `set_planner` enum `6` and stream poses to
+`/unified_planner/mpc_goal`.
+
+`MotionRetargeterCfg` takes no collision cache, so the controller builds it on
+a scene that carries a **private clone** of the perception ESDF: the
+sub-solvers get voxel storage of the right shape, and `update_world` copies the
+live ESDF into it on every refresh (camera obstacles are avoided). Its
+sub-solvers always capture CUDA graphs (`MotionRetargeterCfg` forwards no
+`use_cuda_graph`), and `prime_cuda_graphs` resets the warm start first, so
+global and local IK are both captured at the switch, not at goal start.
 
 ## ROS interface
 

@@ -137,7 +137,7 @@ classDiagram
 ## Key invariants
 
 - **One GPU context.** Every solver (planning, MPC, IK) is built from the same shared context — same robot model, same scene, same caches. There is no separate world for MPC.
-- **One live CUDA graph.** With `use_cuda_graph: true`, the node guarantees at most one captured CUDA graph across solvers; switching planners releases and re-captures as needed.
+- **One live CUDA graph.** With `use_cuda_graph: true`, the node guarantees at most one captured CUDA graph across solvers; switching planners releases the others, and a reactive planner re-captures (primes) its graphs inside the switch, before its servo loop runs. See [ADR-0001](../adr/0001-gpu-access-invariants.md).
 - **Push-based perception.** Depth frames are integrated into the `Mapper` as they arrive (under a non-blocking GPU lock); solvers read the resulting ESDF. See [Tutorial 7](../tutorials/07-pointcloud-detection.md).
 
 ## Source layout

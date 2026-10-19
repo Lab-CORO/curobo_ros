@@ -113,7 +113,7 @@ ros2 service call /unified_planner/update_motion_gen_config std_srvs/srv/Trigger
 | `success: False`, IK error | Pose out of reach or in collision | Bring the target into the zone from step 2; check obstacles |
 | Service call hangs forever | Node still warming up | Wait for `node_is_available` to be `True` |
 | Plan goes through an obstacle you see in RViz | Marker ≠ collision world | Confirm with `get_obstacles`; markers refresh every 2 s |
-| First plan after switching planners is slow | CUDA graph re-capture | Expected — subsequent plans are fast |
+| First plan after switching back to `classic` is slow (~4 s) | CUDA graph re-capture of the `MotionPlanner` | Expected: subsequent plans are fast (~0.6 s) |
 
 ## Next steps
 

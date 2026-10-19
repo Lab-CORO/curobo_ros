@@ -34,7 +34,10 @@ Docker images ship all dependencies (ROS 2 Jazzy, CUDA, cuRobo) for x86 and Jets
   - [Parameters Guide](concepts/parameters.md)
   - [ROS 2 Interfaces](concepts/ros-interfaces.md)
   - [RViz Plugin](concepts/rviz-plugin.md)
-- **[Migration to cuRobo v2](MIGRATION_V2.md)** — for developers of the wrapper itself
+- **Reference**
+  - [Glossary](glossary.md) — domain terms used in code, docs and reviews
+  - [ADR-0001: GPU access invariants](adr/0001-gpu-access-invariants.md) — one live CUDA graph, exclusive capture, priming
+  - [Migration to cuRobo v2](MIGRATION_V2.md) — for developers of the wrapper itself
 
 ```{toctree}
 :maxdepth: 3
@@ -64,5 +67,7 @@ concepts/index
 :caption: Reference
 :hidden:
 
+glossary
+adr/0001-gpu-access-invariants
 MIGRATION_V2
 ```
