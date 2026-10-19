@@ -58,8 +58,11 @@ These invariants hold, and are enforced in one place, `SolverHost`:
   by design.
 - The servo loop steps without the GPU lock: invariant 3 is its only
   protection. The per-step capture check that once backed it up was removed
-  after `ReactiveController.execute()` reported no capture inside the loop
-  for MPPI, LBFGS and retarget; that report stays, and a capture it flags
-  must be fixed in priming, not by locking the loop again. Proposals to
+  once `core/graph_captures` (a counter on cuRobo's single capture point,
+  `GraphExecutor._initialize_cuda_graph`) showed no capture inside the loop
+  for MPPI, LBFGS and retarget (IK and MPC variants), cameras live. Priming
+  solves until a solve captures nothing, and `ReactiveController.execute()`
+  warns on any capture inside the loop; a capture it flags must be fixed in
+  priming, not by locking the loop again. Proposals to
   merge solvers into one graph, or to let threads run CUDA work during a
   capture, must revisit this ADR.

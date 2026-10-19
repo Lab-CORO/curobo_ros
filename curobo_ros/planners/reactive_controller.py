@@ -41,6 +41,8 @@ from curobo.types import JointState, Pose, GoalToolPose
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from .trajectory_planner import TrajectoryPlanner, PlannerResult, ExecutionMode
+from curobo_ros.core import graph_captures
+from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 from curobo_msgs.action import SendTrajectory
 
 
@@ -203,64 +205,31 @@ class ReactiveController(TrajectoryPlanner):
     # servo loop steps WITHOUT the GPU lock, so a capture on any step races
     # the 7 Hz voxel publisher and crashes the goal.
     #
-    # Fix: prime_cuda_graphs() runs warm solves under the GPU lock until NO
-    # executor is left uncaptured, so every later step() only replays. The
-    # loop is driven by the enumeration below (not a hardcoded solve count),
-    # and anything still pending at the cap is logged by name -- that WARN is
-    # the signal that cuRobo grew a new lazily-captured path. execute() also
-    # reports any graph that captured inside the loop anyway.
+    # Fix: prime_cuda_graphs() runs warm solves under the GPU lock until a
+    # solve captures nothing more, so every later step() only replays. Driven
+    # by core.graph_captures (every cuRobo capture, however the solver nests
+    # its executors), not by a hardcoded solve count. Still capturing at the
+    # cap is a WARN -- the signal that cuRobo grew a new lazily-captured path
+    # -- and execute() reports any capture inside the loop anyway.
 
-    _PRIME_MAX_SOLVES = 4
+    _PRIME_MAX_SOLVES = 6
 
     def graph_parts(self, solver):
         """Objects whose CUDA graphs SolverHost releases on an owner change."""
         return (solver,)
 
-    def _iter_graph_executors(self):
-        """Yield (name, GraphExecutor) for every lazily-captured graph the
-        solver owns."""
-        return self._iter_core_executors(self.solver)
-
-    @staticmethod
-    def _iter_core_executors(solver):
-        """Executors under ``solver.core``. Two container shapes: gradient
-        optimizers keep `_executors` on `optimizer._core` (lbfgs.py), particle
-        optimizers ARE the core and keep it directly (particle_opt_core.py);
-        rollouts keep them as plain attributes (rollout_robot.py).
-        """
-        core = getattr(solver, 'core', None)
-        if core is None:
-            return
-        for i, opt in enumerate(getattr(core, 'optimizers', None) or []):
-            for holder in (opt, getattr(opt, '_core', None)):
-                for name, ex in (getattr(holder, '_executors', None) or {}).items():
-                    if ex is not None:
-                        yield f"optimizer[{i}].{name}", ex
-        rollouts = [('metrics_rollout', getattr(core, 'metrics_rollout', None))]
-        rollouts += [(f"additional_metrics_rollouts[{k}]", r) for k, r in
-                     (getattr(core, 'additional_metrics_rollouts', None) or {}).items()]
-        for prefix, r in rollouts:
-            if r is None:
-                continue
-            for attr in ('_compute_metrics_from_state_executor',
-                         '_compute_metrics_from_action_executor'):
-                ex = getattr(r, attr, None)
-                if ex is not None:
-                    yield f"{prefix}.{attr}", ex
-
-    def pending_graph_executors(self) -> list:
-        """Names of graph executors that would CAPTURE on their next call."""
-        return [name for name, ex in self._iter_graph_executors()
-                if getattr(ex, '_use_cuda_graph', False)
-                and getattr(ex, '_graph_input', None) is None]
+    def _captures_graphs(self) -> bool:
+        """Whether this controller's solver captures CUDA graphs at all."""
+        return resolve_use_cuda_graph(self.node)
 
     def _prime_solve(self) -> bool:
         """One throw-away solve on a neutral state, to trigger lazy captures.
 
-        Default covers the ModelPredictiveControl-based controllers
-        (optimize_action_sequence). Controllers whose solver has no such
-        entry point return False: their graphs then capture inside the servo
-        loop, which execute() reports.
+        Called repeatedly without resetting in between, so paths that only
+        run from the second solve on capture too. Default covers the
+        ModelPredictiveControl-based controllers (optimize_action_sequence).
+        Controllers whose solver has no such entry point return False: their
+        graphs then capture inside the servo loop, which execute() reports.
         """
         solve = getattr(self.solver, 'optimize_action_sequence', None)
         if solve is None:
@@ -271,6 +240,9 @@ class ReactiveController(TrajectoryPlanner):
             self.solver.update_goal_tool_poses(warm_goal, run_ik=False)
         solve(self._warm_state)
         return True
+
+    def _prime_done(self) -> None:
+        """Hook run after priming (e.g. drop the prime solves' warm start)."""
 
     @staticmethod
     def _make_warm_state_and_goal(solver):
@@ -294,57 +266,46 @@ class ReactiveController(TrajectoryPlanner):
         return state, goal
 
     def prime_cuda_graphs(self) -> bool:
-        """Capture every pending CUDA graph now, under the caller's exclusive GPU access.
+        """Capture every CUDA graph now, under the caller's exclusive GPU access.
 
-        Idempotent and cheap when nothing is pending (one enumeration, no
-        solve). Must run before the servo loop: after build_solver() and
-        after every SolverHost.activate() that released graphs (planner
-        switch, funnelled through UnifiedPlannerNode._setup_planner). Returns True when
-        no executor is left pending.
-
-        Scope: "no EXISTING executor is uncaptured". cuRobo creates some
-        executors lazily (rollout_robot.py compute_metrics_from_*), and one
-        first created inside the servo loop would still capture there,
-        unguarded -- execute() reports it; none does on today's paths.
+        Must run before the servo loop: after build_solver() and after every
+        SolverHost.activate() that released graphs (planner switch, funnelled
+        through UnifiedPlannerNode._setup_planner). Solves until one (from
+        the second on) captures nothing; returns True then. A no-op when the
+        solver does not capture graphs.
         """
         if self.solver is None:
             return False
-        pending = self.pending_graph_executors()
-        if not pending:
+        if not self._captures_graphs():
             return True
         log = self.node.get_logger()
         n = 0
-        while pending and n < self._PRIME_MAX_SOLVES:
-            t0 = time.monotonic()
-            try:
-                if not self._prime_solve():
-                    log.info(f"{self.get_planner_name()}: no prime solve for this "
-                             f"solver; {len(pending)} graph(s) will capture inside "
-                             f"the servo loop, unguarded: {pending}")
+        try:
+            while n < self._PRIME_MAX_SOLVES:
+                t0 = time.monotonic()
+                mark = graph_captures.mark()
+                try:
+                    if not self._prime_solve():
+                        log.info(f"{self.get_planner_name()}: no prime solve for this "
+                                 f"solver; its graphs will capture inside the servo "
+                                 f"loop, unguarded")
+                        return False
+                except Exception as e:
+                    log.error(f"{self.get_planner_name()}: prime solve {n + 1} failed: {e}")
                     return False
-            except Exception as e:
-                log.error(f"{self.get_planner_name()}: prime solve {n + 1} failed: {e}")
-                return False
-            n += 1
-            still = self.pending_graph_executors()
-            log.info(f"{self.get_planner_name()}: prime solve {n} captured "
-                     f"{[p for p in pending if p not in still]} "
-                     f"in {(time.monotonic() - t0) * 1000:.0f} ms")
-            if still and still == pending and n > 1:
-                # A repeat solve exercised none of them: they are not on this
-                # solver's solve path (retargeter sub-solver executors), so the
-                # loop will not capture them either -- execute() reports it if
-                # one ever does.
-                log.info(f"{self.get_planner_name()}: {len(still)} executor(s) "
-                         f"not exercised by the solve path, left uncaptured: {still}")
-                return True
-            pending = still
-        if pending:
-            log.warn(f"{self.get_planner_name()}: {len(pending)} CUDA graph(s) still "
-                     f"uncaptured after {n} prime solves -- they will capture inside "
-                     f"the servo loop, unguarded: {pending}")
+                n += 1
+                captured = graph_captures.since(mark)
+                log.info(f"{self.get_planner_name()}: prime solve {n} captured "
+                         f"{len(captured)} graph(s) in "
+                         f"{(time.monotonic() - t0) * 1000:.0f} ms: {captured}")
+                if not captured and n > 1:
+                    return True
+            log.warn(f"{self.get_planner_name()}: still capturing CUDA graphs after "
+                     f"{n} prime solves -- more will capture inside the servo "
+                     f"loop, unguarded")
             return False
-        return True
+        finally:
+            self._prime_done()
 
     # ------------------------------------------------------------------
     # cuRobo-specific hooks (implemented by concrete controllers)
@@ -777,19 +738,19 @@ class ReactiveController(TrajectoryPlanner):
 
         # Priming must have captured everything the loop uses (ADR 0001,
         # invariant 3): report any graph that captured inside the loop anyway.
-        pending_before = set(self.pending_graph_executors())
+        mark = graph_captures.mark()
         try:
             interval = getattr(self, '_command_interval', 0.0)
             if interval > 0.0:
                 return self._execute_paced(robot_context, goal_handle, interval)
             return self._execute_immediate(robot_context, goal_handle)
         finally:
-            captured = pending_before - set(self.pending_graph_executors())
+            captured = graph_captures.since(mark)
             if captured:
                 self.node.get_logger().warn(
                     f"{self.get_planner_name()}: {len(captured)} CUDA graph(s) "
                     f"captured INSIDE the servo loop (priming missed them): "
-                    f"{sorted(captured)}")
+                    f"{captured}")
 
     def _execute_immediate(self, robot_context, goal_handle=None) -> bool:
         try:

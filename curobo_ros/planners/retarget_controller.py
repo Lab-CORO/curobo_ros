@@ -110,7 +110,8 @@ class RetargetController(ReactiveController):
     def update_world(self, scene) -> None:
         """Reload the shared Scene into every sub-solver of the retargeter."""
         for sub in self.sub_solvers(self.solver):
-            sub.update_world(scene)
+            # IKSolver.update_world is exactly this; MPCSolver lacks the wrapper.
+            sub.scene_collision_checker.load_collision_model(scene)
 
     def attachment_managers(self) -> list:
         """Out of scope for object-attach: MotionRetargeter has no .core, so
@@ -138,23 +139,25 @@ class RetargetController(ReactiveController):
     def graph_parts(self, retargeter):
         return self.sub_solvers(retargeter)
 
-    def _iter_graph_executors(self):
-        """Executors of every sub-solver (the retargeter has no ``.core``)."""
-        for k, sub in enumerate(self.sub_solvers(self.solver)):
-            for name, ex in self._iter_core_executors(sub):
-                yield f"sub[{k}].{name}", ex
+    def _captures_graphs(self) -> bool:
+        # IKSolverCfg / MPCSolverCfg default use_cuda_graph=True and
+        # MotionRetargeterCfg forwards no flag: always captures.
+        return True
 
     def _prime_solve(self) -> bool:
-        """Frame 0 (global IK) then frame 1 (local IK / MPC) on the pose the
-        default state already reaches, then reset() so a goal starts fresh."""
+        """One frame on the pose the default state already reaches: frame 0
+        is global IK, later ones local IK or MPC (whose second solve
+        dispatches more graphs)."""
         if self._warm_state is None:
-            self._warm_state, warm_goal = self._make_warm_state_and_goal(self.solver)
-            self._warm_goal = warm_goal
-        self.solver.reset()
+            self._warm_state, self._warm_goal = self._make_warm_state_and_goal(self.solver)
+            self.solver.reset()
         self.solver.solve_frame(self._warm_goal)
-        self.solver.solve_frame(self._warm_goal)
-        self.solver.reset()
         return True
+
+    def _prime_done(self) -> None:
+        # A goal must start from global IK, not from the prime frames.
+        if self.solver is not None:
+            self.solver.reset()
 
     def _tool_frame(self) -> str:
         """Read the tracked tool frame from the robot YAML (needed pre-build)."""
