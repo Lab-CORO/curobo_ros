@@ -1,3 +1,5 @@
+import copy
+import math
 import os
 import time
 import numpy as np
@@ -119,15 +121,11 @@ class ObstacleManager:
         #
         # The voxel sub-dict pre-allocates voxel collision storage in the
         # solvers (VoxelData.create_cache) and MUST match the Mapper's ESDF
-        # grid: dims = extent in meters, voxel_size = ESDF voxel size.
+        # grid: see _voxel_cache_entry.
         self.collision_cache = {
             "cuboid": 100,
             "mesh": 100,
-            "voxel": {
-                "layers": 1,
-                "dims": list(self._mapper_extent_xyz),
-                "voxel_size": self._esdf_voxel_size,
-            },
+            "voxel": self._voxel_cache_entry(1),
         }
 
         if initial_scene is not None:
@@ -859,6 +857,20 @@ class ObstacleManager:
             mesh=self.scene.mesh,
         )
 
+    def _voxel_cache_entry(self, layers: int) -> dict:
+        """Voxel collision-cache entry sized exactly like the Mapper's ESDF grid.
+
+        The Mapper sizes its ESDF grid with ceil(extent / voxel_size) voxels per
+        axis, while VoxelData.create_cache sizes the buffer with
+        round(dims / voxel_size). Passing the raw extent therefore under-allocates
+        whenever extent is not a multiple of voxel_size (2.56 m / 0.05 m: 51^3
+        buffer vs 52^3 grid -> "Feature tensor too large for buffer"). Round the
+        dims up to the grid the Mapper really builds.
+        """
+        vs = self._esdf_voxel_size
+        dims = [math.ceil(extent / vs) * vs for extent in self._mapper_extent_xyz]
+        return {"layers": int(layers), "dims": dims, "voxel_size": vs}
+
     def set_collision_cache(
         self,
         node,
@@ -873,6 +885,7 @@ class ObstacleManager:
         # v1 SetCollisionCache carries an obb/mesh/blox triple; v2 expects a
         # dict {"cuboid": N, "mesh": N, "voxel": N}. We map obb→cuboid,
         # mesh→mesh, blox→voxel.
+        previous = copy.deepcopy(self.collision_cache)
         if request.obb >= 0:
             self.collision_cache["cuboid"] = int(request.obb)
         if request.mesh >= 0:
@@ -882,20 +895,21 @@ class ObstacleManager:
             # -> camera-based (ESDF) collision avoidance will not work.
             self.collision_cache["voxel"] = None
         elif request.blox > 0:
-            self.collision_cache["voxel"] = {
-                "layers": int(request.blox),
-                "dims": list(self._mapper_extent_xyz),
-                "voxel_size": self._esdf_voxel_size,
-            }
+            self.collision_cache["voxel"] = self._voxel_cache_entry(int(request.blox))
         # request.blox < 0 -> leave voxel cache unchanged (contract: -1 = no change)
 
-        node.get_logger().info(f'collision_cache set to {self.collision_cache}')
-        # The cache size is fixed at solver creation, so a world update is not
-        # enough — rebuild the solvers now (observer registered by ConfigWrapper).
-        self._notify_cache_changed()
-
         response.success = True
-        response.message = 'Collision cache updated'
+        if self.collision_cache == previous:
+            # All fields -1 (or equal to the current sizes): nothing to
+            # reallocate, so skip the ~20s rebuild of every solver.
+            response.message = 'Collision cache unchanged - no rebuild'
+        else:
+            node.get_logger().info(f'collision_cache set to {self.collision_cache}')
+            # The cache size is fixed at solver creation, so a world update is
+            # not enough — rebuild the solvers now (observer registered by
+            # ConfigWrapper).
+            self._notify_cache_changed()
+            response.message = 'Collision cache updated - solvers rebuilt (blocking, ~20s)'
         response.obb_cache = self.collision_cache["cuboid"]
         response.mesh_cache = self.collision_cache["mesh"]
         voxel = self.collision_cache["voxel"]

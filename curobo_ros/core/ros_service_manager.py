@@ -303,10 +303,7 @@ class RosServiceManager:
                     response.blox_cache = voxel["layers"] if isinstance(voxel, dict) else 0
                     self.node.get_logger().error(response.message)
                     return response
-        response = self.obstacle_manager.set_collision_cache(node, request, response)
-        if response.success:
-            response.message += " - solvers rebuilt (blocking, ~20s)"
-        return response
+        return self.obstacle_manager.set_collision_cache(node, request, response)
 
     def _callback_get_robot_strategies(self, node, request: GetRobotStrategies.Request, response: GetRobotStrategies.Response):
         """Delegate get_robot_strategies service to RobotContext"""
