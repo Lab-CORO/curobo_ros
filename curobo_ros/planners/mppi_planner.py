@@ -25,7 +25,7 @@ from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
 from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
-from .mpc_common import declare_from_defaults, read_nested, _build_metrics_rollout_cfg, _extract_cspace_reg_weights
+from .mpc_common import read_nested, _build_metrics_rollout_cfg, _extract_cspace_reg_weights
 from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 
@@ -166,12 +166,11 @@ _MPPI_DEFAULTS = {
 
 
 def _build_mppi_optimizer_config(node, num_iters: int, num_particles: int) -> dict:
-    """Declare (if needed) and read back every 'mpc_mppi.*' ROS param (see
+    """Read back every 'mpc_mppi.*' ROS param (see
     _MPPI_DEFAULTS above and config/mpc/mppi_params.yaml), then apply the two
     fields that stay under separate, already-existing ROS params rather than
     their own 'mpc_mppi.optimizer.*' entries: optimizer.num_iters
     (mpc_warm_start_iters) and optimizer.num_particles (mpc_mppi_num_particles)."""
-    declare_from_defaults(node, 'mpc_mppi', _MPPI_DEFAULTS)
     cfg = read_nested(node, 'mpc_mppi')
     cfg["optimizer"]["num_iters"] = num_iters
     cfg["optimizer"]["num_particles"] = num_particles
@@ -545,8 +544,6 @@ class MPPIController(ReactiveController):
         # Off by default: gates both the per-step diagnostic CSV (see
         # diagnostics.open_diag_csv) and the [MPC DIAG] logging — neither is
         # meant to run in production. Enable explicitly for tuning/debugging.
-        if not self.node.has_parameter('mpc_debug'):
-            self.node.declare_parameter('mpc_debug', False)
         return bool(self.node.get_parameter('mpc_debug').value)
 
     def cancel(self):

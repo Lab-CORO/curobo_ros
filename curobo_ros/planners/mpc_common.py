@@ -3,7 +3,7 @@
 Shared MPC config helpers used by both LBFGSController (lbfgs_planner.py) and
 MPPIController (mppi_planner.py). The cost/optimizer tuning values (see
 config/mpc/{mppi,lbfgs}_params.yaml) are real ROS 2 parameters -- declared
-per-leaf with declare_from_defaults() below, overridden at launch by the
+per-leaf at node start by core/parameters.declare_all, overridden at launch by the
 node's own standard `parameters=[...]` YAML loading (no custom parsing) --
 and reassembled into the nested dict cuRobo's optimizer_configs expects with
 read_nested(). This replaced an earlier hand-rolled YAML loader
@@ -45,23 +45,9 @@ def _unflatten(flat: dict) -> dict:
     return out
 
 
-def declare_from_defaults(node, prefix: str, defaults: dict) -> None:
-    """Declare one ROS parameter per leaf of `defaults` (a nested dict),
-    named '<prefix>.<dotted path>' -- e.g. prefix='mpc_mppi' declares
-    'mpc_mppi.rollout.cost_cfg.weight'. Values in a params YAML loaded at
-    launch (see config/mpc/{mppi,lbfgs}_params.yaml, rooted at `/**:`)
-    override these defaults; without one, the values below apply. Skips
-    names already declared -- build_solver() can rerun across planner
-    rebuilds (PlannerManager)."""
-    for dotted, value in _flatten('', defaults).items():
-        name = f"{prefix}.{dotted}"
-        if not node.has_parameter(name):
-            node.declare_parameter(name, value)
-
-
 def read_nested(node, prefix: str) -> dict:
-    """Inverse of declare_from_defaults(): reconstruct the nested dict from
-    the node's current parameter values under `prefix`."""
+    """Reconstruct the nested dict from the node's current parameter values
+    under `prefix` (declared one per leaf by parameters.declare_all)."""
     raw = node.get_parameters_by_prefix(prefix)
     return _unflatten({name: p.value for name, p in raw.items()})
 

@@ -16,14 +16,14 @@ import time
 
 import rclpy.logging
 
+from curobo_ros.core import parameters
+
 
 def resolve_diag_dir(node) -> str:
     """Directory for diagnostic CSVs: `diagnostic_csv_dir` param, or the ROS
     logging directory (``ROS_LOG_DIR`` / ``~/.ros/log/<session>``) by default.
     """
-    if not node.has_parameter('diagnostic_csv_dir'):
-        node.declare_parameter('diagnostic_csv_dir', '')
-    override = node.get_parameter('diagnostic_csv_dir').get_parameter_value().string_value
+    override = parameters.declare(node, 'diagnostic_csv_dir')
     if override:
         return override
     return rclpy.logging.get_logging_directory()

@@ -10,6 +10,7 @@ from curobo_ros.robot.ghost_strategy import GhostStrategy
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from curobo_ros.robot.robot_registry import create_strategy, available_strategies
 from curobo_ros.robot.robot_description import load_robot_description
+from curobo_ros.core import parameters
 
 # ---------------------------------------------------------------------------
 # Lock order (strict, total), robot command path:
@@ -70,15 +71,12 @@ class RobotContext:
         self.strategy_lock = threading.Lock()
 
         # Which robot (model + driver topics + default strategy).
-        if not node.has_parameter('robot'):
-            node.declare_parameter('robot', 'doosan_m1013')
-        robot = node.get_parameter('robot').get_parameter_value().string_value or 'doosan_m1013'
+        robot = parameters.declare(node, 'robot') or 'doosan_m1013'
         self.description = load_robot_description(robot)
 
         # Which control strategy (default = descriptor's, overridable).
-        if not node.has_parameter('control_strategy'):
-            node.declare_parameter('control_strategy', self.description.strategy_key)
-        self.current_strategy_name = node.get_parameter('control_strategy').get_parameter_value().string_value
+        self.current_strategy_name = parameters.declare(
+            node, 'control_strategy', self.description.strategy_key)
 
         self.robot_strategy = self.select_strategy(node, self.dt)
         self.ghost_strategy = GhostStrategy(node, self.dt, self.description)

@@ -18,6 +18,8 @@ from curobo._src.geom.collision.collision_scene import SceneCollisionCfg, SceneC
 from curobo._src.geom.collision.buffer_collision import CollisionBuffer
 from curobo.types import DeviceCfg
 
+from curobo_ros.core import parameters
+
 # Mirrors AddObject.srv / AttachObject.srv's `int8` enum.
 CUBOID, SPHERE, CAPSULE, CYLINDER, MESH = 0, 1, 2, 3, 4
 
@@ -148,12 +150,6 @@ class ObstacleManager:
 
     # ---- Perception parameters (single source of truth) ----
 
-    def _declare_param(self, name, default):
-        """Read a ROS param, declaring it with `default` if not yet present."""
-        if not self.node.has_parameter(name):
-            self.node.declare_parameter(name, default)
-        return self.node.get_parameter(name).value
-
     def _load_perception_params(self):
         """Load voxel/perception params (declared with defaults if missing).
 
@@ -161,41 +157,21 @@ class ObstacleManager:
         knob drives MapperCfg.esdf_voxel_size, the voxel collision cache, and
         the get_voxel_grid resolution.
         """
-        self._use_mapper = self._declare_param('use_mapper', True)
-        self._mapper_extent_xyz = self._declare_param('mapper_extent_xyz', [2.0, 2.0, 2.0])
-        self._mapper_grid_center = self._declare_param('mapper_grid_center', [0.0, 0.0, 0.0])
-        self._mapper_voxel_size = self._declare_param('mapper_voxel_size', 0.02)
-        self._mapper_image_height = self._declare_param('mapper_image_height', 480)
-        self._mapper_image_width = self._declare_param('mapper_image_width', 640)
-        self._mapper_depth_min = self._declare_param('mapper_depth_min', 0.1)
-        self._mapper_depth_max = self._declare_param('mapper_depth_max', 5.0)
+        self._use_mapper = parameters.declare(self.node, 'use_mapper')
+        self._mapper_extent_xyz = parameters.declare(self.node, 'mapper_extent_xyz')
+        self._mapper_grid_center = parameters.declare(self.node, 'mapper_grid_center')
+        self._mapper_voxel_size = parameters.declare(self.node, 'mapper_voxel_size')
+        self._mapper_image_height = parameters.declare(self.node, 'mapper_image_height')
+        self._mapper_image_width = parameters.declare(self.node, 'mapper_image_width')
+        self._mapper_depth_min = parameters.declare(self.node, 'mapper_depth_min')
+        self._mapper_depth_max = parameters.declare(self.node, 'mapper_depth_max')
         # ESDF voxel size shares the pre-existing `voxel_size` param.
-        self._esdf_voxel_size = self._declare_param('voxel_size', 0.05)
+        self._esdf_voxel_size = parameters.declare(self.node, 'voxel_size')
         # Time (s) for an unobserved voxel to lose half its TSDF weight. Expressed
         # in seconds rather than as a raw per-call factor so it stays meaningful
         # when cameras are added/removed or their frame rate changes — see
         # _resolve_time_decay. <= 0 disables the decay entirely.
-        self._decay_half_life_s = self._declare_param('decay_half_life_s', 0.7)
-        self._warn_removed_decay_factor()
-
-    def _warn_removed_decay_factor(self):
-        """Flag a leftover `decay_factor` override from a pre-normalisation launch.
-
-        rclpy silently keeps overrides for parameters that are never declared, so
-        a stale `decay_factor: 0.9` in a launch file would be dropped without a
-        word while the operator believes it is still tuning the decay.
-        """
-        try:
-            overrides = self.node.get_node_options().parameter_overrides
-        except Exception:
-            return
-        if any(p.name == 'decay_factor' for p in overrides):
-            self.node.get_logger().warn(
-                "Parameter 'decay_factor' is set but no longer exists: the TSDF "
-                "decay is now derived from 'decay_half_life_s' (seconds) and the "
-                "cameras' frame_rate_hz. The provided value is IGNORED - remove "
-                "it and set 'decay_half_life_s' instead."
-            )
+        self._decay_half_life_s = parameters.declare(self.node, 'decay_half_life_s')
 
     # ---- Observer wiring (propagation to solvers) ----
 
@@ -343,8 +319,6 @@ class ObstacleManager:
         """Reuses the node-wide `lbfgs_debug` flag rather than adding a new
         param -- this is diagnostic instrumentation for the same 2026-08-18
         investigation (dt_step_ms breakdown), not a separate feature."""
-        if not self.node.has_parameter('lbfgs_debug'):
-            self.node.declare_parameter('lbfgs_debug', False)
         return bool(self.node.get_parameter('lbfgs_debug').value)
 
     def refresh_esdf(self) -> bool:

@@ -167,7 +167,7 @@ from curobo.types import JointState
 from curobo.model_predictive_control import ModelPredictiveControl, ModelPredictiveControlCfg
 
 from .reactive_controller import ReactiveController
-from .mpc_common import declare_from_defaults, read_nested
+from .mpc_common import read_nested
 from .mpc_diagnostics import MPCDiagnostics
 from curobo_ros.core.config_wrapper import resolve_interpolation_dt, resolve_use_cuda_graph
 from curobo_ros.core.diagnostics import open_diag_csv
@@ -257,12 +257,11 @@ _LBFGS_DEFAULTS = {
 
 
 def _build_lbfgs_custom_config(node) -> dict:
-    """Declare (if needed) and read back every 'lbfgs.*' ROS param (see
+    """Read back every 'lbfgs.*' ROS param (see
     _LBFGS_DEFAULTS above and config/mpc/lbfgs_params.yaml), then pop off the
     create()-level kwargs (warm_start_iters/cold_start_iters/horizon/
     lbfgs_debug) that are not optimizer_configs fields. debug_info is
     re-injected because it has no ROS-param equivalent (null field)."""
-    declare_from_defaults(node, 'lbfgs', _LBFGS_DEFAULTS)
     cfg = read_nested(node, 'lbfgs')
     lbfgs_debug = cfg.pop('lbfgs_debug')
     warm_start_iters = cfg.pop('warm_start_iters')
@@ -329,8 +328,6 @@ class LBFGSController(ReactiveController):
         # for this controller, so 'horizon' is declared as a ROS param
         # (settable, inspectable) but deliberately NOT threaded into create()
         # here. Verify that mapping on hardware before relying on it.
-        if not node.has_parameter('lbfgs_apply_custom_config'):
-            node.declare_parameter('lbfgs_apply_custom_config', False)
         if node.get_parameter('lbfgs_apply_custom_config').value:
             (optimizer_cfg, lbfgs_debug, warm_start_iters,
              cold_start_iters, _horizon) = _build_lbfgs_custom_config(node)
@@ -365,8 +362,6 @@ class LBFGSController(ReactiveController):
             ('lbfgs_warm_start_iters', 'warm_start_optimization_num_iters', 0),
             ('lbfgs_cold_start_iters', 'cold_start_optimization_num_iters', 0),
         ):
-            if not node.has_parameter(name):
-                node.declare_parameter(name, default)
             iters = int(node.get_parameter(name).value)
             if iters <= 0:
                 continue
@@ -405,8 +400,6 @@ class LBFGSController(ReactiveController):
         # Points published per solve; n-1 of them get executed, the last is the
         # anti-starvation spare (see the module docstring). Minimum 2: with a
         # single point there is no spare and no executed point to feed back.
-        if not node.has_parameter('lbfgs_command_points'):
-            node.declare_parameter('lbfgs_command_points', 6)
         self._command_points = max(2, int(node.get_parameter('lbfgs_command_points').value))
 
         # Raising _command_points to buy that margin would ALSO stretch
@@ -417,8 +410,6 @@ class LBFGSController(ReactiveController):
         # ever played when a solve runs late. Reaction time is set by
         # _publish_period, not by queue depth, and is unchanged.
         #
-        if not node.has_parameter('lbfgs_publish_points'):
-            node.declare_parameter('lbfgs_publish_points', 11 )#/self._command_points)
         self._publish_points = max(
             self._command_points, int(node.get_parameter('lbfgs_publish_points').value))
         self._interpolation_dt = interpolation_dt
@@ -450,8 +441,6 @@ class LBFGSController(ReactiveController):
         # _publish_points, sliced independently at the top of step()) nor how
         # often (that is _publish_period). It only corrects what the planner
         # BELIEVES the arm did with them.
-        if not node.has_parameter('lbfgs_dynamic_m'):
-            node.declare_parameter('lbfgs_dynamic_m', True)
         self._dynamic_m = bool(node.get_parameter('lbfgs_dynamic_m').value)
 
         # Duration of the last COMPLETED publish-to-publish cycle, and the
@@ -488,8 +477,6 @@ class LBFGSController(ReactiveController):
         # profile_sync run are not comparable to numbers from a normal one.
         # What it buys is correct attribution: without it the solve's GPU work
         # is billed to whichever later phase first blocks on .item().
-        if not node.has_parameter('lbfgs_profile_sync'):
-            node.declare_parameter('lbfgs_profile_sync', False)
         self._profile_sync = bool(node.get_parameter('lbfgs_profile_sync').value)
 
         # NOT setting _command_interval: execute() then picks
@@ -935,8 +922,6 @@ class LBFGSController(ReactiveController):
     def _csv_init(self):
         """Open a fresh CSV per goal when `mpc_debug` is set, else stay off."""
         self._csv_close()
-        if not self.node.has_parameter('mpc_debug'):
-            self.node.declare_parameter('mpc_debug', False)
         if not bool(self.node.get_parameter('mpc_debug').value):
             return
         self._csv = open_diag_csv(self.node, "lbfgs_diag")

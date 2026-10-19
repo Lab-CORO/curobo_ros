@@ -7,6 +7,7 @@ from curobo_ros.core.robot_model_manager import RobotModelManager
 from curobo_ros.core.obstacle_manager import ObstacleManager
 from curobo_ros.core.camera_system_manager import CameraSystemManager
 from curobo_ros.core.ros_service_manager import RosServiceManager
+from curobo_ros.core import parameters
 
 
 def resolve_use_cuda_graph(node, default: bool = True) -> bool:
@@ -39,9 +40,7 @@ def resolve_interpolation_dt(node, default: float = 0.025) -> float:
     robot_segmentation, that don't declare it themselves), so this is always
     safe to call first.
     """
-    if not node.has_parameter('interpolation_dt'):
-        node.declare_parameter('interpolation_dt', default)
-    return float(node.get_parameter('interpolation_dt').get_parameter_value().double_value)
+    return float(parameters.declare(node, 'interpolation_dt', default))
 
 
 class ConfigWrapper(ABC):
@@ -105,9 +104,7 @@ class ConfigWrapper(ABC):
 
         # Phase 5: CameraSystemManager - Manage cameras
         # Declare camera config parameter
-        if not node.has_parameter('cameras_config_file'):
-            node.declare_parameter('cameras_config_file', '')
-        cameras_config_file = node.get_parameter('cameras_config_file').get_parameter_value().string_value
+        cameras_config_file = parameters.declare(node, 'cameras_config_file')
         self.camera_system_manager = CameraSystemManager(node, cameras_config_file)
 
         # Phase 3: RosServiceManager - Manage ROS services (last, depends on others)
@@ -141,8 +138,7 @@ class ConfigWrapper(ABC):
 
         # State information
         self.node_is_available = False
-        if not node.has_parameter('node_is_available'):
-            node.declare_parameter('node_is_available', False)
+        parameters.declare(node, 'node_is_available')
 
     def _register_world_observers(self, node):
         """Wire ObstacleManager mutations to solver propagation/rebuild.

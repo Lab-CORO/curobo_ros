@@ -45,6 +45,7 @@ from curobo_ros.core.ik_services import IKServices
 from curobo_ros.core.fk_services import FKServices
 from curobo_ros.core.config_wrapper import resolve_use_cuda_graph
 from curobo_ros.core.solver_host import SolverHost
+from curobo_ros.core import parameters
 from curobo_ros.planners import (
     PlannerFactory,
     PlannerManager,
@@ -72,118 +73,12 @@ class UnifiedPlannerNode(Node):
         self._goal_lock = threading.Lock()
         self._goal_active = False
 
-        # Output sampling step (s) of the interpolated trajectory (trajopt) —
-        # curobo_ros is the authority on this value (see resolve_interpolation_dt);
-        # it is what every JointCommandStrategy stamps into time_from_start.
-        # MUST be declared before RobotContext is constructed below: RobotContext
-        # reads it (via resolve_interpolation_dt) to build its strategies.
-        self.declare_parameter('interpolation_dt', 0.025)
+        # Every parameter is declared here, from the one schema
+        # (core/parameters.py: type, default, description, when it applies).
+        # MUST precede RobotContext, which reads robot and interpolation_dt.
+        parameters.declare_all(self)
 
         self.robot_context = RobotContext(self)
-
-        self.declare_parameter('planner_type', 'classic')
-        self.declare_parameter('max_attempts', 1)
-        # Feedback publish cadence (s) during open-loop execution. NOTE: this is
-        # NOT a speed control in v2 — set robot speed natively in the robot YAML
-        # cspace (velocity_scale / max_acceleration / max_jerk), then call
-        # update_motion_gen_config to rebuild.
-        self.declare_parameter('time_dilation_factor', 0.5)
-        self.declare_parameter('voxel_size', 0.05)
-        # Publish rate (Hz) of the sparse voxel grid topic. <= 0 disables it.
-        self.declare_parameter('sparse_voxel_publish_rate', 7.0)
-        # NOTE: the TSDF decay knob is `decay_half_life_s` (seconds), declared by
-        # ObstacleManager._load_perception_params. The raw per-integrate
-        # `decay_factor` is no longer exposed: it is derived from the half-life
-        # and the cameras' combined frame rate.
-
-        self.declare_parameter('collision_activation_distance', 0.025)
-        self.declare_parameter('convergence_threshold', 0.01)
-        # Angular half of the acceptance criterion. 0.05 rad = 2.9 deg, which is
-        # _ensure_ik_solver's own orientation_tolerance in mpc_planner.py — the
-        # anchor handed to MPPI is no better than that, so tightening this alone
-        # sets a target the pipeline cannot structurally reach.
-        self.declare_parameter('convergence_threshold_rad', 0.05)
-        # Consecutive in-tolerance steps required before on_target goes true.
-        # Set 1 to restore the pre-2026-08-07 instantaneous behaviour.
-        self.declare_parameter('convergence_hold_steps', 1)
-        self.declare_parameter('max_mpc_iterations', 1000)
-        # Capture/replay CUDA graphs in the solvers (faster, but a captured
-        # MotionGen graph can be invalidated by intervening MPC activity — see
-        # the MPC->Classic re-warmup in _setup_planner). Override at runtime with
-        # the CUROBO_USE_CUDA_GRAPH env var (0 disables) for A/B testing.
-        self.declare_parameter('use_cuda_graph', True)
-        # Diagnostic toggle (see update_all_solvers_world): set false to withhold
-        # the perception ESDF from the solvers. Leave true for normal operation —
-        # false disables camera-based collision avoidance.
-        self.declare_parameter('push_esdf_to_solvers', True)
-        # Reactive (MPC) solver build params — read by MPCController.build_solver().
-        self.declare_parameter('mpc_step_dt', 0.03)
-        self.declare_parameter('mpc_horizon_steps', 30)
-        # LBFGS iterations per optimize call. cuRobo's defaults (200 warm-start,
-        # 300 cold-start) are tuned for the offline getting-started demo, not
-        # real-time control — they made optimize_action_sequence() take ~1-1.3s
-        # per call on this hardware (vs. optimization_dt=0.03s), so the arm went
-        # long stretches uncorrected then jumped, causing overshoot/oscillation.
-        # NOTE: cuRobo's LBFGS requires num_iters to be a MULTIPLE of its inner
-        # loop size (25) — e.g. 25/50/75/100 are valid, 10 raises ValueError.
-        # Isolated test (franka.yml, no real hardware): 25/100 -> ~18ms/call
-        # (vs ~74ms/call at 200/300) and converges FASTER in wall-clock terms
-        # despite fewer iterations per call (more, cheaper corrections beat
-        # fewer, expensive ones for a receding-horizon controller).
-        # 5/10 are the MPPI values; the 25/100 in the note above are the L-BFGS
-        # ones, kept here because they pair with mpc_solver_type below.
-        self.declare_parameter('mpc_warm_start_iters', 5)
-        self.declare_parameter('mpc_cold_start_iters', 10)
-        # MPC solver selection. The default is 'mppi_acceleration' (MPPI in
-        # ACCELERATION space), the recipe validated on the real M1013 -- it holds
-        # in the postures where L-BFGS + B-spline stalls.
-        # The two iteration counts above are tuned FOR THIS DEFAULT. Switching to
-        # 'lbfgs_bspline' means also passing mpc_warm_start_iters:=25
-        # mpc_cold_start_iters:=100 -- cuRobo's L-BFGS requires multiples of 25
-        # (see the note above), and 5/10 would leave it untuned.
-        self.declare_parameter('mpc_solver_type', 'mppi_acceleration')
-        self.declare_parameter('mpc_mppi_num_particles', 400)
-        self.declare_parameter('mpc_vel_feedback_alpha', 1.0)
-        # Cost/optimizer config for each MPC backend is now real ROS params,
-        # not app-parsed YAML: MPPIController declares/reads the 'mpc_mppi.*'
-        # tree (mppi_planner.py's _MPPI_DEFAULTS, overridable via
-        # config/mpc/mppi_params.yaml at launch) and LBFGSController does the
-        # same for 'lbfgs.*' (lbfgs_planner.py's _LBFGS_DEFAULTS /
-        # config/mpc/lbfgs_params.yaml, opt-in via lbfgs_apply_custom_config).
-        # Declared lazily where they're used (each controller's
-        # build_solver()), same pattern as the lazily-declared params below.
-        #
-        # 'lbfgs_debug' right below is UNRELATED to 'lbfgs.lbfgs_debug' above:
-        # this flat one is node-wide diagnostic instrumentation (reused by
-        # obstacle_manager.py's perception-timing logging), not the LBFGS
-        # solver's store_debug toggle.
-        self.declare_parameter('lbfgs_debug', False)
-        # Fixed-interval command pacing (seconds). 0.0 = off (re-solve/re-send as
-        # fast as the solve allows, ~70ms — replaces the previous window before the
-        # bridge finishes it). >0 = hold each command window for this long before
-        # re-solving/re-sending, and read the real robot state only AFTER it has
-        # executed (fresh + velocity-consistent). Set to the window duration
-        # (interpolation_steps*2 * mpc_step_dt = 8*0.03 = 0.24) to fully execute
-        # each window. cf. debug 2026-07-16.
-        self.declare_parameter('mpc_command_interval', 0.12)
-        # Diagnostic CSV toggles. These used to be declared lazily on first use
-        # (mpc_planner.py::_debug_enabled(), diagnostics.py::resolve_diag_dir())
-        # — convenient for callers that only ever read them, but it means
-        # `ros2 param set .../mpc_debug true` fails with "undeclared parameter"
-        # until a goal has already run once (setup()/step() is the only place
-        # that touched them). Declared eagerly here instead so they can be set
-        # before the first goal, which is the whole point of a debug toggle.
-        # Defaults unchanged; has_parameter() in the lazy call sites keeps them
-        # a no-op there now.
-        self.declare_parameter('mpc_debug', False)
-        self.declare_parameter('diagnostic_csv_dir', '')
-        # Reactive (Retarget/teleop) build params — read by RetargetController.
-        self.declare_parameter('retarget_position_weight', 1.0)
-        self.declare_parameter('retarget_orientation_weight', 1.0)
-        self.declare_parameter('retarget_use_mpc', False)
-        # Lifetime (s) of a pre-planned (preview) trajectory cached by
-        # generate_trajectory and reused by the execute action.
-        self.declare_parameter('trajectory_cache_ttl', 30.0)
 
         # Single shared context for every solver (robot + obstacles + scene +
         # collision cache). The MPC solver is built lazily from this same context.
@@ -283,6 +178,12 @@ class UnifiedPlannerNode(Node):
             self.mpc_goal_callback,
             10,
         )
+
+        # Every parameter is declared by now (descriptor-dependent ones by
+        # RobotContext / ConfigManager): report the overrides nothing reads,
+        # then log what later runtime changes reach.
+        parameters.warn_unused_overrides(self)
+        parameters.install_change_hook(self)
 
         self.get_logger().info(
             "Unified planner ready with initial planner: "
@@ -473,8 +374,6 @@ class UnifiedPlannerNode(Node):
             self._log_solver_update_ms('fk_services', t0)
 
     def _debug_solver_update_timing(self) -> bool:
-        if not self.has_parameter('mpc_debug'):
-            self.declare_parameter('mpc_debug', False)
         return bool(self.get_parameter('mpc_debug').value)
 
     def _log_solver_update_ms(self, name: str, t0: float):

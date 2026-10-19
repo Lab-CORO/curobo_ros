@@ -309,9 +309,9 @@ def generate_launch_description():
         declare_world_file,
         declare_mppi_params_file,
         declare_lbfgs_params_file,
-        # The defaults below MUST stay aligned with the declare_parameter() calls
-        # in unified_planner_node.py: they are forwarded to the node and therefore
-        # override its own defaults.
+        # The defaults below MUST stay aligned with the parameter schema
+        # (curobo_ros/core/parameters.py): they are forwarded to the node and
+        # therefore override its own defaults.
         DeclareLaunchArgument(
             'max_attempts', default_value='1',
             description='Planning retries per request (MotionPlanner.plan_pose)'

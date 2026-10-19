@@ -11,6 +11,7 @@ from std_msgs.msg import Float32
 
 from curobo_ros.robot.joint_control_strategy import JointCommandStrategy, RobotState
 from curobo_ros.core.diagnostics import open_diag_csv
+from curobo_ros.core import parameters
 
 # Bounds on the interval the feedback plausibility gate is allowed to assume
 # between two joint_states messages (see callback_joint_pose).
@@ -81,8 +82,7 @@ class JointSpeedStrategy(JointCommandStrategy):
         # is re-read every _clamp_velocities() call, so changes apply
         # immediately.
         default_max_accel_dps = float(self.params.get('max_joint_accel_dps', 45.0))
-        if not node.has_parameter('max_joint_accel_dps'):
-            node.declare_parameter('max_joint_accel_dps', default_max_accel_dps)
+        parameters.declare(node, 'max_joint_accel_dps', default_max_accel_dps)
         # Interval the clamp assumes between consecutive points. Defaults to
         # self.dt (interpolation_dt) — the physically correct choice now that
         # curobo_ros is the single dt authority (see resolve_interpolation_dt):
@@ -159,8 +159,7 @@ class JointSpeedStrategy(JointCommandStrategy):
         # set .../joint_speed_debug_csv true` failed with "undeclared parameter"
         # before the first one — the same trap mpc_debug had. Declaring here, at
         # strategy construction (node startup), makes it settable up front.
-        if not node.has_parameter('joint_speed_debug_csv'):
-            node.declare_parameter('joint_speed_debug_csv', False)
+        parameters.declare(node, 'joint_speed_debug_csv')
 
     def _clamp_velocities(self, vel_list):
         """Hard-limit joint acceleration relative to the REAL, measured
@@ -196,8 +195,6 @@ class JointSpeedStrategy(JointCommandStrategy):
         # Off by default: per-publish diagnostic CSV, not meant to run in
         # production (every send_trajectrory() call would otherwise write a
         # row and keep a file open for the strategy's whole lifetime).
-        if not self.node.has_parameter('joint_speed_debug_csv'):
-            self.node.declare_parameter('joint_speed_debug_csv', False)
         return bool(self.node.get_parameter('joint_speed_debug_csv').value)
 
     def _debug_csv_init(self):

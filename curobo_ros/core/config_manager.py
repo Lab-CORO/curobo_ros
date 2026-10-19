@@ -5,6 +5,7 @@ from curobo.scene import Scene
 from curobo.config_io import load_yaml
 
 from curobo_ros.robot.robot_description import load_robot_description
+from curobo_ros.core import parameters
 
 
 class ConfigManager:
@@ -48,9 +49,7 @@ class ConfigManager:
 
     def _load_robot_description(self):
         """Load the selected robot descriptor (robots/<robot>.yaml or a path)."""
-        if not self.node.has_parameter('robot'):
-            self.node.declare_parameter('robot', 'doosan_m1013')
-        robot = self.node.get_parameter('robot').get_parameter_value().string_value or 'doosan_m1013'
+        robot = parameters.declare(self.node, 'robot') or 'doosan_m1013'
         self.robot_description = load_robot_description(robot)
         self.node.get_logger().info(
             f"ConfigManager loaded robot descriptor: {self.robot_description.display_name} "
@@ -59,13 +58,9 @@ class ConfigManager:
     def _load_ros_parameters(self):
         """Declare and load ROS parameters"""
         # base_link default comes from the descriptor (robot-specific), overridable.
-        if not self.node.has_parameter('base_link'):
-            self.node.declare_parameter('base_link', self.robot_description.base_link or 'base_0')
-        if not self.node.has_parameter('world_file'):
-            self.node.declare_parameter('world_file', '')
-
-        self.base_link = self.node.get_parameter('base_link').get_parameter_value().string_value
-        self.world_file = self.node.get_parameter('world_file').get_parameter_value().string_value
+        self.base_link = parameters.declare(
+            self.node, 'base_link', self.robot_description.base_link or 'base_0')
+        self.world_file = parameters.declare(self.node, 'world_file')
 
         self.node.get_logger().info(f'ConfigManager using base_link: {self.base_link}')
 
@@ -88,10 +83,8 @@ class ConfigManager:
         self.tensor_args = DeviceCfg(device='cuda', dtype=torch.float32)
 
         default_robot_config = self.robot_description.curobo_config_path
-        if not self.node.has_parameter('robot_config_file'):
-            self.node.declare_parameter('robot_config_file', default_robot_config)
-
-        robot_config_file = self.node.get_parameter('robot_config_file').get_parameter_value().string_value
+        robot_config_file = parameters.declare(
+            self.node, 'robot_config_file', default_robot_config)
         if not robot_config_file:
             robot_config_file = default_robot_config
 
