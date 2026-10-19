@@ -32,9 +32,14 @@ These invariants hold, and are enforced in one place, `SolverHost`:
    graphs. Changing owner releases every other solver's graphs, including the
    nested seed-IK and goal-IK solvers that `reset_cuda_graph()` does not reach.
    Release uses `reset_cuda_graph()`, never `destroy()` on a solver core.
+   Building a graph-holding solver other than the owner (lazy build, single
+   rebuild, collision-cache `rebuild_all`) captures during its warmup, so it
+   is followed by the same release, and only the owner is primed again.
 2. **Capture is process-global.** While any graph is being captured, no other
    thread may issue a CUDA op. Every capturing path holds exclusive GPU access.
    Every other GPU path takes try-or-skip access and skips its work when refused.
+   On-demand services (IK, FK) run their whole callback under exclusive access
+   (`SolverHost.exclusive_callback`).
 3. **Capture happens before the servo loop.** Reactive controllers prime every
    lazily-captured graph under exclusive access before stepping, so the loop
    only replays.

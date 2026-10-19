@@ -83,9 +83,11 @@ class FKServices:
         node.solver_host.register('fk', self._build)
 
         name = node.get_name()
+        # Solves run under exclusive GPU access (ADR 0001, invariant 2).
+        host = node.solver_host
         node.create_service(WarmupFK, f'{name}/warmup_fk', self._warmup_fk_callback)
-        node.create_service(Fk,       f'{name}/fk',        self._fk_callback)
-        node.create_service(FkBatch,  f'{name}/fk_batch',  self._fk_batch_callback)
+        node.create_service(Fk,       f'{name}/fk',        host.exclusive_callback(self._fk_callback))
+        node.create_service(FkBatch,  f'{name}/fk_batch',  host.exclusive_callback(self._fk_batch_callback))
 
         node.get_logger().info("FKServices registered (not yet initialized - call warmup_fk)")
 

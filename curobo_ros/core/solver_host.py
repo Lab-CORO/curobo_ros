@@ -24,6 +24,7 @@ without a GPU. Solvers are duck-typed (``reset_cuda_graph``, ``seed_ik_solver``,
 ``ik_solver``).
 """
 
+import functools
 import threading
 from contextlib import contextmanager, nullcontext
 
@@ -70,7 +71,8 @@ class SolverHost:
                      are released when another solver takes the graph. None =
                      this solver never holds a graph (IK, FK).
         prime:       ``() -> None``, run after the built hooks (so it captures
-                     with the attached payload already written).
+                     with the attached payload already written). Only the
+                     graph owner is primed once another solver owns it.
 
         Re-registering a key replaces its builder and keeps a built solver.
         """
@@ -96,31 +98,33 @@ class SolverHost:
             with self._lock:
                 if entry.solver is None:
                     self._build(key, entry)
+                    self._settle([key])
         return entry.solver
 
     def rebuild(self, key):
         """Recreate solver ``key`` from scratch, whether or not it exists."""
-        entry = self._entries[key]
         with self._lock:
-            entry.solver = None
-            self._build(key, entry)
-            self.mark_capture_pending()
-        return entry.solver
+            self._rebuild([key])
+        return self._entries[key].solver
 
     def rebuild_all(self) -> None:
         """Recreate every solver that exists (e.g. collision-cache change).
 
-        Never-built solvers stay unbuilt. Rebuilt solvers hold no graph yet, so
-        the next reactive step may capture: mark it pending.
+        Never-built solvers stay unbuilt.
         """
         with self._lock:
             # Snapshot: a built hook may create a planner wrapper, which
             # registers a new (unbuilt) key mid-loop.
-            for key, entry in list(self._entries.items()):
-                if entry.solver is not None:
-                    entry.solver = None
-                    self._build(key, entry)
-            self.mark_capture_pending()
+            self._rebuild([key for key, entry in list(self._entries.items())
+                           if entry.solver is not None])
+
+    def _rebuild(self, keys) -> None:
+        # Caller holds the lock.
+        for key in keys:
+            entry = self._entries[key]
+            entry.solver = None
+            self._build(key, entry)
+        self._settle(keys)
 
     def _build(self, key, entry) -> None:
         # Caller holds the lock. The slot is filled before the hooks run, so a
@@ -131,8 +135,32 @@ class SolverHost:
                 hook(key, entry.solver)
             except Exception as e:
                 self._logger.warn(f"solver '{key}' built-hook failed: {e}")
-        if entry.prime is not None:
-            entry.prime()
+
+    def _settle(self, built_keys) -> None:
+        """Restore "one live graph" after building ``built_keys``, then prime.
+
+        Caller holds the lock. A builder's warmup (and priming) captures
+        graphs, so building any graph-holding solver other than the owner
+        leaves several live graphs: release them all and prime only the
+        owner. Priming a non-owner would be wasted, it is released anyway.
+        """
+        holders = [key for key in built_keys
+                   if self._entries[key].graph_parts is not None]
+        to_prime = built_keys
+        if (self._use_cuda_graph and self._graph_owner is not None
+                and holders and holders != [self._graph_owner]):
+            self._logger.info(
+                f"rebuilt {holders} while {self._graph_owner} owns the CUDA "
+                f"graph: releasing other captured graphs")
+            self._release_all_graphs()
+            to_prime = [self._graph_owner]
+        for key in to_prime:
+            entry = self._entries.get(key)
+            if entry is not None and entry.solver is not None and entry.prime is not None:
+                entry.prime()
+        if holders:
+            # Fresh solvers hold no graph yet: the next reactive step may capture.
+            self.mark_capture_pending()
 
     # ------------------------------------------------------------------
     # Access modes
@@ -141,6 +169,18 @@ class SolverHost:
     def exclusive(self):
         """Blocking, re-entrant exclusive GPU access (context manager)."""
         return self._lock
+
+    def exclusive_callback(self, callback):
+        """Wrap a ROS callback so its whole body runs under ``exclusive()``.
+
+        For on-demand GPU services (IK, FK): they must not issue CUDA ops
+        while another thread captures, nor read a solver mid-rebuild.
+        """
+        @functools.wraps(callback)
+        def run(*args, **kwargs):
+            with self._lock:
+                return callback(*args, **kwargs)
+        return run
 
     @contextmanager
     def try_access(self, timeout: float = 0.0):

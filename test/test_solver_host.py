@@ -352,6 +352,83 @@ def test_none_key_is_ignored():
     assert solver.resets == 0
 
 
+# ------------------------------------------- one live graph after (re)builds
+
+def _owned_host(owner='mpc'):
+    """motion (graphs, no prime) + mpc/lbfgs (graphs, primed), all built, owner set."""
+    host = _host()
+    primes = []
+    host.register('motion', FakeMotionPlanner, graph_parts=_motion_parts)
+    for key in ('mpc', 'lbfgs'):
+        host.register(key, FakeSolver, graph_parts=_own_parts,
+                      prime=lambda k=key: primes.append(k))
+    host.register('ik', FakeSolver)
+    for key in ('motion', 'mpc', 'lbfgs', 'ik'):
+        host.ensure(key)
+    host.activate(owner)
+    primes.clear()
+    return host, primes
+
+
+def test_rebuild_all_leaves_only_owner_primed_and_others_released():
+    host, primes = _owned_host('mpc')
+    host.rebuild_all()
+    mp = host.get('motion')
+    assert (mp.trajopt_solver.resets, mp.ik_solver.resets) == (1, 1)
+    assert host.get('lbfgs').resets == 1
+    assert primes == ['mpc']
+
+
+def test_rebuild_of_non_owner_releases_and_reprimes_owner():
+    host, primes = _owned_host('mpc')
+    owner = host.get('mpc')
+    host.rebuild('lbfgs')
+    assert host.get('lbfgs').resets == 1 and owner.resets == 1
+    assert primes == ['mpc']
+
+
+def test_rebuild_of_owner_alone_releases_nothing():
+    host, primes = _owned_host('mpc')
+    others = host.get('lbfgs'), host.get('motion').trajopt_solver
+    host.rebuild('mpc')
+    assert [o.resets for o in others] == [0, 0]
+    assert host.get('mpc').resets == 0
+    assert primes == ['mpc']
+
+
+def test_ensure_of_non_owner_releases_and_reprimes_owner():
+    host, primes = _owned_host('motion')
+    host.register('retarget', FakeSolver, graph_parts=_own_parts,
+                  prime=lambda: primes.append('retarget'))
+    host.ensure('retarget')
+    assert host.get('retarget').resets == 1
+    assert host.get('motion').trajopt_solver.resets == 1
+    assert primes == []  # motion has no prime: it re-captures on next plan
+
+
+def test_rebuild_of_graphless_solver_neither_releases_nor_marks_pending():
+    host, primes = _owned_host('mpc')
+    host.capture_guard()
+    host.rebuild('ik')
+    assert host.get('mpc').resets == 0
+    assert isinstance(host.capture_guard(), nullcontext)
+    assert primes == []
+
+
+def test_graphs_disabled_rebuild_all_primes_every_rebuilt_solver():
+    primes = []
+    host = _host(use_cuda_graph=False)
+    for key in ('mpc', 'lbfgs'):
+        host.register(key, FakeSolver, graph_parts=_own_parts,
+                      prime=lambda k=key: primes.append(k))
+        host.ensure(key)
+    host.activate('mpc')
+    primes.clear()
+    host.rebuild_all()
+    assert primes == ['mpc', 'lbfgs']
+    assert host.get('mpc').resets == 0 and host.get('lbfgs').resets == 0
+
+
 # --------------------------------------------------------------- capture guard
 
 def test_capture_guard_is_take_and_clear():
@@ -406,3 +483,16 @@ def test_release_failure_is_logged_not_raised():
     host.activate('b')
     assert good.resets == 1
     assert len(host._logger.warns) == 1
+
+
+def test_exclusive_callback_runs_under_exclusive_access():
+    host = _host()
+    seen = []
+
+    def callback(request, response):
+        seen.append(_free_from_other_thread(host))
+        return response
+
+    assert host.exclusive_callback(callback)('req', 'res') == 'res'
+    assert seen == [False]
+    assert _free_from_other_thread(host)

@@ -52,9 +52,11 @@ class IKServices:
         self._dtype = getattr(config_wrapper, '_ops_dtype', torch.float32)
 
         name = node.get_name()
+        # Solves run under exclusive GPU access (ADR 0001, invariant 2).
+        host = node.solver_host
         node.create_service(WarmupIK, f'{name}/warmup_ik', self._warmup_ik_callback)
-        node.create_service(Ik,       f'{name}/ik',        self._ik_callback)
-        node.create_service(IkBatch,  f'{name}/ik_batch',  self._ik_batch_callback)
+        node.create_service(Ik,       f'{name}/ik',        host.exclusive_callback(self._ik_callback))
+        node.create_service(IkBatch,  f'{name}/ik_batch',  host.exclusive_callback(self._ik_batch_callback))
 
         node.get_logger().info("IKServices registered (not yet initialized - call warmup_ik)")
 
