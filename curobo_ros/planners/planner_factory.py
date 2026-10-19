@@ -6,6 +6,7 @@ Provides a centralized way to instantiate different planner types
 and manage their lifecycle.
 """
 
+import threading
 from typing import Dict, Optional
 from .trajectory_planner import TrajectoryPlanner
 from .classic_planner import ClassicPlanner
@@ -219,6 +220,9 @@ class PlannerManager:
         self.node = node
         self.config_wrapper = config_wrapper
         self._planners: Dict[str, TrajectoryPlanner] = {}
+        # Two callbacks asking for the same new type must share one wrapper
+        # (a second one would re-register its solver key in SolverHost).
+        self._planners_lock = threading.RLock()
         self._current_planner: Optional[TrajectoryPlanner] = None
         self._current_planner_type: Optional[str] = None
 
@@ -236,12 +240,12 @@ class PlannerManager:
         """
         # Aliases share the canonical key's instance: one wrapper, one solver.
         planner_type = PlannerFactory.canonical_key(planner_type)
-        if planner_type not in self._planners:
-            self._planners[planner_type] = PlannerFactory.create_planner(
-                planner_type, self.node, self.config_wrapper
-            )
-
-        return self._planners[planner_type]
+        with self._planners_lock:
+            if planner_type not in self._planners:
+                self._planners[planner_type] = PlannerFactory.create_planner(
+                    planner_type, self.node, self.config_wrapper
+                )
+            return self._planners[planner_type]
 
     def set_current_planner(self, planner_type: str):
         """
