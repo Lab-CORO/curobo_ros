@@ -35,6 +35,8 @@ from geometry_msgs.msg import Pose
 from curobo.kinematics import Kinematics, KinematicsCfg
 from curobo.types import JointState as CuRoboJS, DeviceCfg
 from curobo.collision_checking import RobotCollisionChecker, RobotCollisionCheckerCfg
+from curobo._src.geom.collision.collision_scene import (
+    SceneCollisionCfg, create_scene_collision)
 
 from curobo_msgs.srv import Fk, FkBatch, WarmupFK
 
@@ -155,14 +157,13 @@ class FKServices:
     # World update (called by the node when obstacles change)
     # ------------------------------------------------------------------
 
-    def update_world(self):
-        """Propagate obstacle changes to the collision checker. No-op if not
+    def update_world(self, scene):
+        """Propagate the node's scene to the collision checker. No-op if not
         initialized. The FK poses themselves are unaffected — purely geometric."""
         if self._collision_checker is None:
             return
-        scene = self._config.obstacle_manager.get_scene()
         self._collision_checker.update_world(scene)
-        self._node.get_logger().info("FKServices: world updated")
+        self._node.get_logger().debug("FKServices: world updated")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -212,12 +213,20 @@ class FKServices:
         collision_device = self._device
         if collision_device.type == 'cuda' and collision_device.index is None:
             collision_device = torch.device('cuda', torch.cuda.current_device())
+        device_cfg = DeviceCfg(device=collision_device, dtype=self._dtype)
+        # Scene checker built here, from the SAME collision_cache dict as the
+        # solvers: load_from_config's own n_meshes/n_cuboids path allocates no
+        # voxel cache, so pushing the perception ESDF (update_world) raised
+        # "Voxel cache not initialized" and failed every plan.
+        scene_checker = create_scene_collision(SceneCollisionCfg(
+            device_cfg=device_cfg,
+            scene_model=scene,
+            cache=self._config.collision_cache,
+        ))
         collision_cfg = RobotCollisionCheckerCfg.load_from_config(
             robot_config=self._robot_config_file,
-            scene_model=scene,
-            device_cfg=DeviceCfg(device=collision_device, dtype=self._dtype),
-            n_meshes=self._config.collision_cache["mesh"],
-            n_cuboids=self._config.collision_cache["cuboid"],
+            device_cfg=device_cfg,
+            scene_collision_checker=scene_checker,
         )
         collision_checker = RobotCollisionChecker(collision_cfg)
 

@@ -462,13 +462,13 @@ class UnifiedPlannerNode(Node):
         # ik_services is queried independently of whichever planner is
         # "active" (GetIK can be called anytime) -- never skipped by
         # active_only.
-        self.ik_services.update_world()
+        self.ik_services.update_world(scene)
         if debug:
             self._log_solver_update_ms('ik_services', t0)
 
         # fk_services' collision checker (poses_valid), same reasoning as
         # ik_services above -- queried independently of the active planner.
-        self.fk_services.update_world()
+        self.fk_services.update_world(scene)
         if debug:
             self._log_solver_update_ms('fk_services', t0)
 
