@@ -63,7 +63,9 @@ class RetargetController(ReactiveController):
                     xyz=[w_pos, w_pos, w_pos], rpy=[w_rot, w_rot, w_rot],
                 )
             },
-            scene_model=cw.obstacle_manager.get_scene(),
+            # No collision_cache in MotionRetargeterCfg: the voxel storage
+            # comes from a private copy of the ESDF layer (never the live one).
+            scene_model=cw.obstacle_manager.scene_with_private_voxel_copy(),
             use_mpc=use_mpc,
             num_seeds_global=64,          # robust first-frame IK
             self_collision_check=True,
@@ -106,11 +108,9 @@ class RetargetController(ReactiveController):
         return True
 
     def update_world(self, scene) -> None:
-        """Reload the shared Scene into the retargeter's IK solver(s)."""
-        self.solver._global_ik_solver.update_world(scene)
-        local_ik = getattr(self.solver, '_local_ik_solver', None)
-        if local_ik is not None:
-            local_ik.update_world(scene)
+        """Reload the shared Scene into every sub-solver of the retargeter."""
+        for sub in self.sub_solvers(self.solver):
+            sub.update_world(scene)
 
     def attachment_managers(self) -> list:
         """Out of scope for object-attach: MotionRetargeter has no .core, so
@@ -122,6 +122,39 @@ class RetargetController(ReactiveController):
         return []
 
     # ---- helpers --------------------------------------------------------------
+
+    @staticmethod
+    def sub_solvers(retargeter) -> list:
+        """The cuRobo solvers inside a MotionRetargeter: global IK, plus local
+        IK or MPC (retarget_use_mpc). They hold the CUDA graphs and the
+        collision world; the retargeter itself has neither."""
+        if retargeter is None:
+            return []
+        return [s for s in (getattr(retargeter, '_global_ik_solver', None),
+                            getattr(retargeter, '_local_ik_solver', None),
+                            getattr(retargeter, '_mpc_solver', None))
+                if s is not None]
+
+    def graph_parts(self, retargeter):
+        return self.sub_solvers(retargeter)
+
+    def _iter_graph_executors(self):
+        """Executors of every sub-solver (the retargeter has no ``.core``)."""
+        for k, sub in enumerate(self.sub_solvers(self.solver)):
+            for name, ex in self._iter_core_executors(sub):
+                yield f"sub[{k}].{name}", ex
+
+    def _prime_solve(self) -> bool:
+        """Frame 0 (global IK) then frame 1 (local IK / MPC) on the pose the
+        default state already reaches, then reset() so a goal starts fresh."""
+        if self._warm_state is None:
+            self._warm_state, warm_goal = self._make_warm_state_and_goal(self.solver)
+            self._warm_goal = warm_goal
+        self.solver.reset()
+        self.solver.solve_frame(self._warm_goal)
+        self.solver.solve_frame(self._warm_goal)
+        self.solver.reset()
+        return True
 
     def _tool_frame(self) -> str:
         """Read the tracked tool frame from the robot YAML (needed pre-build)."""

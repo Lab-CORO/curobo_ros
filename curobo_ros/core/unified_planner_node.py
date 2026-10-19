@@ -844,12 +844,12 @@ class UnifiedPlannerNode(Node):
                 planner.ensure_solver()
                 # Capture every CUDA graph NOW, under exclusive access, so the
                 # servo loop only ever replays. Covers both a fresh solver and
-                # one whose graphs activate() just released (the
-                # capture_guard() belt only protects the FIRST step, but
-                # cuRobo captures on several -- see
-                # ReactiveController.prime_cuda_graphs).
-                if self.config_wrapper_motion.use_cuda_graph:
-                    planner.prime_cuda_graphs()
+                # one whose graphs activate() just released. Not gated on
+                # use_cuda_graph: the retargeter's sub-solvers capture
+                # regardless (MotionRetargeterCfg forwards no flag); priming
+                # is a no-op when nothing is pending. See
+                # ReactiveController.prime_cuda_graphs.
+                planner.prime_cuda_graphs()
 
     def _get_planner_config(self, planner) -> dict:
         if isinstance(planner, SinglePlanner):

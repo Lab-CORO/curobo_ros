@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import math
 import os
 import time
@@ -856,6 +857,32 @@ class ObstacleManager:
             cylinder=self.scene.cylinder,
             mesh=self.scene.mesh,
         )
+
+    def scene_with_private_voxel_copy(self) -> Scene:
+        """primitives_only_scene() plus a private CLONE of the perception ESDF.
+
+        For solvers whose config takes no collision_cache (MotionRetargeterCfg):
+        the only way to give them voxel storage is a voxel layer in the
+        construction scene. A clone keeps the zero-copy aliasing described in
+        primitives_only_scene() harmless: the solver aliases its buffer onto
+        the clone, so update_world's clear() -> re-add copies the live ESDF
+        into it instead of overwriting the source. With no ESDF yet, one is
+        computed so the buffer has the Mapper grid's shape. Without a Mapper
+        there is no perception: primitives only.
+        """
+        scene = self.primitives_only_scene()
+        vg = self.scene.voxel[0] if self.scene.voxel else None
+        if vg is None and self.mapper is not None:
+            try:
+                vg = self.mapper.compute_esdf()
+            except Exception as e:
+                self.node.get_logger().warn(
+                    f"compute_esdf for a private voxel copy failed: {e} - "
+                    f"building without perception voxels")
+        if vg is not None and vg.feature_tensor is not None:
+            scene.voxel = [dataclasses.replace(
+                vg, feature_tensor=vg.feature_tensor.clone())]
+        return scene
 
     def _voxel_cache_entry(self, layers: int) -> dict:
         """Voxel collision-cache entry sized exactly like the Mapper's ESDF grid.

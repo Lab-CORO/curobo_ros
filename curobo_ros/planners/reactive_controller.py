@@ -58,7 +58,7 @@ class ReactiveController(TrajectoryPlanner):
         # replayed by the on_built hook, then every CUDA graph primed.
         node.solver_host.register(
             self.SOLVER_KEY, self._build_fresh_solver,
-            graph_parts=lambda solver: (solver,),
+            graph_parts=self.graph_parts,
             prime=self.prime_cuda_graphs)
 
         # Goal / loop state.
@@ -213,14 +213,23 @@ class ReactiveController(TrajectoryPlanner):
 
     _PRIME_MAX_SOLVES = 4
 
+    def graph_parts(self, solver):
+        """Objects whose CUDA graphs SolverHost releases on an owner change."""
+        return (solver,)
+
     def _iter_graph_executors(self):
         """Yield (name, GraphExecutor) for every lazily-captured graph the
-        solver owns. Two container shapes: gradient optimizers keep
-        `_executors` on `optimizer._core` (lbfgs.py), particle optimizers ARE
-        the core and keep it directly (particle_opt_core.py); rollouts keep
-        them as plain attributes (rollout_robot.py).
+        solver owns."""
+        return self._iter_core_executors(self.solver)
+
+    @staticmethod
+    def _iter_core_executors(solver):
+        """Executors under ``solver.core``. Two container shapes: gradient
+        optimizers keep `_executors` on `optimizer._core` (lbfgs.py), particle
+        optimizers ARE the core and keep it directly (particle_opt_core.py);
+        rollouts keep them as plain attributes (rollout_robot.py).
         """
-        core = getattr(self.solver, 'core', None)
+        core = getattr(solver, 'core', None)
         if core is None:
             return
         for i, opt in enumerate(getattr(core, 'optimizers', None) or []):
@@ -271,7 +280,10 @@ class ReactiveController(TrajectoryPlanner):
         state = solver.default_joint_state.clone().unsqueeze(0)
         state.velocity = torch.zeros_like(state.position)
         state.acceleration = torch.zeros_like(state.position)
-        kin = solver.compute_kinematics(state)
+        fk = getattr(solver, 'compute_kinematics', None)
+        if fk is None:  # MotionRetargeter: FK lives on its kinematics model
+            fk = solver.kinematics.compute_kinematics
+        kin = fk(state)
         goal = GoalToolPose.from_poses(
             {solver.tool_frames[0]: Pose(
                 position=kin.tool_poses.position.reshape(-1, 3)[:1],
@@ -319,6 +331,14 @@ class ReactiveController(TrajectoryPlanner):
             log.info(f"{self.get_planner_name()}: prime solve {n} captured "
                      f"{[p for p in pending if p not in still]} "
                      f"in {(time.monotonic() - t0) * 1000:.0f} ms")
+            if still and still == pending and n > 1:
+                # A repeat solve exercised none of them: they are not on this
+                # solver's solve path (retargeter sub-solver executors), so the
+                # loop will not capture them either -- execute() reports it if
+                # one ever does.
+                log.info(f"{self.get_planner_name()}: {len(still)} executor(s) "
+                         f"not exercised by the solve path, left uncaptured: {still}")
+                return True
             pending = still
         if pending:
             log.warn(f"{self.get_planner_name()}: {len(pending)} CUDA graph(s) still "
@@ -761,10 +781,21 @@ class ReactiveController(TrajectoryPlanner):
             )
             return False
 
-        interval = getattr(self, '_command_interval', 0.0)
-        if interval > 0.0:
-            return self._execute_paced(robot_context, goal_handle, interval)
-        return self._execute_immediate(robot_context, goal_handle)
+        # Priming must have captured everything the loop uses (ADR 0001,
+        # invariant 3): report any graph that captured inside the loop anyway.
+        pending_before = set(self.pending_graph_executors())
+        try:
+            interval = getattr(self, '_command_interval', 0.0)
+            if interval > 0.0:
+                return self._execute_paced(robot_context, goal_handle, interval)
+            return self._execute_immediate(robot_context, goal_handle)
+        finally:
+            captured = pending_before - set(self.pending_graph_executors())
+            if captured:
+                self.node.get_logger().warn(
+                    f"{self.get_planner_name()}: {len(captured)} CUDA graph(s) "
+                    f"captured INSIDE the servo loop (priming missed them): "
+                    f"{sorted(captured)}")
 
     def _execute_immediate(self, robot_context, goal_handle=None) -> bool:
         try:
