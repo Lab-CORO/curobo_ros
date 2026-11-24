@@ -161,6 +161,7 @@ class IKServices:
             robot=robot_yml,
             scene_model=scene,
             num_seeds=20,
+            max_batch_size=batch_size,
             position_tolerance=0.005,
             orientation_tolerance=0.05,
             self_collision_check=True,
