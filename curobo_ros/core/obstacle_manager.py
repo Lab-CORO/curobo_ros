@@ -70,14 +70,14 @@ class ObstacleManager:
         # The voxel sub-dict pre-allocates voxel collision storage in the
         # solvers (VoxelData.create_cache) and MUST match the Mapper's ESDF
         # grid: dims = extent in meters, voxel_size = ESDF voxel size.
+        #
+        # Initial sizes are ROS params: the solvers check every pre-allocated
+        # slot, even empty, so an oversized cache slows IK down. 0 = none
+        # (cuRobo then sizes that type to the obstacles present at creation).
         self.collision_cache = {
-            "cuboid": 100,
-            "mesh": 100,
-            "voxel": {
-                "layers": 1,
-                "dims": list(self._mapper_extent_xyz),
-                "voxel_size": self._esdf_voxel_size,
-            },
+            "cuboid": max(0, int(self._declare_param('collision_cache_cuboid', 100))),
+            "mesh": max(0, int(self._declare_param('collision_cache_mesh', 100))),
+            "voxel": self._voxel_cache(int(self._declare_param('collision_cache_voxel', 1))),
         }
 
         if initial_scene is not None:
@@ -96,6 +96,16 @@ class ObstacleManager:
     def _append(self, bucket: str, obstacle):
         getattr(self.scene, bucket).append(obstacle)
         self.obstacle_names.append(obstacle.name)
+
+    def _voxel_cache(self, layers: int):
+        """Voxel cache entry for `layers` ESDF layers, None for 0."""
+        if layers <= 0:
+            return None
+        return {
+            "layers": layers,
+            "dims": list(self._mapper_extent_xyz),
+            "voxel_size": self._esdf_voxel_size,
+        }
 
     # ---- Perception parameters (single source of truth) ----
 
@@ -464,13 +474,43 @@ class ObstacleManager:
             node.get_logger().error(response.message)
             return response
 
+        try:
+            self._notify_world_changed()
+        except Exception as e:
+            # Typically a full collision cache. Never keep an obstacle the solvers
+            # do not see: take it out and resync them with the previous scene.
+            self._remove_named(request.name)
+            self._notify_world_changed()
+            response.success = False
+            response.message = (
+                f"Object '{request.name}' not added, the solvers refused it "
+                f"(collision_cache={self._cache_summary()}): {e}"
+            )
+            node.get_logger().error(response.message)
+            return response
+
         response.success = True
         response.message = (
             f"Object '{request.name}' added "
             f"({len(self.scene.cuboid)} cuboids, {len(self.scene.mesh)} meshes)"
         )
-        self._notify_world_changed()
         return response
+
+    def _remove_named(self, name: str) -> None:
+        for bucket in ('cuboid', 'capsule', 'cylinder', 'sphere', 'mesh'):
+            items = getattr(self.scene, bucket)
+            for i, obs in enumerate(items):
+                if obs.name == name:
+                    items.pop(i)
+                    break
+        if name in self.obstacle_names:
+            self.obstacle_names.remove(name)
+
+    def _cache_summary(self) -> str:
+        voxel = self.collision_cache["voxel"]
+        layers = voxel["layers"] if isinstance(voxel, dict) else 0
+        return (f"cuboid={self.collision_cache['cuboid']}, "
+                f"mesh={self.collision_cache['mesh']}, voxel={layers}")
 
     def remove_object(self, node, request: RemoveObject, response):
         if request.name not in self.obstacle_names:
@@ -838,11 +878,7 @@ class ObstacleManager:
             # -> camera-based (ESDF) collision avoidance will not work.
             self.collision_cache["voxel"] = None
         elif request.blox > 0:
-            self.collision_cache["voxel"] = {
-                "layers": int(request.blox),
-                "dims": list(self._mapper_extent_xyz),
-                "voxel_size": self._esdf_voxel_size,
-            }
+            self.collision_cache["voxel"] = self._voxel_cache(int(request.blox))
         # request.blox < 0 -> leave voxel cache unchanged (contract: -1 = no change)
 
         node.get_logger().info(f'collision_cache set to {self.collision_cache}')
