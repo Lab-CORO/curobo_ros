@@ -110,11 +110,13 @@ class IKServices:
             response.error_msg.data = "IK batch solve failed"
             return response
 
-        for i, j in enumerate(result.solution.cpu().numpy()):
+        solutions = result.solution.cpu().numpy()
+        successes = result.success.cpu().numpy()
+        for i, j in enumerate(solutions):
             js = JointState()
             js.position = j[0].tolist()
             valid = std_msgs.msg.Bool()
-            valid.data = bool(result.success.cpu().numpy()[i][0])
+            valid.data = bool(successes[i][0])
             response.joint_states.append(js)
             response.joint_states_valid.append(valid)
         response.success = True
@@ -173,6 +175,10 @@ class IKServices:
 
         # Warmup: solve a batch of random configs to prime CUDA kernels.
         q_sample = self._ik_solver.sample_configs(batch_size)
+        if q_sample.shape[0] == 0:
+            raise RuntimeError(
+                "no collision-free robot configuration: the world collides with the robot "
+                "in every configuration, so every IK would fail (check the world file)")
         js = CuRoboJS.from_position(
             q_sample, joint_names=self._ik_solver.kinematics.joint_names
         )
