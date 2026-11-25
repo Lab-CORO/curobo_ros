@@ -36,8 +36,13 @@ class ObstacleManager:
         self.scene = initial_scene if initial_scene is not None else Scene()
         self._ensure_scene_lists()
 
-        # Tracks registered obstacle names for uniqueness validation.
-        self.obstacle_names = []
+        # Tracks registered obstacle names for uniqueness validation, starting with the
+        # world file's (get_obstacles lists them, remove_object can remove them).
+        self.obstacle_names = [
+            obs.name
+            for bucket in ('cuboid', 'capsule', 'cylinder', 'sphere', 'mesh')
+            for obs in getattr(self.scene, bucket)
+        ]
 
         # Perception (created lazily in setup_perception()).
         self.mapper = None
